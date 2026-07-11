@@ -1,0 +1,8 @@
+# Balina Avcısı - çalışma bağımlılıkları
+# main.py'nin importları: requests, websocket (websocket-client), supabase
+# (json, time, os, threading, logging, datetime, calendar, collections,
+#  http.server standart kütüphanededir, ayrıca kurulum gerekmez.)
+
+requests>=2.31.0
+websocket-client>=1.7.0
+supabase>=2.4.0

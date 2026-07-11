@@ -1,0 +1,19 @@
+# Render Blueprint — Balina Avcısı
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: balina-avcisi
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: COINALYZE_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11.15"
