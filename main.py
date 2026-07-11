@@ -133,6 +133,7 @@ class CanliDurum:
         self.agg_vadeli_cvd = 0.0
         self.coinalyze_saglikli = False
         self.coinalyze_cvd_saglikli = False
+        self.coinalyze_cvd_zaman = 0.0   # FIX3: son BASARILI CVD hesabinin ani (bayatlik kapisi)
 
         # Adaptif eşikler
         self.esik_derinlik = 45_000_000.0
@@ -186,6 +187,16 @@ MIN_KAYIT_ADAPTIF = 100
 
 # v2 YENİ: skorlama parametreleri
 PENCERE_DK = 5            # değişim kaç dakikalık pencerede ölçülsün
+# ================== v7 — CVD ÖLÇEK DÜZELTMESİ (FIX1/FIX3) ==================
+# FIX1: CVD eşiği artık SEVİYE değil, 5-dk DEĞİŞİM (delta) dağılımından türetilir.
+# Delta dağılımının magnitüdüne bir taban koyarak (payda çökmesi -> saturasyon)
+# "sessiz -> gürültülü" ters arızasını engelleriz. Taban esas olarak veriye
+# görecelidir (median|dL|); bu mutlak taban yalnızca ölü-piyasa güvenlik ağıdır
+# (BTC-hacim birimi; ölü piyasada bastırmak DOĞRU yöndür).
+CVD_ESIK_MUTLAK_TABAN = 1.0
+# FIX3: son BAŞARILI Coinalyze CVD hesabı bu saniyeden eskiyse kaynak GÜVENSİZ
+# sayılır (donmuş CVD ile sinyal üretimini engeller; ~4 Coinalyze döngüsü).
+CVD_BAYATLIK_SN = 240
 # ================== v5 — BALİNA DİSİPLİNİ ==================
 # Veri kanıtı (1753 kayıt, 29 saat): skor 65-85 arası sinyaller yazı-tura
 # (%47-53), skor 95+ sinyaller %71 isabetli. Sonuç: sistem çok konuşuyordu.
@@ -821,6 +832,7 @@ def coinalyze_guncelle():
                 if vadeli_cvd_hesaplandi:
                     durum.agg_vadeli_cvd = yeni_vadeli_cvd
                     durum.coinalyze_cvd_saglikli = True
+                    durum.coinalyze_cvd_zaman = time.time()   # FIX3: taze CVD damgasi
                 if spot_cvd_hesaplandi:
                     durum.agg_spot_cvd = yeni_spot_cvd
                 agg_vadeli_cvd_log = durum.agg_vadeli_cvd
@@ -871,27 +883,18 @@ def on_message(ws, message):
                     durum.trade_gecmisi.popleft()
 
         elif 'bookTicker' in stream:
+            # FIX5: bookTicker SADECE fiyat icin. Eskiden buradaki tick-rule proxy'si
+            # (best-bid/ask GORUNEN miktarlari) aggTrade'in GERCEK islem hacmiyle AYNI
+            # deque'e (trade_gecmisi) yaziliyor, her tick'te yonu CIFT sayiyordu.
+            # aggTrade zaten fiyat + gercek isaretli hacim veriyor; WS-yedek CVD artik
+            # saf aggTrade. (trade_gecmisi yalnizca WS-yedek CVD icin okunur ve veri
+            # kalite kapisi bu yedegi zaten reddeder — sinyale gitmez.)
             best_bid = float(payload.get('b', 0))
             best_ask = float(payload.get('a', 0))
-            best_bid_qty = float(payload.get('B', 0))
-            best_ask_qty = float(payload.get('A', 0))
             if best_bid > 0 and best_ask > 0:
                 orta_fiyat = (best_bid + best_ask) / 2
                 with durum.lock:
                     durum.anlik_fiyat = orta_fiyat
-                    if durum.son_tick_fiyat > 0:
-                        if orta_fiyat > durum.son_tick_fiyat:
-                            signed = best_ask_qty
-                        elif orta_fiyat < durum.son_tick_fiyat:
-                            signed = -best_bid_qty
-                        else:
-                            signed = 0
-                        if signed != 0:
-                            durum.trade_gecmisi.append((simdi_ms, signed))
-                            sinir = simdi_ms - 15 * 60 * 1000
-                            while durum.trade_gecmisi and durum.trade_gecmisi[0][0] < sinir:
-                                durum.trade_gecmisi.popleft()
-                    durum.son_tick_fiyat = orta_fiyat
 
         durum.son_guncelleme = time.time()
     except Exception as e:
@@ -1081,6 +1084,38 @@ def _aykiri_degerleri_temizle(liste):
     return temiz if temiz else liste
 
 
+def _cvd_delta_serisi(zaman_cvd, pencere_sn):
+    """
+    FIX1 — CVD SEVİYE serisinden 5-dk DEĞİŞİM (delta) serisi üretir; canlı koddaki
+    (ozet_ve_analiz_dongusu) pencere mantığının AYNISI: her örnek için ~pencere_sn
+    önce en yakın ÖNCEKİ örneği bul, farkı al. Böylece eşik, skorda normalize edilen
+    büyüklükle (d_vadeli) AYNI istatistiksel nesne olur. (Gerçek veride ölçek farkı
+    ~1.25x çıktı — küçük ama yanlış; bu düzeltme doğru nesneyi ölçer. NOT: sistemin
+    sessizliğinin ASIL sebebi bu DEĞİL; skor gerçek veride 90-100'e ulaşıyor ama
+    VE-kapıları/süreç/maliyet bloklıyor — bkz. balina_ayarlar['ve_kapisi_redleri'].)
+
+    Veri boşluklarını ele: gerçek aralık [150sn, ~2.5x pencere] dışındaysa o eşleşme
+    ATILIR (delik üzerinden eşleşme sahte-büyük delta üretir, eşiği tekrar şişirir).
+    Girdi: [(epoch, cvd_seviye), ...] (sırasız olabilir). Çıktı: [delta, ...].
+    """
+    seri = sorted(zaman_cvd, key=lambda x: x[0])
+    n = len(seri)
+    deltalar = []
+    j = 0
+    ust_sinir = pencere_sn * 2.5
+    for i in range(n):
+        ti, ci = seri[i]
+        hedef = ti - pencere_sn
+        # iki-isaretci: j'yi hedef'ten kucuk/esit son ornege ilerlet (monoton)
+        while j + 1 < n and seri[j + 1][0] <= hedef:
+            j += 1
+        tj, cj = seri[j]
+        gap = ti - tj
+        if tj < ti and 150 <= gap <= ust_sinir:
+            deltalar.append(ci - cj)
+    return deltalar
+
+
 def adaptif_esik_guncelle():
     time.sleep(30)
     while True:
@@ -1105,7 +1140,7 @@ def adaptif_esik_guncelle():
             bir_gun_iso = bir_gun_once.isoformat()
             kisa_derinlik, uzun_derinlik = [], []
             kisa_likid, uzun_likid = [], []
-            uzun_cvd = []
+            cvd_seri = []   # FIX1: (epoch, vadeli_cvd SEVIYE) — delta buradan turetilir
 
             for v in veriler:
                 d = v.get('order_book_depth_bid_1pct')
@@ -1121,14 +1156,18 @@ def adaptif_esik_guncelle():
                     uzun_likid.append(float(l))
                     if kisa_mi:
                         kisa_likid.append(float(l))
-                if c is not None:
-                    uzun_cvd.append(float(c))
+                if c is not None and t:
+                    try:
+                        ep = datetime.datetime.fromisoformat(
+                            t.replace('Z', '+00:00')).timestamp()
+                        cvd_seri.append((ep, float(c)))
+                    except Exception:
+                        pass
 
             kisa_derinlik = _aykiri_degerleri_temizle(kisa_derinlik)
             uzun_derinlik = _aykiri_degerleri_temizle(uzun_derinlik)
             kisa_likid = _aykiri_degerleri_temizle(kisa_likid)
             uzun_likid = _aykiri_degerleri_temizle(uzun_likid)
-            uzun_cvd = _aykiri_degerleri_temizle(uzun_cvd)
 
             d_kisa = _yuzdelik(kisa_derinlik, 0.90)
             d_uzun = _yuzdelik(uzun_derinlik, 0.90)
@@ -1140,8 +1179,33 @@ def adaptif_esik_guncelle():
             l_uzun = _yuzdelik(uzun_likid_nz, 0.75)
             yeni_likid = max([x for x in [l_kisa, l_uzun] if x is not None], default=None)
 
-            yeni_cvd_neg = _yuzdelik(uzun_cvd, 0.10)
-            yeni_cvd_poz = _yuzdelik(uzun_cvd, 0.90)
+            # FIX1: CVD esigi SEVIYE degil 5-dk DELTA dagilimindan (canli kodla ayni
+            # pencere). Boylece satis/alis_yogunlugu 0..1 araligini gercekten kullanir.
+            cvd_deltalar = _aykiri_degerleri_temizle(
+                _cvd_delta_serisi(cvd_seri, PENCERE_DK * 60))
+            yeni_cvd_neg = None
+            yeni_cvd_poz = None
+            if len(cvd_deltalar) >= MIN_KAYIT_ADAPTIF:
+                yeni_cvd_neg = _yuzdelik(cvd_deltalar, 0.10)
+                yeni_cvd_poz = _yuzdelik(cvd_deltalar, 0.90)
+                # Payda cokmesine (ust=0 -> _norm saturasyonu -> gurultuye ates) karsi
+                # taban: esas olarak veriye gorecelidir (0.5*median|dL|); mutlak taban
+                # yalnizca olu-piyasa guvenlik agi. Taban-yuksek yalnizca olu piyasada
+                # bastirir (dogru yon); aktif piyasada percentil zaten ustundedir.
+                mutlak = sorted(abs(x) for x in cvd_deltalar)
+                medyan_abs = _yuzdelik(mutlak, 0.50) or 0.0
+                cvd_taban = max(0.5 * medyan_abs, CVD_ESIK_MUTLAK_TABAN)
+                if yeni_cvd_neg is not None:
+                    yeni_cvd_neg = min(yeni_cvd_neg, -cvd_taban)
+                if yeni_cvd_poz is not None:
+                    yeni_cvd_poz = max(yeni_cvd_poz, cvd_taban)
+            else:
+                # Yeterli delta ornegi yok -> CVD esigi DEGISMEZ (varsayilan/eski
+                # korunur). Gozlemlenebilirlik: CVD katmani seviye-olcekli varsayilana
+                # takili kalirsa (bootstrap/degrade) burada gorunur.
+                logging.warning(
+                    f"Adaptif CVD esigi guncellenmedi: yetersiz delta ornegi "
+                    f"({len(cvd_deltalar)}<{MIN_KAYIT_ADAPTIF}); eski/varsayilan korunuyor.")
 
             with durum.lock:
                 if yeni_derinlik and yeni_derinlik > 0:
@@ -1156,9 +1220,11 @@ def adaptif_esik_guncelle():
                 durum.esik_veri_sayisi = len(veriler)
 
             logging.info(
-                f"ADAPTIF ESIK GUNCELLENDI ({len(veriler)} kayit) -> "
+                f"ADAPTIF ESIK GUNCELLENDI ({len(veriler)} kayit, "
+                f"{len(cvd_deltalar)} CVD-delta) -> "
                 f"Derinlik: ${durum.esik_derinlik:,.0f} | Likid: ${durum.esik_likidasyon:,.0f} | "
-                f"CVD-satis: {durum.esik_cvd_negatif:,.0f} | CVD-alis: {durum.esik_cvd_pozitif:,.0f}"
+                f"CVD-satis(dP10): {durum.esik_cvd_negatif:,.0f} | "
+                f"CVD-alis(dP90): {durum.esik_cvd_pozitif:,.0f}"
             )
         except Exception as e:
             logging.warning(f"Adaptif esik hesaplama hatasi: {e}")
@@ -1506,7 +1572,7 @@ def balina_skoru_hesapla(a, pencere, kalite):
     iraksama_carpani_short = iraksama_carpani
 
     expiry_carpani = 1.0
-    if ceyreklik_expiry_yakin_mi(datetime.datetime.now(), esik_saat=48):
+    if ceyreklik_expiry_yakin_mi(datetime.datetime.utcnow(), esik_saat=48):  # FIX4: UTC (yerel degil)
         expiry_carpani = 1.08
 
     # =================== HAM SKORLAR ===================
@@ -1641,8 +1707,13 @@ def ozet_ve_analiz_dongusu():
 
                 ws_vadeli_cvd = sum(q for _, q in durum.trade_gecmisi)
                 ws_spot_cvd = sum(q for _, q in durum.spot_trade_gecmisi)
-                cvd_kaynak_saglikli = durum.coinalyze_cvd_saglikli  # A: kalite girdisi
-                if durum.coinalyze_cvd_saglikli:
+                # FIX3: coinalyze_cvd_saglikli latch'i bir kez True olunca hic
+                # resetlenmiyordu -> Coinalyze olurse DONMUS CVD ile sinyal cikabilirdi.
+                # Artik son BASARILI hesabin uzerinden CVD_BAYATLIK_SN gectiyse kaynak
+                # GUVENSIZ sayilir; kapi reddeder ve WS-yedege duser (o da reddedilir).
+                cvd_taze = (time.time() - durum.coinalyze_cvd_zaman) < CVD_BAYATLIK_SN
+                cvd_kaynak_saglikli = durum.coinalyze_cvd_saglikli and cvd_taze  # A: kalite girdisi
+                if cvd_kaynak_saglikli:
                     calculated_cvd = durum.agg_vadeli_cvd
                     spot_cvd = durum.agg_spot_cvd
                 else:
@@ -1796,8 +1867,14 @@ def ozet_ve_analiz_dongusu():
                         break
                 if eski is None:
                     eski = seri_kopya[0]  # yeterli gecmis yoksa en eskiyi kullan
-                # En az ~3 dk gecmis olsun ki degisim anlamli olsun
-                if (simdi_epoch - eski['ts']) >= 150 and eski['fiyat'] > 0:
+                # En az ~3 dk gecmis olsun ki degisim anlamli olsun. UST SINIR
+                # (FIX1-tutarlilik): kalibrasyon (_cvd_delta_serisi) veri boslugu
+                # uzerinden eslesmeyi REDDEDER; canli pencere de ayni ust sinirla
+                # (PENCERE_DK*60*2.5=750sn) sinirlanmali. Aksi halde outage/restart
+                # sonrasi delik-asiri DEV delta, temiz delta'lara gore kalibre esigi
+                # saturasyona itip (yogunluk=1.0) YANLIS sinyal uretebilir -> BEKLE.
+                pencere_yasi = simdi_epoch - eski['ts']
+                if 150 <= pencere_yasi <= PENCERE_DK * 60 * 2.5 and eski['fiyat'] > 0:
                     d_vadeli = calculated_cvd - eski['vadeli_cvd']
                     d_spot = spot_cvd - eski['spot_cvd']
                     pencere = {
@@ -1807,6 +1884,11 @@ def ozet_ve_analiz_dongusu():
                         'd_oi_pct': (open_interest / eski['oi'] - 1.0) * 100.0 if eski['oi'] > 0 else 0.0,
                         # C: CVD IRAKSAMA — spot ve vadeli AYNI yone mi bakiyor?
                         # Ayni yon = teyit (guclu). Zit yon = iraksama (kaldiracli/kirilgan).
+                        # NOT: Gercek veri (balina_avcisi_data, 578 kayit) gosterdi ki
+                        # spot ve vadeli CVD ZATEN benzer olcekte (medyan |spot|/|vadeli|
+                        # ~5x, ikisi de USD-olcekli). d_vadeli'yi fiyatla carpmak dengeyi
+                        # 0.24'ten ~15000'e ITELEYIP ozelligi BOZUYORDU -> ham karsilastirma
+                        # korunuyor (denge ~0.24, calisan mutevazi ±%4 etki).
                         'cvd_iraksama': _cvd_iraksama_hesapla(d_vadeli, d_spot),
                     }
 
