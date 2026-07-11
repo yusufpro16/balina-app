@@ -218,6 +218,15 @@ MALIYET_CITASI_PCT = 0.30 # kurulum en az %0.30 hareket vaat etmeli (maliyet ~%0
 # NOT: Yalnızca 'hedef' kapısının bariyer tanımını büyütür; duvar teyidi
 # (Katman 1) ve likidite haritası ETKİLENMEZ (onlar BUYUK_EMIR_ESIGI_USDT'de kalır).
 HEDEF_DUVAR_ESIGI_USDT = 10_000_000.0
+# v7.2 — YAKIN-BÖLGE DIŞLAMA: gerçek veri, "en yakın ciddi duvar"ların %98.7'sinin
+# fiyatın %0.10 İÇİNDE olduğunu gösterdi (medyan %0.030; bir örnekte duvar fiyatın
+# $8 altındaydı = en iyi alış bölgesinin ta kendisi). Spread'e yapışık kotasyon
+# yığını YAPISAL bariyer değildir — defterin normal şeklidir ve her an oradadır;
+# onu bariyer saymak kapıyı yapısal bir KAPALI anahtara çevirir. Maliyet yarıçapı
+# (~%0.10 gidiş-dönüş) içindeki duvarlar bu yüzden bariyer sayılmaz; kapı ilk
+# YAPISAL bariyeri ([%0.10, %0.30) bandındaki ciddi duvar) arar ve onu bulursa
+# bloklar. HEDEF_YAKIN_BOLGE_PCT < MALIYET_CITASI_PCT olmalı, yoksa kapı hiç bloklamaz.
+HEDEF_YAKIN_BOLGE_PCT = 0.10
 # VE-KAPISI minimum eşikleri: herhangi biri altında kalırsa sinyal YOK
 # (ortalama/telafi yok — zayıf katman güçlülerle örtülemez)
 VE_ISLEM_MIN = 0.45       # işlem yoğunluğu (katman 2) en az bu kadar güçlü olmalı
@@ -1920,8 +1929,12 @@ def ozet_ve_analiz_dongusu():
                 return out
             ciddi_ask = _ciddi_duvarlar(ask_kovalar)
             ciddi_bid = _ciddi_duvarlar(bid_kovalar)
-            en_yakin_ask_fiyat = min((f for f in ciddi_ask if f > anlik_fiyat), default=0)
-            en_yakin_bid_fiyat = max((f for f in ciddi_bid if f < anlik_fiyat), default=0)
+            # v7.2: spread'e yapisik (<HEDEF_YAKIN_BOLGE_PCT) kovalar bariyer sayilmaz
+            # — onlar defterin kendisi. Ilk YAPISAL bariyer aranir (aciklama sabitte).
+            yakin_ask_sinir = anlik_fiyat * (1 + HEDEF_YAKIN_BOLGE_PCT / 100)
+            yakin_bid_sinir = anlik_fiyat * (1 - HEDEF_YAKIN_BOLGE_PCT / 100)
+            en_yakin_ask_fiyat = min((f for f in ciddi_ask if f > yakin_ask_sinir), default=0)
+            en_yakin_bid_fiyat = max((f for f in ciddi_bid if 0 < f < yakin_bid_sinir), default=0)
 
             skor_girdi = {
                 'fiyat': anlik_fiyat, 'bid_d': order_book_depth_bid_1pct,

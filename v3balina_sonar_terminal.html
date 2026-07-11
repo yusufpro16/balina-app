@@ -314,7 +314,7 @@
     </div>
     <div class="card">
       <h2><span class="htitle"><span class="dot"></span>Sinyal Motoru — v7 Balina Disiplini</h2>
-      <div class="expl">Eşik 90, marj 25, 30dk cooldown. Skor yetse bile 8 kapının tümü (işlem+direnç+duvar+OI+hedef+süreç+marj+cooldown) açık olmadan sinyal çıkmaz. Hedef kapısı v7.1: en yakın ≥$10M mutabakatlı duvar %0.30'dan uzak olmalı.</div>
+      <div class="expl">Eşik 90, marj 25, 30dk cooldown. Skor yetse bile 8 kapının tümü (işlem+direnç+duvar+OI+hedef+süreç+marj+cooldown) açık olmadan sinyal çıkmaz. Hedef kapısı v7.2: spread'e yapışık (&lt;%0.10) duvarlar bariyer sayılmaz; [%0.10–%0.30) bandında ≥$10M mutabakatlı YAPISAL bariyer varsa sinyal kesilir.</div>
       <div id="sinyalMotoru"></div>
       <div class="isabet-box" id="isabetBox"></div>
     </div>
@@ -504,13 +504,20 @@ function duvarlariOku(L,alan){
   try{const v=L[alan];return typeof v==='string'?JSON.parse(v):(v||[]);}catch(e){return [];}
 }
 function hedefKapisi(L){
+  // v7.2: spread'e yapışık (<%0.10) duvarlar bariyer SAYILMAZ — gerçek veri,
+  // "en yakın ciddi duvar"ların %98.7'sinin %0.10 içinde oturduğunu gösterdi
+  // (defterin normal şekli). Kapı ilk YAPISAL bariyeri arar: [%0.10,%0.30)
+  // bandında ciddi duvar varsa bloklar, yoksa geçer.
+  const YAKIN=0.10;
   const f=L.anlik_fiyat||0;
   if(!f) return {long:{gecti:true},short:{gecti:true}};
-  const ca=ciddiDuvarFiltre(duvarlariOku(L,'yakin_likidite_ask')).filter(w=>w.fiyat>f);
-  const cb=ciddiDuvarFiltre(duvarlariOku(L,'yakin_likidite_bid')).filter(w=>w.fiyat<f);
+  const ca=ciddiDuvarFiltre(duvarlariOku(L,'yakin_likidite_ask'))
+    .filter(w=>w.fiyat>f && (w.fiyat-f)/f*100>=YAKIN);
+  const cb=ciddiDuvarFiltre(duvarlariOku(L,'yakin_likidite_bid'))
+    .filter(w=>w.fiyat<f && (f-w.fiyat)/f*100>=YAKIN);
   const enAsk=ca.length?Math.min(...ca.map(w=>w.fiyat)):0;
   const enBid=cb.length?Math.max(...cb.map(w=>w.fiyat)):0;
-  const mesL=enAsk?(enAsk-f)/f*100:null;   // null = ciddi duvar yok -> kapı geçer
+  const mesL=enAsk?(enAsk-f)/f*100:null;   // null = yapısal bariyer yok -> kapı geçer
   const mesS=enBid?(f-enBid)/f*100:null;
   return {long:{gecti:mesL==null||mesL>=0.30,mesafe:mesL,duvar:enAsk},
           short:{gecti:mesS==null||mesS>=0.30,mesafe:mesS,duvar:enBid}};
@@ -773,7 +780,7 @@ function verdict(L,rejim,pencere,rows,surec){
     {ad:'Fiyat direnci', gecti:direncGuc>=0.40,  detay:'absorbsiyon ≥0.40'},
     {ad:'Duvar teyidi',  gecti:duvarGate>=0.30,  detay:'spoof filtresi ≥0.30'},
     {ad:'OI onayı',      gecti:!oiVeto,          detay:'kırılganlık vetosu'},
-    {ad:'Hedef mesafesi',gecti:hd.gecti,         detay:'≥$10M duvara ≥%0.30'},
+    {ad:'Hedef mesafesi',gecti:hd.gecti,         detay:'yapısal bariyer ≥%0.30'},
     {ad:'Süreç izni',    gecti:sk.gecti,         detay:'trende karşı yasak'},
     {ad:'Marj',          gecti:marjOk,           detay:'fark ≥25'},
     {ad:'Cooldown',      gecti:!cd.aktif,        detay:'30dk sessizlik'},
@@ -836,7 +843,7 @@ function verdict(L,rejim,pencere,rows,surec){
   if(!hd.gecti && hd.duvar){
     h+=`<div class="karar-satir eksik">
       <span class="karar-ikon">◆</span>
-      <span><b>Hedef kapısı:</b> en yakın ciddi duvar $${fmt(hd.duvar,0)} — mesafe %${(hd.mesafe??0).toFixed(2)} &lt; %0.30. Kâra yetecek hareket alanı yok.</span>
+      <span><b>Hedef kapısı:</b> yapısal bariyer $${fmt(hd.duvar,0)} — mesafe %${(hd.mesafe??0).toFixed(2)} &lt; %0.30. Kâra yetecek hareket alanı yok. (Spread'e yapışık &lt;%0.10 duvarlar sayılmaz.)</span>
     </div>`;
   }
   if(cd.aktif){
