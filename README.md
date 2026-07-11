@@ -76,10 +76,10 @@ python main.py
 Ardından `http://localhost:8080/` sağlık sayfasını, `/mobil` ve `/panel`
 panellerini açar.
 
-> **Not:** `/mobil` → `balina_mobil.html`, `/panel` → `v3balina_sonar_terminal.html`
-> dosyalarını `main.py` ile aynı klasöre koymanız gerekir. Bu panel dosyaları
-> bu repoda **yok**; kendi HTML panellerinizi eklemezseniz bu iki rota 404 döner
-> (motor yine de sorunsuz çalışır).
+> **Not:** `/panel` → `v3balina_sonar_terminal.html` bu repoda **var** (v7,
+> motorla senkron yorum katmanı: pencere-yerel adaptif eşikler, 8 kapı, Sinyal
+> Otopsisi). `/mobil` → `balina_mobil.html` ise repoda **yok**; eklemezseniz o
+> rota 404 döner (motor yine de sorunsuz çalışır).
 
 ---
 
