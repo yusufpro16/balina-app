@@ -206,6 +206,18 @@ SINYAL_ESIGI = 90.0       # 65 -> 90: sadece en güçlü kurulumlar konuşur
 SINYAL_MARJI = 25.0       # kazanan taraf ezici üstün olmalı (flip-flop imkansız)
 SINYAL_COOLDOWN_SN = 1800 # bir sinyalden sonra 30dk sus (ayni hareketi 6 kez sinyalleme)
 MALIYET_CITASI_PCT = 0.30 # kurulum en az %0.30 hareket vaat etmeli (maliyet ~%0.10'un 3 kati)
+# ================== v7.1 — HEDEF KAPISI KALİBRASYONU ==================
+# GERÇEK VERİ (balina_avcisi_data + ve_kapisi_redleri): 'hedef' kapısı skoru
+# 90'ı geçen 10 kurulumun 10'unu da blokluyordu. Sebep: 'ciddi duvar' eşiği
+# BUYUK_EMIR_ESIGI_USDT ($500k) idi ve BTC defterinde her an fiyata ~%0.02-0.05
+# mesafede $500k+ konsensüs duvarları var -> en yakın bariyer daima <%0.30 ->
+# kapı YAPISAL OLARAK hep kapalı. $500k bir bariyer değil (saniyede yeniyor).
+# 578 kayıt üzerinde ölçülen geçiş oranı: $500k->%0.3, $5M->%2.8, $10M->%22.5,
+# $15M->%85.6. $10M, kapıyı gerçek filtre tutarken (%77.5 blok) en iyi
+# kurulumların ~%30'unu geçiriyor — "nadir ama nokta atışı"na uygun.
+# NOT: Yalnızca 'hedef' kapısının bariyer tanımını büyütür; duvar teyidi
+# (Katman 1) ve likidite haritası ETKİLENMEZ (onlar BUYUK_EMIR_ESIGI_USDT'de kalır).
+HEDEF_DUVAR_ESIGI_USDT = 10_000_000.0
 # VE-KAPISI minimum eşikleri: herhangi biri altında kalırsa sinyal YOK
 # (ortalama/telafi yok — zayıf katman güçlülerle örtülemez)
 VE_ISLEM_MIN = 0.45       # işlem yoğunluğu (katman 2) en az bu kadar güçlü olmalı
@@ -1896,11 +1908,14 @@ def ozet_ve_analiz_dongusu():
             # v5.2: en yakin CIDDI duvar — artik UC BORSA birlesik kovalardan.
             # Sadece MUTABAKATLI (2+ borsa) VEYA cok buyuk tek-borsa duvarlari sayilir;
             # boylece tek borsadaki spoof duvar hedef sanilmaz.
+            # v7.1: bariyer esigi HEDEF_DUVAR_ESIGI_USDT ($10M) — $500k gercek bir
+            # bariyer degil (her an fiyata degiyor). Bu SADECE hedef kapisini besleyen
+            # en_yakin_* hesabini etkiler.
             def _ciddi_duvarlar(kovalar):
                 out = []
                 for kf, d in kovalar.items():
                     mutabakat = len(d['borsalar'])
-                    if d['usdt'] >= BUYUK_EMIR_ESIGI_USDT and (mutabakat >= 2 or d['usdt'] >= BUYUK_EMIR_ESIGI_USDT * 3):
+                    if d['usdt'] >= HEDEF_DUVAR_ESIGI_USDT and (mutabakat >= 2 or d['usdt'] >= HEDEF_DUVAR_ESIGI_USDT * 3):
                         out.append(kf)
                 return out
             ciddi_ask = _ciddi_duvarlar(ask_kovalar)
