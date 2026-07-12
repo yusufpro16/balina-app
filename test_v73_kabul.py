@@ -28,10 +28,15 @@ SABITLER = {'SINYAL_ESIGI','SINYAL_MARJI','MALIYET_CITASI_PCT','VE_ISLEM_MIN',
             'SUPURME_TESPIT_AKTIF','SEVIYE_LOOKBACK_DK','SEVIYE_KORUMA_DK',
             'SEVIYE_KUMELEME_VOL','SEVIYE_PIVOT_PENCERE_DK','SUPURME_YAKINLIK_VOL',
             'SUPURME_MIN_DELME_VOL','SUPURME_MAX_DELME_VOL','SUPURME_GERI_ALIM_MAX_DK',
-            'SUPURME_GECERLILIK_DK','SUPURME_COOLDOWN_DK','KAPITULASYON_CARPANI'}
+            'SUPURME_GECERLILIK_DK','SUPURME_COOLDOWN_DK','KAPITULASYON_CARPANI',
+            # v7.4:
+            'EMILIM_AYRIMI_AKTIF','EMILIM_OLCUM_AKTIF','EMILIM_MIN_AKIS',
+            'EMILIM_GUCLU_ESIK','EMILIM_YOK_ESIK','EMILIM_SPOT_ESIGI',
+            'TUKENME_DILIM_SAYISI','TUKENME_SONME_ORANI','TUKENME_MAX_DUSUS_VOL','PENCERE_DK'}
 FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et',
-                '_tasfiye_bayraklari'}
+                '_tasfiye_bayraklari',
+                '_emilim_esnekligi','_emilim_borsasi','_satici_tukenmesi'}  # v7.4
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -55,8 +60,10 @@ random.seed(73)
 V72_REJIMLER = ['NOTR','TEPE_DAGITIM','DIP_TOPLAMA','SHORT_SQUEEZE','LONG_TASFIYE',
                 'TAZE_ALIM','TAZE_SATIS']
 IZINLI = {'SHORT_SQUEEZE':{'SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS'},
-          'LONG_TASFIYE':{'LONG_TASFIYE','LONG_KAPITULASYON'}}
-farkli=0; rejim_zengin=0
+          'LONG_TASFIYE':{'LONG_TASFIYE','LONG_KAPITULASYON'},
+          # v7.4: DIP_TOPLAMA emilim-zenginlesmesi (izinli — skor/sinyal degismez)
+          'DIP_TOPLAMA':{'DIP_TOPLAMA','DIP_TOPLAMA_SPOT','DIP_TOPLAMA_TEYITSIZ','DIP_TOPLAMA_PERP'}}
+farkli=0; rejim_zengin=0; dip_kapsama=0   # v7.4: DIP_TOPLAMA_* yoluna giren
 for i in range(500):
     esik_d = random.uniform(1e7, 1e8)
     a = {
@@ -80,6 +87,10 @@ for i in range(500):
         'esik_volatilite': random.uniform(0.02, 0.4),
         'supurme_dip_aktif': random.choice([True,False]),
         'supurme_tepe_aktif': random.choice([True,False]),
+        # v7.4 girdileri (eski fonksiyon YOK SAYAR)
+        'esik_spot_neg': -random.uniform(8e5, 3e6),
+        'satici_tukenmesi': random.choice([True, False]),
+        'sonme_orani': random.choice([None, 0.3, 0.9]),
     }
     pencere = None if random.random()<0.05 else {
         'd_fiyat_pct': random.uniform(-.6,.6),
@@ -99,7 +110,11 @@ for i in range(500):
         else:
             farkli+=1
             if farkli<=3: print("  REJIM IHLALI:",e[3],"->",y[3])
+    if str(y[3]).startswith('DIP_TOPLAMA_'): dip_kapsama+=1
 check("500 girdide skor+sinyal BIREBIR ayni", farkli==0, f"fark={farkli}, izinli rejim zenginlesmesi={rejim_zengin}")
+# KAPSAMA (spec §8.2): sifirsa test BOS gecmistir -> gecersiz
+check("v7.4 DIP_TOPLAMA_* yolu GERCEKTEN calisti (kapsama>0)", dip_kapsama>0,
+      f"dip_kapsama={dip_kapsama}/500")
 
 # ---------- 2) AILE EŞLEME: yeni adlar es-aileleriyle ayni davranir ----------
 def skorla(ns, surec_rejim, fn='balina_skoru_hesapla'):
@@ -227,7 +242,7 @@ a_g1 = {'fiyat':60000,'bid_d':6e7,'ask_d':3e7,'bnb_delta':.1,'byb_delta':.1,
         'tasfiye_long_yogunluk':8.0,'tasfiye_short_yogunluk':0.0,'esik_volatilite':0.11}
 p_g1 = {'d_fiyat_pct':0.15,'d_oi_pct':-0.35,'d_vadeli_cvd':-9e5,'d_spot_cvd':-3e6,
         'cvd_iraksama':0.5}
-Lg,Sg,sigg,rejg,_ = YENI['balina_skoru_hesapla'](dict(a_g1),dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
+Lg,Sg,sigg,rejg,_,_ = YENI['balina_skoru_hesapla'](dict(a_g1),dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
 check("G1a: kanonik geri-alim bari SHORT_SQUEEZE DEGIL", rejg!='SHORT_SQUEEZE', f"rejim={rejg}")
 check("G1a2: dogru etiket TASFIYE_SONRASI_DONUS", rejg=='TASFIYE_SONRASI_DONUS')
 # G1b: GERCEK kod yolu (_tasfiye_bayraklari) dogru hucreyi secmeli — totoloji degil,
@@ -243,14 +258,72 @@ FAZ2 = yukle(yeni_kaynak, {'fn':FONKSIYONLAR,'sabit':SABITLER})
 FAZ2['TASFIYE_AYRIMI_AKTIF'] = True
 for sr in ('NOTR','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS'):
     a = dict(a_g1); a['surec_rejim']=sr
-    L2,S2,sig2,rej2,_ = FAZ2['balina_skoru_hesapla'](a,dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
+    L2,S2,sig2,rej2,_,_ = FAZ2['balina_skoru_hesapla'](a,dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
     check(f"G2: FAZ2 surec_rejim={sr} -> LONG (NO-OP degil)", sig2=='LONG',
           f"long={L2:.1f} sinyal={sig2}")
 # G2-negatif: FAZ 2'de bile GONULLU squeeze (diken yok) veto + aile korunur
 a_n = dict(a_g1); a_n['tasfiye_long_yogunluk']=0.0; a_n['surec_rejim']='SHORT_SQUEEZE'
-L3,S3,sig3,rej3,_ = FAZ2['balina_skoru_hesapla'](a_n,dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
+L3,S3,sig3,rej3,_,_ = FAZ2['balina_skoru_hesapla'](a_n,dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
 check("G2n: FAZ2'de gonullu SHORT_SQUEEZE hala vetolu (BEKLE)", sig3=='BEKLE' and rej3=='SHORT_SQUEEZE',
       f"long={L3:.1f} sinyal={sig3} rejim={rej3}")
+
+# ---------- 6) v7.4 REFERANS VAKALARI (§7) + None yayilimi ----------
+# Gercek veri esikleri (578 kayittan olculdu): esik_c=382K, esik_s=1.73M, vol=0.022
+E_C, E_S, E_VOL = -381834.0, -1731424.0, 0.0221
+esnek = YENI['_emilim_esnekligi']; bors = YENI['_emilim_borsasi']; tuk = YENI['_satici_tukenmesi']
+YOK, GUCLU = YENI['EMILIM_YOK_ESIK'], YENI['EMILIM_GUCLU_ESIK']
+
+# None YAYILIMI (§9.2 sifir tuzagi): akis yoksa None, 0.0 DEGIL
+check("E-None: akis yok -> esneklik None (0.0 DEGIL)", esnek(0.0,0,0,E_C,E_S,E_VOL) is None)
+check("E-None: akis yok -> borsa (None,None)", bors(0,0,E_C,E_S)==(None,None))
+
+# VAKA 1 — NEGATIF (en kritik): tavan reddi, -1.24% cakilma, spot -20M vadeli -3K.
+# Sistem bunu ASLA emilim saymamali -> esneklik > EMILIM_YOK_ESIK.
+e_v1 = esnek(-1.24, -3000, -20e6, E_C, E_S, E_VOL)
+check("V1: tavan reddi EMILIM DEGIL (esneklik > YOK_ESIK)", e_v1 > YOK, f"esneklik={e_v1:.2f}")
+# daha yumusak bir versiyonda da (yarim hareket) emilim sayilmamali
+check("V1b: -0.8% cakilma da emilim degil", esnek(-0.8,-3000,-20e6,E_C,E_S,E_VOL) > YOK)
+
+# VAKA 2 — POZITIF: buyuk emilim, duz fiyat, satis SONMUYOR -> DIP_TOPLAMA_TEYITSIZ.
+# Once metrik: esneklik DUSUK (< GUCLU), sonra tam balina_skoru_hesapla ile etiket.
+e_v2 = esnek(-0.01, -6e5, -2e6, E_C, E_S, E_VOL)
+check("V2: guclu emilim (esneklik < GUCLU_ESIK)", e_v2 < GUCLU, f"esneklik={e_v2:.3f}")
+a_v2 = {'fiyat':60000,'bid_d':8e7,'ask_d':2e7,'bnb_delta':.1,'byb_delta':.1,'okx_delta':.1,
+        'aktif_borsa':3,'vadeli_cvd':-6e5,'spot_cvd':-2e6,'oi':1.2e10,'funding':0.0001,
+        'bid_yas':400,'ask_yas':100,'likid':2e5,'esik_d':4.5e7,'esik_l':2e5,
+        'esik_c_neg':E_C,'esik_c_poz':3e5,'surec_rejim':'NOTR','surec_tukenme':0,
+        'en_yakin_ask_fiyat':0,'en_yakin_bid_fiyat':0,'tasfiye_long_yogunluk':0.0,
+        'tasfiye_short_yogunluk':0.0,'esik_volatilite':E_VOL,'esik_spot_neg':E_S,
+        'satici_tukenmesi':False,'sonme_orani':0.94}
+p_v2 = {'d_fiyat_pct':0.01,'d_vadeli_cvd':-6e5,'d_spot_cvd':-2e6,'d_oi_pct':0.0,'cvd_iraksama':0.5}
+L2,S2,sig2,rej2,ac2,em2 = YENI['balina_skoru_hesapla'](dict(a_v2),dict(p_v2),{'cvd_guvenilir':True,'sebep':'ok'})
+check("V2: satis sonmeyen guclu emilim -> DIP_TOPLAMA_TEYITSIZ (SISTEM 'BELIRSIZ' DER)",
+      rej2=='DIP_TOPLAMA_TEYITSIZ', f"rejim={rej2} esneklik={em2['emilim_esnekligi']}")
+e_v2b = ESKI['balina_skoru_hesapla'](dict(a_v2),dict(p_v2),{'cvd_guvenilir':True,'sebep':'ok'})
+check("V2b: (long,short,sinyal) v7.2 ile BIREBIR (olcum skoru ETKILEMEZ)",
+      e_v2b[:3]==(L2,S2,sig2), f"v72={e_v2b[:3]} v74={(L2,S2,sig2)}")
+
+# VAKA 3 — REGRESYON: 1 Tem kanonik supurmesi hala TASFIYE_SONRASI_DONUS + tasfiye_var.
+tv3,_ = YENI['_tasfiye_bayraklari'](8.0, 0.0, -0.35)
+check("V3: 1 Tem regresyonu — tasfiye_var hala True", tv3 is True)
+# (rejim TASFIYE_SONRASI_DONUS zaten G1a2'de dogrulandi)
+
+# SATICI TUKENMESI fonksiyonu — sonen seri True, sabit seri False
+def seri_yap(akislar):
+    # akislar: dilim basina hedef |akis|; her dilimi 6 kayitla doldur (PENCERE_DK=5dk)
+    seri=[]; t0=100000.0; w=YENI['PENCERE_DK']*60
+    for di,ak in enumerate(akislar):   # akislar[0]=en eski -> en erken zaman
+        bas=t0 + di*w
+        # dilim ici spot_cvd degisimi = ak * esik_s buyuklugunde (negatif satis)
+        seri.append({'ts':bas, 'spot_cvd':0.0, 'vadeli_cvd':0.0, 'fiyat':60000})
+        seri.append({'ts':bas+w-1, 'spot_cvd':-ak*abs(E_S), 'vadeli_cvd':0.0, 'fiyat':60000})
+    return sorted(seri,key=lambda r:r['ts'])
+tv_son,orn_son = tuk(seri_yap([1.0,0.6,0.3]), E_C, E_S, E_VOL)   # sonuyor: 0.3/1.0=0.3<0.5
+check("E-tuk: sonen satis + duz fiyat -> tukenme True", tv_son is True, f"sonme={orn_son}")
+tv_sbt,_ = tuk(seri_yap([1.0,1.0,1.0]), E_C, E_S, E_VOL)         # sabit: 1.0/1.0=1.0
+check("E-tuk: sabit satis -> tukenme False", tv_sbt is False)
+tv_az,orn_az = tuk([{'ts':1,'spot_cvd':0,'vadeli_cvd':0,'fiyat':60000}], E_C, E_S, E_VOL)
+check("E-tuk: yetersiz veri -> (False, None) (0.0 DEGIL)", tv_az is False and orn_az is None)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")

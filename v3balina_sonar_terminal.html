@@ -491,7 +491,16 @@ function esikHesapla(rows){
   }
   const dep=rows.map(r=>r.order_book_depth_bid_1pct).filter(v=>v>0).sort((a,b)=>a-b);
   const derinlik=yuzdelikNokta(dep,0.90)||45e6;     // motor 7g P90 kullanır; bu yerel yaklaşım
-  return {cvdNeg,cvdPoz,derinlik,kaynak,deltalar:d};
+  // v7.4: SPOT CVD eşiği (motorla aynı; motor_sabitleri yok, panel kendi hesaplar)
+  const ds=aykiriTemizle(cvdDeltaSerisi(rows,'spot_cvd'));
+  let spotNeg=2000;
+  if(ds.length>=30){
+    const ss=[...ds].sort((a,b)=>a-b);
+    const sp10=yuzdelikNokta(ss,0.10);
+    const smabs=yuzdelikNokta(ds.map(Math.abs).sort((a,b)=>a-b),0.50)||0;
+    spotNeg = sp10<0 ? Math.max(Math.abs(sp10),Math.max(0.5*smabs,1)) : Math.max(0.5*smabs,1);
+  }
+  return {cvdNeg,cvdPoz,derinlik,spotNeg,kaynak,deltalar:d};
 }
 
 // ============ v7: MOTORUN TAM KAPI SETİ (hedef/süreç/marj/cooldown) ============
@@ -539,7 +548,8 @@ function surecKapi(surec,yonLong){
   // v7.3.1: motorun FAZ-1 kapisiyla birebir (tasfiye rejimleri es-aile;
   // LONG_KAPITULASYON bilerek yok — motor tarafinda da hicbir gate ailesinde degil)
   const dag=['TEPE_DAGITIM','SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS','TAZE_SATIS'].includes(surec.rejim);
-  const top=['DIP_TOPLAMA','TAZE_ALIM'].includes(surec.rejim);
+  // v7.4: DIP_TOPLAMA_* emilim-zenginlestirilmis toplama rejimleri (es-aile)
+  const top=['DIP_TOPLAMA','DIP_TOPLAMA_SPOT','DIP_TOPLAMA_TEYITSIZ','DIP_TOPLAMA_PERP','TAZE_ALIM'].includes(surec.rejim);
   if(yonLong && dag && tuk<3) return {gecti:false,neden:`dağıtım sürüyor, tükenme ${tuk}/3`};
   if(!yonLong && top && tuk<3) return {gecti:false,neden:`toplama sürüyor, tükenme ${tuk}/3`};
   return {gecti:true};
@@ -552,6 +562,9 @@ const REJIMLER = {
   TAZE_SATIS:     {renk:'var(--alarm)', bg:'rgba(255,84,112,.14)', ad:'TAZE SATIŞ', aciklama:'Fiyat düşüyor, OI artıyor — yeni short\'lar geliyor. Gerçek satış baskısı.'},
   LONG_TASFIYE:   {renk:'var(--veto)', bg:'rgba(255,138,61,.14)', ad:'LONG TASFİYE', aciklama:'Fiyat düşüyor ve OI düşüyor — long\'lar zorla kapanıyor. Kırılgan; OI vetosu SHORT\'u kesti.'},
   DIP_TOPLAMA:    {renk:'var(--sonar)', bg:'rgba(47,245,200,.14)', ad:'DİP TOPLAMA', aciklama:'Satış akışı olgun alım duvarınca emiliyor — birileri sessizce topluyor olabilir.'},
+  DIP_TOPLAMA_SPOT:{renk:'var(--sonar)', bg:'rgba(47,245,200,.16)', ad:'DİP TOPLAMA · SPOT', aciklama:'v7.4: Emilim güçlü + satıcı tükeniyor + satış ağırlığı SPOT — gerçek toplama adayı (envanter biriktiriliyor).'},
+  DIP_TOPLAMA_TEYITSIZ:{renk:'var(--amber)', bg:'rgba(255,194,75,.13)', ad:'DİP TOPLAMA · TEYİTSİZ', aciklama:'v7.4: Emilim VAR ama yön belirsiz — toplama mı dağıtım mı bilinmiyor. Sistem bunu bilerek "belirsiz" der.'},
+  DIP_TOPLAMA_PERP:{renk:'var(--veto)', bg:'rgba(255,138,61,.13)', ad:'DİP TOPLAMA · PERP', aciklama:'v7.4: Emilim var ama satış ağırlığı VADELİ + destek perp defterinde — kaldıraçlı destek, envanter yok, kırılgan.'},
   TEPE_DAGITIM:   {renk:'var(--alarm)', bg:'rgba(255,84,112,.14)', ad:'TEPE DAĞITIM', aciklama:'Alım akışı satım duvarınca karşılanıyor — birileri sessizce dağıtıyor olabilir.'},
   VERI_GUVENSIZ:  {renk:'var(--amber)', bg:'rgba(255,194,75,.14)', ad:'VERİ GÜVENSİZ', aciklama:'CVD güvenilir kaynaktan gelmiyor ya da veri bozuk/bayat — bu dakika sinyal üretilmedi.'},
   VERI_BEKLENIYOR:{renk:'var(--mist)', bg:'rgba(111,156,181,.12)', ad:'ISINMA', aciklama:'Değişim penceresi henüz dolmadı (ilk birkaç dakika). Sistem veri biriktiriyor.'},

@@ -184,6 +184,10 @@ class CanliDurum:
         self.esik_volatilite = 0.0          # medyan |5dk fiyat degisimi %| (0=henuz yok)
         self.esik_lik_long_medyan = 0.0     # agg_long_liq'in SIFIR-OLMAYAN medyani
         self.esik_lik_short_medyan = 0.0    # agg_short_liq'in SIFIR-OLMAYAN medyani
+        # v7.4: SPOT CVD adaptif esigi (vadeli icin zaten var; spot icin YOKTU).
+        # Spot ve vadeli AYNI olcekte degil (medyan |spot|/|vadeli| ~5x) -> ayri esik.
+        self.esik_spot_negatif = -2000.0
+        self.esik_spot_pozitif = 2000.0
         # Likidite seviyeleri (24s swing dip/tepe; adaptif dongu uretir):
         self.likidite_dipler = []           # [{'fiyat','test','yas_dk'},...]
         self.likidite_tepeler = []
@@ -320,6 +324,26 @@ KAPITULASYON_CARPANI = 1.5        # d_vadeli <= esik_c_neg * 1.5 (tepe icin sime
 # --- KOHORT (olcum) ---
 KOHORT_KUME_DK = 30               # ayni yonde <=30dk arayla gelen olaylar ayni kume
 KOHORT_AZAMI_KAYIT = 500          # balina_ayarlar JSONB sisirilmesin
+
+# ================== v7.4 — EMİLİM AYRIMI (toplama mi dagitim mi) ==================
+# Absorbsiyon YONU: negatif CVD + duz fiyat + kalin bid AYNI grafigi uretir ama
+# balina ya EMICI (toplama) ya AGRESIF SATAN (dagitim) olabilir. Bunu ayirmaya
+# calisan UC vekil metrik. HICBIRI FAZ 1'de skoru etkilemez.
+# BILINEN RISK (spec §9.1): emilim_borsasi spot ORDER BOOK'unu GORMEZ (sistemde
+# yok, yeni REST = ban riski) — yalnizca agresif satisin agirlik merkezini olcer.
+# Nedensel iddia ("coin toplayan spot alir") MAKUL ama KANITLANMAMIS; kohort
+# fark gostermezse metrik ATILIR.
+EMILIM_AYRIMI_AKTIF = False       # FAZ 1: KAPALI. Sinyal davranisi BIREBIR ayni.
+EMILIM_OLCUM_AKTIF = True         # olcum + kohort kaydi acik (davranis degistirmez)
+
+EMILIM_MIN_AKIS = 0.25            # bunun altinda akis yok -> metrikler None (0.0 DEGIL!)
+EMILIM_GUCLU_ESIK = 0.35          # esneklik < 0.35 -> GUCLU emilim
+EMILIM_YOK_ESIK = 1.00            # esneklik > 1.00 -> emilim YOK (fiyat serbest)
+EMILIM_SPOT_ESIGI = 0.65          # spot_pay >= 0.65 -> satis agirlikli SPOT
+
+TUKENME_DILIM_SAYISI = 3          # kac ardisik PENCERE_DK dilimi karsilastirilir
+TUKENME_SONME_ORANI = 0.50        # son dilim / ilk dilim < 0.50 -> satis yariya indi
+TUKENME_MAX_DUSUS_VOL = 2.0       # fiyat 2 x vol'den fazla dustuyse bu tukenme DEGIL
 # VE-KAPISI minimum eşikleri: herhangi biri altında kalırsa sinyal YOK
 # (ortalama/telafi yok — zayıf katman güçlülerle örtülemez)
 VE_ISLEM_MIN = 0.45       # işlem yoğunluğu (katman 2) en az bu kadar güçlü olmalı
@@ -1264,6 +1288,92 @@ def _fiyat_pct_serisi(zaman_fiyat, pencere_sn):
     return out
 
 
+def _emilim_esnekligi(d_fiyat_pct, d_vadeli, d_spot, esik_c, esik_s, esik_vol):
+    """
+    v7.4 — Fiyat, agresif akisa NE KADAR duyarli? Birim satis basina fiyat hareketi.
+    Guclu emici fiyati satisa DUYARSIZ kilar -> esneklik DUSER. Emici yoksa ayni
+    satis fiyati ucurur -> esneklik YUKSELIR.
+    Olcek-bagimsiz: pay = fiyat%/volatilite-birimi, payda = akis/kendi esikleri.
+    Donus: 0'a yakin = GUCLU EMILIM, 1+ = emilim YOK. Akis yoksa None (0 DEGIL!):
+    sifir donerse "sakin piyasa" = "mukemmel emilim" sanilir (en kolay kendini
+    kandirma yolu — spec §9.2)."""
+    akis = abs(d_vadeli) / max(abs(esik_c), 1.0) + abs(d_spot) / max(abs(esik_s), 1.0)
+    if akis < EMILIM_MIN_AKIS:
+        return None
+    hareket = abs(d_fiyat_pct) / max(esik_vol, 0.02)
+    return hareket / akis
+
+
+def _emilim_borsasi(d_vadeli, d_spot, esik_c, esik_s):
+    """
+    v7.4 — VEKİL METRİK. UYARI: spot ORDER BOOK'unu GORMEZ (sistemde yok, §2);
+    yalnizca agresif satisin AGIRLIK MERKEZINI olcer. Iddia (KANITLANMAMIS):
+    coin biriktiren balina SPOT alir -> satis-agirlikli SPOT + fiyat tutuyorsa
+    gercek toplama; satis-agirlikli VADELI + perp bid destegi -> kaldiracli, kirilgan.
+    Olcek: d_spot ve d_vadeli ikisi de USD ama medyan |spot|/|vadeli| ~5x (gercek
+    veride 4.5x dogrulandi) -> HAM ORAN yaniltici, her biri KENDI esigine bolunur.
+    Donus: ('SPOT'|'VADELI'|'KARISIK'|None, spot_pay|None)."""
+    sv = abs(d_vadeli) / max(abs(esik_c), 1.0)
+    ss = abs(d_spot) / max(abs(esik_s), 1.0)
+    if sv + ss < EMILIM_MIN_AKIS:
+        return None, None
+    spot_pay = ss / (sv + ss)
+    if spot_pay >= EMILIM_SPOT_ESIGI:
+        return 'SPOT', spot_pay
+    if spot_pay <= 1 - EMILIM_SPOT_ESIGI:
+        return 'VADELI', spot_pay
+    return 'KARISIK', spot_pay
+
+
+def _satici_tukenmesi(seri, esik_c, esik_s, vol_pct, pencere_dk=PENCERE_DK):
+    """
+    v7.4 — Toplayan balina ARZI CEKER: aldikca satici havuzu kuculur -> agresif
+    satis hizi ZAMANLA AZALIR. Dagitan balina icin beklemeyiz — satan onun
+    KENDISI, envanteri bitene kadar surer.
+    Son TUKENME_DILIM_SAYISI x PENCERE_DK dilimin akis buyuklugu egilimi.
+    Donus: (tukenme_var: bool, sonme_orani: float|None). Yetersiz veri -> (False, None);
+    SESSIZ 0.0 DONDURME (spec §9.2 sifir tuzagi).
+    NOT (spec §3.B duzeltmesi): spec metnindeki '_cvd_delta_serisi(fiyat_seri,
+    alan=...)' cagrisi GECERSIZ (o fonksiyon (liste, pencere_sn) alir, alan yok).
+    Dilim akisi burada gecmis_seri'nin SEVIYE farklarindan dogrudan hesaplanir."""
+    if not seri or len(seri) < 2 or not vol_pct or vol_pct <= 0:
+        return False, None
+    w = pencere_dk * 60
+    simdi = seri[-1]['ts']
+    dilim_akis = []
+    for k in range(TUKENME_DILIM_SAYISI):
+        ust = simdi - k * w
+        alt = ust - w
+        # YARI-ACIK (alt, ust]: bitisik dilimler sinirdaki kaydi PAYLASMASIN
+        # (paylasirsa ardisik dilim deltalari birbirine karisir).
+        icindekiler = [r for r in seri if alt < r['ts'] <= ust]
+        if len(icindekiler) < 2:
+            return False, None
+        bas, son = icindekiler[0], icindekiler[-1]
+        d_s = abs((son.get('spot_cvd') or 0) - (bas.get('spot_cvd') or 0))
+        d_v = abs((son.get('vadeli_cvd') or 0) - (bas.get('vadeli_cvd') or 0))
+        dilim_akis.append(d_v / max(abs(esik_c), 1.0) + d_s / max(abs(esik_s), 1.0))
+    # dilim_akis[0] = EN YENI, [-1] = EN ESKI dilim
+    ilk, sonn = dilim_akis[-1], dilim_akis[0]
+    if ilk <= 0:
+        return False, None
+    sonme_orani = sonn / ilk
+    # Fiyat sarti: satis sonerken fiyat da COKUYORSA bu tukenme degil, satacak
+    # sey kalmamasidir. Fiyat degisimi tukenme penceresi boyunca (en eski->en yeni).
+    eski_f = None
+    yeni_f = None
+    tw_alt = simdi - TUKENME_DILIM_SAYISI * w
+    for r in seri:
+        if r['ts'] >= tw_alt and r.get('fiyat', 0) > 0:
+            if eski_f is None:
+                eski_f = r['fiyat']
+            yeni_f = r['fiyat']
+    d_fiyat_tw = ((yeni_f / eski_f - 1.0) * 100.0) if (eski_f and yeni_f) else 0.0
+    fiyat_ok = d_fiyat_tw > -TUKENME_MAX_DUSUS_VOL * vol_pct
+    tukenme_var = (sonme_orani < TUKENME_SONME_ORANI) and fiyat_ok
+    return tukenme_var, sonme_orani
+
+
 def _likidite_seviyeleri_bul(zaman_fiyat, vol_pct, tepe_mi=False):
     """
     v7.3 — LIKIDITE HAVUZU tespiti: stop'larin biriktigi ESKI swing dip/tepe.
@@ -1378,7 +1488,8 @@ def adaptif_esik_guncelle():
             # likidasyon kolonlari EKLENDI (sorgu zaten atiliyor — ek REST yok).
             res = (supabase.table("balina_avcisi_data")
                    .select("kayit_zamani,anlik_fiyat,order_book_depth_bid_1pct,"
-                           "liquidation_pool_volume,vadeli_cvd,agg_long_liq,agg_short_liq")
+                           "liquidation_pool_volume,vadeli_cvd,spot_cvd,"  # v7.4: spot_cvd
+                           "agg_long_liq,agg_short_liq")
                    .gte("kayit_zamani", yedi_gun_once.isoformat())
                    .order("kayit_zamani", desc=True)
                    .limit(20000)
@@ -1394,6 +1505,7 @@ def adaptif_esik_guncelle():
             kisa_derinlik, uzun_derinlik = [], []
             kisa_likid, uzun_likid = [], []
             cvd_seri = []    # FIX1: (epoch, vadeli_cvd SEVIYE) — delta buradan turetilir
+            spot_seri = []   # v7.4: (epoch, spot_cvd SEVIYE) — spot esigi buradan
             fiyat_seri = []  # v7.3: (epoch, fiyat) — volatilite birimi + seviye tespiti
             lik_long_nz, lik_short_nz = [], []   # v7.3: yon-bazli SIFIR-OLMAYAN likidasyonlar
 
@@ -1421,6 +1533,9 @@ def adaptif_esik_guncelle():
                     if ep is not None:
                         if c is not None:
                             cvd_seri.append((ep, float(c)))
+                        sc = v.get('spot_cvd')
+                        if sc is not None:
+                            spot_seri.append((ep, float(sc)))   # v7.4
                         f = v.get('anlik_fiyat')
                         if f is not None and float(f) > 0:
                             fiyat_seri.append((ep, float(f)))
@@ -1487,6 +1602,20 @@ def adaptif_esik_guncelle():
             # LIKIDASYON TABANI: yon-bazli, SIFIR-OLMAYAN medyan (diken referansi).
             yeni_lik_long = _yuzdelik(sorted(lik_long_nz), 0.50) if len(lik_long_nz) >= 20 else None
             yeni_lik_short = _yuzdelik(sorted(lik_short_nz), 0.50) if len(lik_short_nz) >= 20 else None
+            # v7.4: SPOT CVD ADAPTIF ESIGI (vadeli icin zaten var, spot icin YOKTU).
+            # Spot ve vadeli AYNI olcekte degil -> ayri P10/P90 (ortak esik spot'u
+            # sistematik baskin gosterirdi). Delta-tabanli, FIX1'le ayni mantik.
+            spot_deltalar = _aykiri_degerleri_temizle(
+                _cvd_delta_serisi(spot_seri, PENCERE_DK * 60))
+            yeni_spot_neg = None
+            yeni_spot_poz = None
+            if len(spot_deltalar) >= MIN_KAYIT_ADAPTIF:
+                ssort = sorted(spot_deltalar)
+                sp10, sp90 = _yuzdelik(ssort, 0.10), _yuzdelik(ssort, 0.90)
+                smabs = _yuzdelik(sorted(abs(x) for x in spot_deltalar), 0.50) or 0.0
+                s_taban = max(0.5 * smabs, CVD_ESIK_MUTLAK_TABAN)
+                yeni_spot_neg = -max(abs(sp10), s_taban) if (sp10 and sp10 < 0) else -s_taban
+                yeni_spot_poz = max(sp90, s_taban) if (sp90 and sp90 > 0) else s_taban
             # LIKIDITE SEVIYELERI: 24s swing dip/tepe (60dk koruma, vol-kumeleme).
             vol_seviye = yeni_vol if yeni_vol else durum.esik_volatilite
             yeni_dipler = _likidite_seviyeleri_bul(fiyat_seri, vol_seviye, tepe_mi=False) \
@@ -1509,6 +1638,10 @@ def adaptif_esik_guncelle():
                     durum.esik_lik_long_medyan = max(yeni_lik_long, 1.0)
                 if yeni_lik_short is not None and yeni_lik_short > 0:
                     durum.esik_lik_short_medyan = max(yeni_lik_short, 1.0)
+                if yeni_spot_neg is not None and yeni_spot_neg < 0:
+                    durum.esik_spot_negatif = yeni_spot_neg   # v7.4
+                if yeni_spot_poz is not None and yeni_spot_poz > 0:
+                    durum.esik_spot_pozitif = yeni_spot_poz
                 durum.likidite_dipler = yeni_dipler
                 durum.likidite_tepeler = yeni_tepeler
                 durum.esik_guncelleme_zamani = simdi
@@ -1522,6 +1655,7 @@ def adaptif_esik_guncelle():
                 f"CVD-alis(dP90): {durum.esik_cvd_pozitif:,.0f} | "
                 f"Vol5dk: %{durum.esik_volatilite:.3f} | "
                 f"LikMedyan L/S: ${durum.esik_lik_long_medyan:,.0f}/${durum.esik_lik_short_medyan:,.0f} | "
+                f"SpotCVD-esik: {durum.esik_spot_negatif:,.0f}/{durum.esik_spot_pozitif:,.0f} | "
                 f"Seviye: {len(yeni_dipler)} dip, {len(yeni_tepeler)} tepe"
             )
         except Exception as e:
@@ -1796,14 +1930,18 @@ def surec_takip_et(durum_ref, rejim, anlik_fiyat, spot_cvd, vadeli_cvd,
     # _DAGITIM_SETI + dagitim_tarafi diyordu; 'yonlu' ve ayni_aile ANAHTARI
     # eklenmezse yeni rejim NOTR sayilir, surec sifirlanir ve v7.2'de ayni barin
     # surec baslattigi durumda davranis SAPARDI (talimatin kendi KABUL #1 ihlali).
+    # v7.4: DIP_TOPLAMA_{SPOT,TEYITSIZ,PERP} = DIP_TOPLAMA'nin emilim-zenginlestirilmis
+    # adlari. FAZ 1'de es-aile (davranis birebir); spec §5'in NO-OP mayini uyarisi.
     yonlu = rejim in ("TEPE_DAGITIM", "DIP_TOPLAMA", "SHORT_SQUEEZE", "TAZE_ALIM",
                       "TAZE_SATIS", "LONG_TASFIYE", "SHORT_TASFIYE",
-                      "LONG_KAPITULASYON", "TASFIYE_SONRASI_DONUS")
+                      "LONG_KAPITULASYON", "TASFIYE_SONRASI_DONUS",
+                      "DIP_TOPLAMA_SPOT", "DIP_TOPLAMA_TEYITSIZ", "DIP_TOPLAMA_PERP")
 
     # Surec devami mi, yeni surec mi?
     _DAGITIM_SETI = {"TEPE_DAGITIM", "SHORT_SQUEEZE", "SHORT_TASFIYE",
                      "TASFIYE_SONRASI_DONUS"}
-    _TOPLAMA_SETI = {"DIP_TOPLAMA", "LONG_TASFIYE", "LONG_KAPITULASYON"}
+    _TOPLAMA_SETI = {"DIP_TOPLAMA", "LONG_TASFIYE", "LONG_KAPITULASYON",
+                     "DIP_TOPLAMA_SPOT", "DIP_TOPLAMA_TEYITSIZ", "DIP_TOPLAMA_PERP"}
     ayni_aile = {
         "TEPE_DAGITIM": _DAGITIM_SETI,       # dagitim + squeeze/tasfiye = ayni hikaye
         "SHORT_SQUEEZE": _DAGITIM_SETI,
@@ -1812,6 +1950,9 @@ def surec_takip_et(durum_ref, rejim, anlik_fiyat, spot_cvd, vadeli_cvd,
         "DIP_TOPLAMA": _TOPLAMA_SETI,
         "LONG_TASFIYE": _TOPLAMA_SETI,
         "LONG_KAPITULASYON": _TOPLAMA_SETI,  # v7.3: long-tasfiye ile ayni aile
+        "DIP_TOPLAMA_SPOT": _TOPLAMA_SETI,       # v7.4: dip-toplama es-ailesi
+        "DIP_TOPLAMA_TEYITSIZ": _TOPLAMA_SETI,
+        "DIP_TOPLAMA_PERP": _TOPLAMA_SETI,
         "TAZE_ALIM": {"TAZE_ALIM"},
         "TAZE_SATIS": {"TAZE_SATIS"},
     }
@@ -1927,13 +2068,17 @@ def balina_skoru_hesapla(a, pencere, kalite):
     a: guncel degerler dict'i
     pencere: PENCERE_DK once ile simdi arasi degisimler (yoksa None)
     kalite: dict(cvd_guvenilir: bool, sebep: str) -- A maddesi
-    Donus: (long_skor, short_skor, sinyal, rejim, aciklama)
+    Donus: (long_skor, short_skor, sinyal, rejim, aciklama, emilim)  # v7.4: 6. eleman
     """
+    # v7.4: erken-donuslerde de emilim (bos) dondur — cagiran 6 eleman ACIYOR.
+    _bos_emilim = {'emilim_esnekligi': None, 'emilim_borsasi': None,
+                   'emilim_spot_pay': None, 'satici_tukenmesi': False,
+                   'sonme_orani': None, 'esik_spot_neg': round(a.get('esik_spot_neg', -2000.0), 0)}
     # ---- A) VERİ KALİTE KAPISI: kotu veriyle ASLA skor uretme ----
     if not kalite['cvd_guvenilir']:
-        return 0.0, 0.0, "BEKLE", "VERI_GUVENSIZ", f"Kalite reddi: {kalite['sebep']}"
+        return 0.0, 0.0, "BEKLE", "VERI_GUVENSIZ", f"Kalite reddi: {kalite['sebep']}", _bos_emilim
     if pencere is None:
-        return 0.0, 0.0, "BEKLE", "VERI_BEKLENIYOR", "Pencere dolmadi"
+        return 0.0, 0.0, "BEKLE", "VERI_BEKLENIYOR", "Pencere dolmadi", _bos_emilim
 
     d_fiyat = pencere['d_fiyat_pct']       # % fiyat degisimi (pencere)
     d_vadeli = pencere['d_vadeli_cvd']     # vadeli CVD degisimi (KATMAN 2)
@@ -2136,6 +2281,44 @@ def balina_skoru_hesapla(a, pencere, kalite):
         elif absorbsiyon_short > 0.45:
             rejim = "TEPE_DAGITIM"
 
+    # ============ v7.4 — EMİLİM AYRIMI (olcum; FAZ 1'de skoru ETKILEMEZ) ============
+    # Uc vekil metrik: emilim esnekligi (birim satis basina fiyat), emilim borsasi
+    # (satis agirligi spot mu vadeli mi), satici tukenmesi (satis hizi sonuyor mu —
+    # ozet dongusunde hesaplanip skor_girdi ile gelir; burada seri yok).
+    esik_s = a.get('esik_spot_neg', -2000.0)
+    esik_c_raw = a.get('esik_c_neg', -2000.0)   # ham (fonksiyonlar icinde abs alinir)
+    emilim_esnek = _emilim_esnekligi(d_fiyat, d_vadeli, d_spot,
+                                     esik_c_raw, esik_s, a.get('esik_volatilite', 0.0))
+    emilim_bors, emilim_spot_pay = _emilim_borsasi(d_vadeli, d_spot, esik_c_raw, esik_s)
+    satici_tuk = a.get('satici_tukenmesi', False)
+    sonme_orani = a.get('sonme_orani', None)
+    emilim = {
+        'emilim_esnekligi': round(emilim_esnek, 4) if emilim_esnek is not None else None,
+        'emilim_borsasi': emilim_bors,
+        'emilim_spot_pay': round(emilim_spot_pay, 4) if emilim_spot_pay is not None else None,
+        'satici_tukenmesi': bool(satici_tuk),
+        'sonme_orani': round(sonme_orani, 4) if sonme_orani is not None else None,
+        'esik_spot_neg': round(esik_s, 0),
+    }
+    # ---- Rejim zenginlestirme: yalniz DIP_TOPLAMA iken, emilim VAR ise ----
+    # Oncelik (spec §5 tablosu netlestirildi — belirsizlik cozuldu):
+    #   None/>=YOK_ESIK  -> zenginlesme YOK (baz DIP_TOPLAMA korunur; emilim yok)
+    #   guclu+tukenme+SPOT -> DIP_TOPLAMA_SPOT (en guclu iddia: envanter+arz cekme)
+    #   tukenme YOK        -> DIP_TOPLAMA_TEYITSIZ (emilim var, YON belirsiz) *bugunku*
+    #   borsa VADELI       -> DIP_TOPLAMA_PERP (kaldiracli destek, envanter yok)
+    #   digeri             -> DIP_TOPLAMA_TEYITSIZ
+    # Faz 1'de bu rename SADECE etikettir; (long,short,sinyal) DEGISMEZ (sinyal
+    # surec_rejim'i okur, current rejim'i degil — es-aile eslemesiyle kanitli).
+    if rejim == "DIP_TOPLAMA" and emilim_esnek is not None and emilim_esnek < EMILIM_YOK_ESIK:
+        if emilim_esnek < EMILIM_GUCLU_ESIK and satici_tuk and emilim_bors == 'SPOT':
+            rejim = "DIP_TOPLAMA_SPOT"
+        elif not satici_tuk:
+            rejim = "DIP_TOPLAMA_TEYITSIZ"
+        elif emilim_bors == 'VADELI':
+            rejim = "DIP_TOPLAMA_PERP"
+        else:
+            rejim = "DIP_TOPLAMA_TEYITSIZ"
+
     # =================== v5 SİNYAL — BALİNA DİSİPLİNİ ===================
     # Balina her harekete tepki vermez. Sinyal = TÜM koşulların KESİŞİMİ.
     # Ortalama/telafi yok: tek bir katman zayıfsa sinyal YOK.
@@ -2173,6 +2356,11 @@ def balina_skoru_hesapla(a, pencere, kalite):
         dagitim_ailesi = dagitim_ailesi or surec_rejim in (
             'SHORT_TASFIYE', 'TASFIYE_SONRASI_DONUS')
     toplama_ailesi = surec_rejim in ('DIP_TOPLAMA', 'TAZE_ALIM')
+    if not EMILIM_AYRIMI_AKTIF:
+        # FAZ 1: DIP_TOPLAMA_* es-aile -> davranis v7.3.2 ile BIREBIR.
+        # FAZ 2: aileden CIKARLAR (rejim adi -> VE-kapisi-2; v7.3.1 NO-OP dersi).
+        toplama_ailesi = toplama_ailesi or surec_rejim in (
+            'DIP_TOPLAMA_SPOT', 'DIP_TOPLAMA_TEYITSIZ', 'DIP_TOPLAMA_PERP')
     if dagitim_ailesi and surec_tukenme < 3:
         long_ve = False   # dagitim aktifken dususe karsi LONG yok
     if toplama_ailesi and surec_tukenme < 3:
@@ -2215,13 +2403,19 @@ def balina_skoru_hesapla(a, pencere, kalite):
         ve_kapisi_log = f" VE-RED:{','.join(kapali) if kapali else 'marj'}"
 
     duvar_durum = "teyitli" if (duvar_teyitli_long > 0 or duvar_teyitli_short > 0) else "teyitsiz"
+    # v7.4: emilim metrikleri aciklamaya (log'da her dakika gorunur, §3/§5)
+    emilim_log = ""
+    if emilim_esnek is not None:
+        emilim_log = (f" | EMILIM esnek={emilim_esnek:.2f} bors={emilim_bors}"
+                      f"({emilim_spot_pay:.2f}) tukenme={'E' if satici_tuk else 'H'}"
+                      f"{('/sonme%.2f' % sonme_orani) if sonme_orani is not None else ''}")
     aciklama = (f"absL={absorbsiyon_long:.2f} absS={absorbsiyon_short:.2f} "
                 f"dFiyat={d_fiyat:+.3f}% dOI={d_oi:+.2f}% "
                 f"dVadeliCVD={d_vadeli:+,.0f} dSpotCVD={d_spot:+,.0f} "
                 f"iraksama={iraksama:+.2f} borsa={aktif_borsa} "
-                f"duvar={duvar_durum} rejim={rejim}{ve_kapisi_log}")
+                f"duvar={duvar_durum} rejim={rejim}{ve_kapisi_log}{emilim_log}")
 
-    return long_skor, short_skor, sinyal, rejim, aciklama
+    return long_skor, short_skor, sinyal, rejim, aciklama, emilim
 
 
 # =========================================================================
@@ -2611,6 +2805,7 @@ def ozet_ve_analiz_dongusu():
                 esik_vol = durum.esik_volatilite
                 esik_lik_long_med = durum.esik_lik_long_medyan
                 esik_lik_short_med = durum.esik_lik_short_medyan
+                esik_spot_neg = durum.esik_spot_negatif   # v7.4
                 likidite_dipler = list(durum.likidite_dipler)
                 likidite_tepeler = list(durum.likidite_tepeler)
                 # Deque yalniz YAZIMDA budaniyor; sakin piyasada saatlerce yeni
@@ -2722,7 +2917,16 @@ def ozet_ve_analiz_dongusu():
                 'tasfiye_long_yogunluk': likidasyon_yogunlugu(agg_liq_long, esik_lik_long_med),
                 'tasfiye_short_yogunluk': likidasyon_yogunlugu(agg_liq_short, esik_lik_short_med),
                 'esik_volatilite': esik_vol,
+                # v7.4: EMILIM AYRIMI girdileri (esik_spot + satici_tukenmesi seriden)
+                'esik_spot_neg': esik_spot_neg,
             }
+            # v7.4: satici tukenmesi ozet dongusunde (seri_kopya burada var; metrik
+            # fonksiyonu balina_skoru_hesapla'ya seri gecirmemek icin burada hesaplanir)
+            _tuk_var, _sonme = _satici_tukenmesi(
+                seri_kopya, esik_c_neg, esik_spot_neg, esik_vol) \
+                if EMILIM_OLCUM_AKTIF else (False, None)
+            skor_girdi['satici_tukenmesi'] = _tuk_var
+            skor_girdi['sonme_orani'] = _sonme
             # A) VERİ KALİTE KAPISI — kotu veriyle skor uretme
             kalite = veri_kalitesi_degerlendir(
                 cvd_kaynak_saglikli=cvd_kaynak_saglikli,
@@ -2773,7 +2977,7 @@ def ozet_ve_analiz_dongusu():
             skor_girdi['supurme_dip_aktif'] = supurme_dip_aktif
             skor_girdi['supurme_tepe_aktif'] = supurme_tepe_aktif
 
-            long_skor, short_skor, sinyal, rejim, aciklama = balina_skoru_hesapla(
+            long_skor, short_skor, sinyal, rejim, aciklama, emilim = balina_skoru_hesapla(
                 skor_girdi, pencere, kalite)
 
             # v5 COOLDOWN: sinyal cikti ama son 30dk icinde zaten sinyal verildiyse
@@ -2930,6 +3134,14 @@ def ozet_ve_analiz_dongusu():
                         "spot_cvd_giris": round(spot_cvd, 1),
                         "oi_giris": round(open_interest, 0),
                         "tasfiye_yonu": tasfiye_yonu,   # v7.3.1: hangi taraf flush oldu
+                        # v7.4: EMILIM AYRIMI — SUREKLI degerler (yeni hucre ACMA, §6).
+                        # None olabilir (akis yok); post-hoc dilimleme icin ham saklanir.
+                        "emilim_esnekligi": emilim['emilim_esnekligi'],
+                        "emilim_borsasi": emilim['emilim_borsasi'],
+                        "emilim_spot_pay": emilim['emilim_spot_pay'],
+                        "satici_tukenmesi": emilim['satici_tukenmesi'],
+                        "sonme_orani": emilim['sonme_orani'],
+                        "esik_spot_neg": emilim['esik_spot_neg'],
                     }
                     if supurme_yeni_onaylar:
                         for yon_o, o in supurme_yeni_onaylar:
