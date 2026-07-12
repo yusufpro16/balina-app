@@ -176,7 +176,55 @@ class CanliDurum:
         self.bv_dislanan_tur = 0         # kac turda en az 1 borsa dislandi
         self.son_ve_red = ""             # son VE-kapisi red sebebi (DB'ye yazilir)
 
+        # ============ v7.3: TASFIYE AYRIMI + SUPURME ============
+        # Tick fiyat hafizasi: dakikalik ornekleme 1-dk'dan kisa fitili KACIRIR.
+        # aggTrade zaten akiyor; (ts_ms, fiyat) tutup gercek fitil dibini okuruz.
+        self.tick_fiyat_gecmisi = deque()   # 15dk pencere, aggTrade fiyatlari
+        # Adaptif birimler (adaptif_esik_guncelle uretir):
+        self.esik_volatilite = 0.0          # medyan |5dk fiyat degisimi %| (0=henuz yok)
+        self.esik_lik_long_medyan = 0.0     # agg_long_liq'in SIFIR-OLMAYAN medyani
+        self.esik_lik_short_medyan = 0.0    # agg_short_liq'in SIFIR-OLMAYAN medyani
+        # Likidite seviyeleri (24s swing dip/tepe; adaptif dongu uretir):
+        self.likidite_dipler = []           # [{'fiyat','test','yas_dk'},...]
+        self.likidite_tepeler = []
+        # Supurme durum makinesi: {seviye_fiyat: {...durum...}} (SupurmeTakipci yonetir)
+        self.supurme_dip_durumlari = {}
+        self.supurme_tepe_durumlari = {}
+        # Kohort tekrar-yazim korumasi (rising-edge):
+        self.son_tasfiye_kohort_ts = {"LONG": 0.0, "SHORT": 0.0}
+        # Kohort bekleyen-olay tamponu: Supabase gecici hatasi (503/timeout)
+        # ONAYLI'ya gecmis nadir olayi DUSUREMEZ — tampon sonraki turda yeniden
+        # denenir, yalnizca dogrulanmis yazimda temizlenir. (ozet thread'ine ozel)
+        self.kohort_bekleyen = []
+
         self.son_guncelleme = time.time()
+
+    def tick_min(self, gecmis_sn):
+        """Son gecmis_sn saniyedeki GERCEK en dusuk islem fiyati (fitil dibi).
+        Dakikalik ornekleme fitili kacirir; bu fonksiyon kacirmaz.
+        Sagdan tarar, kesimde durur: 15dk'lik deque'i kilit altinda bastan sona
+        suzmek WS handler'larini gereksiz bekletirdi."""
+        kesim_ms = (time.time() - gecmis_sn) * 1000
+        en = 0.0
+        with self.lock:
+            for t, f in reversed(self.tick_fiyat_gecmisi):
+                if t < kesim_ms:
+                    break
+                if f > 0 and (en == 0.0 or f < en):
+                    en = f
+        return en
+
+    def tick_max(self, gecmis_sn):
+        """Son gecmis_sn saniyedeki GERCEK en yuksek islem fiyati (fitil tepesi)."""
+        kesim_ms = (time.time() - gecmis_sn) * 1000
+        en = 0.0
+        with self.lock:
+            for t, f in reversed(self.tick_fiyat_gecmisi):
+                if t < kesim_ms:
+                    break
+                if f > en:
+                    en = f
+        return en
 
 durum = CanliDurum()
 
@@ -227,6 +275,51 @@ HEDEF_DUVAR_ESIGI_USDT = 10_000_000.0
 # YAPISAL bariyeri ([%0.10, %0.30) bandındaki ciddi duvar) arar ve onu bulursa
 # bloklar. HEDEF_YAKIN_BOLGE_PCT < MALIYET_CITASI_PCT olmalı, yoksa kapı hiç bloklamaz.
 HEDEF_YAKIN_BOLGE_PCT = 0.10
+
+# ================== v7.3 — TASFIYE AYRIMI + SUPURME ==================
+# HICBIR ESIK MUTLAK SAYI DEGILDIR. Hepsi adaptif birimlerin katsayisidir.
+# Katsayilar ilk tahmindir; FAZ 1 kohortu bunlari kalibre edecek.
+#
+# BILINEN RISKLER (spec §10 — silme):
+# 1) Geriye-donuk onyargi: mekanizma tek dogrulanmis vakadan (1 Tem 2026) fark
+#    edildi. Faz 1'in amaci bu onyargiyi kirmak. Kohort negatif -> kalip COPE.
+# 2) Yanlis-pozitif tabani bilinmiyor: her gercek KIRILMA da "delme" ile baslar;
+#    diken carpani (2.5x) tahmindir. Ham metrikler bu yuzden kohorta yazilir.
+# 3) Ornekleme kaybi: dakikalik dongu saniyelik fitili kacirir -> tick_min/tick_max
+#    (asagida) gercek fitil dibini tutar. Atlanirsa kohort YANLI olur.
+# 4) Tek borsa fitili spoof olabilir -> aktif_borsa ham metriklere yazilir.
+# 5) COZUNURLUK TUZAGI: spot CVD 15dk grafikte diple cakisik gorunur, 5dk'da
+#    10 SAAT gecikmeli cikti. Spot/OI bu yuzden GIRIS kapisi DEGIL, gecikmeli
+#    olcumdur (kohortta izlenir).
+# 6) OI dususunun iki anlami: fitildeki DIKEY dusus = tasfiyenin kendisi
+#    (mekanik, girise dahil); sonraki saatlerin YAVAS erimesi = tuzaktaki
+#    short'larin kapanmasi (yakit, gecikmeli olcum). Karistirilmaz.
+TASFIYE_AYRIMI_AKTIF = False      # FAZ 1: KAPALI. Sinyal davranisi BIREBIR ayni.
+SUPURME_TESPIT_AKTIF = True       # tespit + kayit acik (davranis degistirmez)
+
+# --- A) TASFIYE AYRIMI ---
+TASFIYE_DIKEN_CARPANI = 2.5       # yon-bazli likidasyon >= kendi medyaninin 2.5 kati -> DIKEN
+TASFIYE_OI_MIN_PCT = 0.05         # ayni pencerede OI en az bu kadar dusmus olmali (veto esigiyle ayni)
+
+# --- B) SUPURME YAPISI (mesafeler esik_volatilite'nin KATI) ---
+SEVIYE_LOOKBACK_DK = 1440         # seviye aramasi: son 24 saat
+SEVIYE_KORUMA_DK = 60             # son 60dk'da olusan dip/tepe likidite HAVUZU DEGILDIR
+SEVIYE_KUMELEME_VOL = 1.0         # 1 x volatilite icindeki pivotlar ayni seviye
+SEVIYE_PIVOT_PENCERE_DK = 15      # pivot tespiti icin +/- pencere
+
+SUPURME_YAKINLIK_VOL = 2.0        # fiyat seviyeye 2 x vol yaklasinca "silahlan"
+SUPURME_MIN_DELME_VOL = 0.3       # fitil en az 0.3 x vol kadar otesine gecmeli
+SUPURME_MAX_DELME_VOL = 8.0       # bundan derin = KIRILMA, supurme degil
+SUPURME_GERI_ALIM_MAX_DK = 15     # fitil sonrasi geri alim icin azami sure
+SUPURME_GECERLILIK_DK = 30        # geri alimdan sonra kurulum bu kadar "taze"
+SUPURME_COOLDOWN_DK = 60          # ayni seviye icin tekrar tetiklenme yasagi
+
+# --- KAPITULASYON (zaten adaptif: esik_c_neg'in kati) ---
+KAPITULASYON_CARPANI = 1.5        # d_vadeli <= esik_c_neg * 1.5 (tepe icin simetrik)
+
+# --- KOHORT (olcum) ---
+KOHORT_KUME_DK = 30               # ayni yonde <=30dk arayla gelen olaylar ayni kume
+KOHORT_AZAMI_KAYIT = 500          # balina_ayarlar JSONB sisirilmesin
 # VE-KAPISI minimum eşikleri: herhangi biri altında kalırsa sinyal YOK
 # (ortalama/telafi yok — zayıf katman güçlülerle örtülemez)
 VE_ISLEM_MIN = 0.45       # işlem yoğunluğu (katman 2) en az bu kadar güçlü olmalı
@@ -510,14 +603,18 @@ def _ayarlar_oku(anahtar):
 
 
 def _ayarlar_yaz(anahtar, deger):
+    """v7.3: basari durumunu dondurur — kohort tamponu 'yazim dogrulandi mi'
+    bilgisine muhtac (sessiz yutma, onaylanmis supurme olayini kaybettirirdi)."""
     try:
         supabase.table("balina_ayarlar").upsert({
             "anahtar": anahtar,
             "deger": deger,
             "guncellenme_zamani": datetime.datetime.utcnow().isoformat()
         }).execute()
+        return True
     except Exception as e:
         logging.warning(f"Ayarlar yazma hatasi ({anahtar}): {e}")
+        return False
 
 
 def coinalyze_sembolleri_getir(session, headers, anahtar, kesif_fn, varsayilan, onbellek_saat=24):
@@ -902,6 +999,11 @@ def on_message(ws, message):
                 sinir = simdi_ms - 15 * 60 * 1000
                 while durum.trade_gecmisi and durum.trade_gecmisi[0][0] < sinir:
                     durum.trade_gecmisi.popleft()
+                # v7.3: gercek fitil takibi — dakikalik ornekleme 1-dk'dan kisa
+                # fitili kacirir; tick fiyatlari tick_min/tick_max icin saklanir.
+                durum.tick_fiyat_gecmisi.append((simdi_ms, fiyat))
+                while durum.tick_fiyat_gecmisi and durum.tick_fiyat_gecmisi[0][0] < sinir:
+                    durum.tick_fiyat_gecmisi.popleft()
 
         elif 'bookTicker' in stream:
             # FIX5: bookTicker SADECE fiyat icin. Eskiden buradaki tick-rule proxy'si
@@ -970,9 +1072,13 @@ def on_liq_message(ws, message):
         usdt = fiyat * miktar
         if usdt <= 0:
             return
+        # v7.3: YON — forceOrder'da S="SELL" ise bir LONG zorla satiliyor (dip
+        # tasfiyesi), S="BUY" ise bir SHORT zorla aliniyor (tepe tasfiyesi).
+        # Deque salt-yazilirdi; uclu tuple'a gecis hicbir okuyucuyu bozmaz.
+        yon = 'LONG' if str(o.get('S', '')).upper() == 'SELL' else 'SHORT'
         simdi_ms = int(time.time() * 1000)
         with durum.lock:
-            durum.likidasyonlar.append((simdi_ms, usdt))
+            durum.likidasyonlar.append((simdi_ms, usdt, yon))
             sinir = simdi_ms - 5 * 60 * 1000
             while durum.likidasyonlar and durum.likidasyonlar[0][0] < sinir:
                 durum.likidasyonlar.popleft()
@@ -1137,6 +1243,111 @@ def _cvd_delta_serisi(zaman_cvd, pencere_sn):
     return deltalar
 
 
+def _fiyat_pct_serisi(zaman_fiyat, pencere_sn):
+    """v7.3 — fiyat SEVIYE serisinden 5-dk yuzde-degisim serisi. _cvd_delta_serisi
+    ile ayni eslestirme ([150, 2.5x] boslugu korumali); cikti: [|%degisim|, ...].
+    esik_volatilite bu dagilimin MEDYANIDIR — tum yapisal esikler bunun katsayisi."""
+    seri = sorted(zaman_fiyat, key=lambda x: x[0])
+    n = len(seri)
+    out = []
+    j = 0
+    ust_sinir = pencere_sn * 2.5
+    for i in range(n):
+        ti, fi = seri[i]
+        hedef = ti - pencere_sn
+        while j + 1 < n and seri[j + 1][0] <= hedef:
+            j += 1
+        tj, fj = seri[j]
+        gap = ti - tj
+        if tj < ti and 150 <= gap <= ust_sinir and fj > 0 and fi > 0:
+            out.append(abs(fi / fj - 1.0) * 100.0)
+    return out
+
+
+def _likidite_seviyeleri_bul(zaman_fiyat, vol_pct, tepe_mi=False):
+    """
+    v7.3 — LIKIDITE HAVUZU tespiti: stop'larin biriktigi ESKI swing dip/tepe.
+
+    Neden basit rolling-min degil: 2 dk once olusan dip likidite havuzu DEGILDIR —
+    kimsenin stop'u orada birikmedi. Havuz olmasi icin seviye (a) yeterince eski
+    (SEVIYE_KORUMA_DK disari), (b) pivot (yerel ekstrem) olmali.
+
+    zaman_fiyat: [(epoch, fiyat), ...] (sirasiz olabilir; icerde siralanir)
+    vol_pct: esik_volatilite (%). 0/None -> bos liste (tespit yapilmaz).
+    Donus: [{'fiyat','test','yas_dk'}, ...] — test = kumede kac pivot birlesti.
+    """
+    if not vol_pct or vol_pct <= 0:
+        return []
+    simdi = time.time()
+    lookback = simdi - SEVIYE_LOOKBACK_DK * 60
+    koruma = simdi - SEVIYE_KORUMA_DK * 60
+    seri = sorted(((t, f) for t, f in zaman_fiyat
+                   if f and f > 0 and lookback <= t <= koruma),
+                  key=lambda x: x[0])
+    if len(seri) < 60:
+        return []
+    pen = SEVIYE_PIVOT_PENCERE_DK * 60
+    # Kapsama esigi: ±pencerede ~60sn kadansla beklenen ornek sayisinin %80'i.
+    # Ic bosluk kontrolu tek basina YETMEZ: pencere SINIRINI asan bir kesinti
+    # (orn. dususe girip 40dk sonra yukarida acilan bot) ic-aralik birakmaz ama
+    # kesinti sirasindaki fiyat bilinmez -> son ornek sahte "dip seviye" olurdu.
+    min_kapsama = max(5, int((2 * pen / 60) * 0.8))
+    pivotlar = []
+    for i, (ti, fi) in enumerate(seri):
+        # +/- pencere icindeki komsular; veri boslugu (>5dk ardisik aralik) pivot
+        # penceresini gecersiz kilar (kesinti sirasinda "yerel ekstrem" yanilticidir)
+        komsu = []
+        bosluk = False
+        onceki_t = None
+        for tj, fj in seri:
+            if tj > ti + pen:
+                break              # seri zaman-sirali: pencere sonrasini tarama
+            if abs(tj - ti) <= pen:
+                if onceki_t is not None and (tj - onceki_t) > 300:
+                    bosluk = True
+                    break
+                komsu.append(fj)
+                onceki_t = tj
+        if bosluk or len(komsu) < min_kapsama:
+            continue
+        ekstrem = max(komsu) if tepe_mi else min(komsu)
+        if fi == ekstrem:
+            pivotlar.append((ti, fi))
+    if not pivotlar:
+        return []
+    # Kumeleme: SEVIYE_KUMELEME_VOL x vol icindeki pivotlar tek seviye (medyan).
+    pivotlar.sort(key=lambda x: x[1])
+    kumeler = []
+    aktif = [pivotlar[0]]
+    for p in pivotlar[1:]:
+        merkez = aktif[0][1]
+        if merkez > 0 and abs(p[1] - merkez) / merkez * 100 <= SEVIYE_KUMELEME_VOL * vol_pct:
+            aktif.append(p)
+        else:
+            kumeler.append(aktif)
+            aktif = [p]
+    kumeler.append(aktif)
+    out = []
+    for k in kumeler:
+        fiyatlar = sorted(f for _, f in k)
+        medyan_f = fiyatlar[len(fiyatlar) // 2]
+        en_eski = min(t for t, _ in k)
+        out.append({'fiyat': round(medyan_f, 1), 'test': len(k),
+                    'yas_dk': round((simdi - en_eski) / 60.0, 0)})
+    return out
+
+
+def likidasyon_yogunlugu(agg_hacim, esik_medyan):
+    """v7.3 — yon-bazli likidasyon hacminin kendi adaptif medyanina orani.
+    >= TASFIYE_DIKEN_CARPANI ise DIKEN (zorla kapatma oldu). Birimler tutarli:
+    pay Coinalyze 5dk penceresi (agg_liq_long/short), payda ayni kolonlarin
+    7 gunluk SIFIR-OLMAYAN medyani. (Spec'in duz medyani sifir-agirlikli
+    kolonda 1.0'a tabanlanir ve HER dakikayi diken yapardi — duzeltildi.)"""
+    if not esik_medyan or esik_medyan <= 0:
+        return 0.0
+    return (agg_hacim or 0.0) / esik_medyan
+
+
 def adaptif_esik_guncelle():
     time.sleep(30)
     while True:
@@ -1145,8 +1356,11 @@ def adaptif_esik_guncelle():
             yedi_gun_once = datetime.datetime.utcnow() - datetime.timedelta(days=7)
             bir_gun_once = datetime.datetime.utcnow() - datetime.timedelta(days=1)
 
+            # v7.3: anlik_fiyat (volatilite birimi + seviye tespiti) ve yon-bazli
+            # likidasyon kolonlari EKLENDI (sorgu zaten atiliyor — ek REST yok).
             res = (supabase.table("balina_avcisi_data")
-                   .select("kayit_zamani,order_book_depth_bid_1pct,liquidation_pool_volume,vadeli_cvd")
+                   .select("kayit_zamani,anlik_fiyat,order_book_depth_bid_1pct,"
+                           "liquidation_pool_volume,vadeli_cvd,agg_long_liq,agg_short_liq")
                    .gte("kayit_zamani", yedi_gun_once.isoformat())
                    .order("kayit_zamani", desc=True)
                    .limit(20000)
@@ -1161,7 +1375,9 @@ def adaptif_esik_guncelle():
             bir_gun_iso = bir_gun_once.isoformat()
             kisa_derinlik, uzun_derinlik = [], []
             kisa_likid, uzun_likid = [], []
-            cvd_seri = []   # FIX1: (epoch, vadeli_cvd SEVIYE) — delta buradan turetilir
+            cvd_seri = []    # FIX1: (epoch, vadeli_cvd SEVIYE) — delta buradan turetilir
+            fiyat_seri = []  # v7.3: (epoch, fiyat) — volatilite birimi + seviye tespiti
+            lik_long_nz, lik_short_nz = [], []   # v7.3: yon-bazli SIFIR-OLMAYAN likidasyonlar
 
             for v in veriler:
                 d = v.get('order_book_depth_bid_1pct')
@@ -1177,13 +1393,27 @@ def adaptif_esik_guncelle():
                     uzun_likid.append(float(l))
                     if kisa_mi:
                         kisa_likid.append(float(l))
-                if c is not None and t:
-                    try:
+                # Satir-bazli try: tek bozuk satir TUM kalibrasyon turunu oldurmesin
+                # (float() donusumleri disarida kalsaydi dis except'e duserdi).
+                try:
+                    ep = None
+                    if t:
                         ep = datetime.datetime.fromisoformat(
                             t.replace('Z', '+00:00')).timestamp()
-                        cvd_seri.append((ep, float(c)))
-                    except Exception:
-                        pass
+                    if ep is not None:
+                        if c is not None:
+                            cvd_seri.append((ep, float(c)))
+                        f = v.get('anlik_fiyat')
+                        if f is not None and float(f) > 0:
+                            fiyat_seri.append((ep, float(f)))
+                    ll = float(v.get('agg_long_liq') or 0)
+                    ls_ = float(v.get('agg_short_liq') or 0)
+                    if ll > 0:
+                        lik_long_nz.append(ll)
+                    if ls_ > 0:
+                        lik_short_nz.append(ls_)
+                except Exception:
+                    continue
 
             kisa_derinlik = _aykiri_degerleri_temizle(kisa_derinlik)
             uzun_derinlik = _aykiri_degerleri_temizle(uzun_derinlik)
@@ -1228,6 +1458,24 @@ def adaptif_esik_guncelle():
                     f"Adaptif CVD esigi guncellenmedi: yetersiz delta ornegi "
                     f"({len(cvd_deltalar)}<{MIN_KAYIT_ADAPTIF}); eski/varsayilan korunuyor.")
 
+            # ============ v7.3: YENI ADAPTIF BIRIMLER + LIKIDITE SEVIYELERI ============
+            # VOLATILITE BIRIMI: 5dk fiyat degisimlerinin medyan mutlak %'si.
+            # Tum yapisal esikler (delme/yakinlik/kumeleme) bunun KATSAYISIDIR —
+            # sabit yuzde sistemi tek volatilite rejimine hapsederdi.
+            fiyat_pctler = _fiyat_pct_serisi(fiyat_seri, PENCERE_DK * 60)
+            yeni_vol = None
+            if len(fiyat_pctler) >= MIN_KAYIT_ADAPTIF:
+                yeni_vol = max(_yuzdelik(sorted(fiyat_pctler), 0.50) or 0.0, 0.02)
+            # LIKIDASYON TABANI: yon-bazli, SIFIR-OLMAYAN medyan (diken referansi).
+            yeni_lik_long = _yuzdelik(sorted(lik_long_nz), 0.50) if len(lik_long_nz) >= 20 else None
+            yeni_lik_short = _yuzdelik(sorted(lik_short_nz), 0.50) if len(lik_short_nz) >= 20 else None
+            # LIKIDITE SEVIYELERI: 24s swing dip/tepe (60dk koruma, vol-kumeleme).
+            vol_seviye = yeni_vol if yeni_vol else durum.esik_volatilite
+            yeni_dipler = _likidite_seviyeleri_bul(fiyat_seri, vol_seviye, tepe_mi=False) \
+                if SUPURME_TESPIT_AKTIF else []
+            yeni_tepeler = _likidite_seviyeleri_bul(fiyat_seri, vol_seviye, tepe_mi=True) \
+                if SUPURME_TESPIT_AKTIF else []
+
             with durum.lock:
                 if yeni_derinlik and yeni_derinlik > 0:
                     durum.esik_derinlik = yeni_derinlik
@@ -1237,6 +1485,14 @@ def adaptif_esik_guncelle():
                     durum.esik_cvd_negatif = yeni_cvd_neg
                 if yeni_cvd_poz is not None and yeni_cvd_poz > 0:
                     durum.esik_cvd_pozitif = yeni_cvd_poz
+                if yeni_vol is not None:
+                    durum.esik_volatilite = yeni_vol
+                if yeni_lik_long is not None and yeni_lik_long > 0:
+                    durum.esik_lik_long_medyan = max(yeni_lik_long, 1.0)
+                if yeni_lik_short is not None and yeni_lik_short > 0:
+                    durum.esik_lik_short_medyan = max(yeni_lik_short, 1.0)
+                durum.likidite_dipler = yeni_dipler
+                durum.likidite_tepeler = yeni_tepeler
                 durum.esik_guncelleme_zamani = simdi
                 durum.esik_veri_sayisi = len(veriler)
 
@@ -1245,7 +1501,10 @@ def adaptif_esik_guncelle():
                 f"{len(cvd_deltalar)} CVD-delta) -> "
                 f"Derinlik: ${durum.esik_derinlik:,.0f} | Likid: ${durum.esik_likidasyon:,.0f} | "
                 f"CVD-satis(dP10): {durum.esik_cvd_negatif:,.0f} | "
-                f"CVD-alis(dP90): {durum.esik_cvd_pozitif:,.0f}"
+                f"CVD-alis(dP90): {durum.esik_cvd_pozitif:,.0f} | "
+                f"Vol5dk: %{durum.esik_volatilite:.3f} | "
+                f"LikMedyan L/S: ${durum.esik_lik_long_medyan:,.0f}/${durum.esik_lik_short_medyan:,.0f} | "
+                f"Seviye: {len(yeni_dipler)} dip, {len(yeni_tepeler)} tepe"
             )
         except Exception as e:
             logging.warning(f"Adaptif esik hesaplama hatasi: {e}")
@@ -1336,6 +1595,165 @@ def veri_kalitesi_degerlendir(cvd_kaynak_saglikli, open_interest, anlik_fiyat,
     return {"cvd_guvenilir": True, "sebep": "OK"}
 
 
+# =========================================================================
+# v7.3 — SÜPÜRME DURUM MAKİNESİ
+# =========================================================================
+# Supurme bir anlik fotograf degil, zaman icinde gerceklesen bir OLAYDIR:
+# fiyat bilinen bir likidite havuzuna yaklasir (SILAHLI), fitille deler
+# (DELINDI), stop kaskadi + kapitulasyonla birlikte GERI ALINIRSA (ONAYLI)
+# kurulum olusur. Cok derin delme = KIRILMA (OLU); geri alinmayan fitil de OLU.
+# FAZ 1: makine sadece TESPIT eder ve kohorta yazar — skora dokunmaz.
+def supurme_takip_et(durumlar, seviyeler, tepe_mi, anlik_fiyat, fitil_uc,
+                     vol_pct, kapitulasyon_var, tasfiye_var, simdi):
+    """
+    durumlar: {seviye_key: durum_dict} (ozet thread'ine ozel; yerinde guncellenir)
+    seviyeler: [{'fiyat','test','yas_dk'},...] (adaptif donguden)
+    fitil_uc: dip icin tick_min(60), tepe icin tick_max(60) — GERCEK fitil
+    Donus: (aktif_onayli_detay_veya_None, yeni_onaylananlar_listesi)
+    Cagiran, kalite kapisi/veri eksikligi durumunda HIC cagirmamali
+    (spec: gecis yapilmaz, mevcut durumlar korunur).
+    """
+    yeni_onaylar = []
+    if not vol_pct or vol_pct <= 0 or anlik_fiyat <= 0:
+        return None, yeni_onaylar
+    v = vol_pct / 100.0
+    _ILERI_SIRA = {'BEKLEME': 0, 'SILAHLI': 1, 'DELINDI': 2, 'ONAYLI': 3, 'OLU': 3}
+
+    # Seviye eslestirme: adaptif yenilemede kume medyani hafif kayar; mevcut
+    # durumu 1 x vol icindeki yeni seviyeye TASI ve YENIDEN ANAHTARLA.
+    # (Onceki surum d['seviye']'yi guncelleyip anahtari eski birakiyordu ->
+    # durum yetim kaliyor, ayni seviyeye taze BEKLEME ikizi dogup izlenen
+    # supurme unutuluyordu; donmus SILAHLI yetimi taze_satis sayacini
+    # sonsuza dek zehirliyordu. Dogrulayici simulasyonla kanitladi.)
+    mevcut_keyler = {round(s['fiyat']) for s in seviyeler}
+    for key in list(durumlar.keys()):
+        d = durumlar.get(key)
+        if d is None or key in mevcut_keyler and round(d['seviye']) == key:
+            continue
+        es = next((s['fiyat'] for s in seviyeler
+                   if d['seviye'] > 0 and abs(s['fiyat'] - d['seviye']) / d['seviye']
+                   <= SEVIYE_KUMELEME_VOL * v), None)
+        if es is not None:
+            yeni_key = round(es)
+            d['seviye'] = es
+            if yeni_key != key:
+                mevcut = durumlar.get(yeni_key)
+                # Cakismada ILERI durum kazanir (DELINDI, taze BEKLEME'ye ezdirilmez)
+                if mevcut is None or _ILERI_SIRA[d['durum']] >= _ILERI_SIRA[mevcut['durum']]:
+                    durumlar[yeni_key] = d
+                del durumlar[key]
+        elif d['durum'] not in ('ONAYLI', 'OLU'):
+            del durumlar[key]   # seviye kayboldu, kurulum yokken durum da gitsin
+    # Yetim temizligi: anahtar mevcut seviyelerden turetilemiyorsa ve kurulum/
+    # cooldown penceresi de bittiyse at (sonsuz 'SILAHLI' zombisi kalmasin).
+    for key in list(durumlar.keys()):
+        d = durumlar[key]
+        if key in mevcut_keyler:
+            continue
+        if d['durum'] in ('ONAYLI', 'OLU'):
+            son_ts = max(d.get('onay_ts', 0), d.get('olu_ts', 0))
+            if simdi - son_ts <= SUPURME_COOLDOWN_DK * 60:
+                continue
+        del durumlar[key]
+
+    for s in seviyeler:
+        key = round(s['fiyat'])
+        if key not in durumlar:
+            durumlar[key] = {'seviye': s['fiyat'], 'test': s['test'],
+                             'durum': 'BEKLEME', 'fitil_uc': 0.0,
+                             'delinme_ts': 0.0, 'onay_ts': 0.0, 'olu_ts': 0.0,
+                             'kap_ts': 0.0, 'tas_ts': 0.0}
+        d = durumlar[key]
+        d['test'] = s['test']
+        sev = d['seviye']
+        if sev <= 0:
+            continue
+
+        # yon-bagimli yardimcilar (dip: asagi delme; tepe: yukari delme)
+        if tepe_mi:
+            yakin = anlik_fiyat >= sev * (1 - SUPURME_YAKINLIK_VOL * v)
+            delindi = fitil_uc > 0 and fitil_uc > sev * (1 + SUPURME_MIN_DELME_VOL * v)
+            delme_pct = ((fitil_uc / sev) - 1.0) * 100.0 if fitil_uc > 0 else 0.0
+            geri_alim = anlik_fiyat <= sev
+        else:
+            yakin = anlik_fiyat <= sev * (1 + SUPURME_YAKINLIK_VOL * v)
+            delindi = fitil_uc > 0 and fitil_uc < sev * (1 - SUPURME_MIN_DELME_VOL * v)
+            delme_pct = (1.0 - (fitil_uc / sev)) * 100.0 if fitil_uc > 0 else 0.0
+            geri_alim = anlik_fiyat >= sev
+
+        st = d['durum']
+        if st == 'OLU':
+            if simdi - d['olu_ts'] > SUPURME_COOLDOWN_DK * 60:
+                d['durum'] = 'BEKLEME'
+                # yeni dongu temiz baslar: eski fitil/latch'ler tasinmaz
+                d['fitil_uc'] = 0.0; d['delinme_ts'] = 0.0
+                d['kap_ts'] = 0.0; d['tas_ts'] = 0.0
+        elif st == 'ONAYLI':
+            if simdi - d['onay_ts'] > SUPURME_GECERLILIK_DK * 60:
+                d['durum'] = 'OLU'          # gecerlilik bitti -> cooldown'a gec
+                d['olu_ts'] = d['onay_ts']  # cooldown, onaydan itibaren sayilir
+        elif st == 'BEKLEME':
+            if yakin:
+                d['durum'] = 'SILAHLI'
+        elif st == 'SILAHLI':
+            if delindi:
+                d['durum'] = 'DELINDI'
+                d['delinme_ts'] = simdi
+                d['fitil_uc'] = fitil_uc
+                # Teyit LATCH'leri delme aninda baslar (asagida aciklama)
+                if kapitulasyon_var:
+                    d['kap_ts'] = simdi
+                if tasfiye_var:
+                    d['tas_ts'] = simdi
+                # KIRILMA kontrolu ANINDA: 8 x vol'den derin delme supurme degil,
+                # kirilmadir — bir sonraki dakikayi bekleyip DELINDI'de oyalanmaz.
+                if delme_pct > SUPURME_MAX_DELME_VOL * vol_pct:
+                    d['durum'] = 'OLU'; d['olu_ts'] = simdi
+            elif not yakin:
+                d['durum'] = 'BEKLEME'
+        elif st == 'DELINDI':
+            # Teyitler LATCH'lenir: kapitulasyon ve tasfiye dikeni FITILDE gorulur
+            # (spec §1 tablosu), geri alim ise 6-15 dk SONRA gelebilir — o anda
+            # 5-dk pencereler coktan sonmustur. Ayni-dakika kosulu, kanonik
+            # (1 Tem tarzi) supurmeyi SISTEMATIK kacirirdi; latch bunu duzeltir.
+            # Hangi dakikada latch'lendigi kohort ham metriklerine yazilir.
+            if kapitulasyon_var and not d.get('kap_ts'):
+                d['kap_ts'] = simdi
+            if tasfiye_var and not d.get('tas_ts'):
+                d['tas_ts'] = simdi
+            # fitil ucunu guncelle (en asiri nokta)
+            if fitil_uc > 0:
+                d['fitil_uc'] = max(d['fitil_uc'], fitil_uc) if tepe_mi \
+                    else (min(d['fitil_uc'], fitil_uc) if d['fitil_uc'] > 0 else fitil_uc)
+            asiri = ((d['fitil_uc'] / sev - 1.0) if tepe_mi
+                     else (1.0 - d['fitil_uc'] / sev)) * 100.0 if d['fitil_uc'] > 0 else 0.0
+            if asiri > SUPURME_MAX_DELME_VOL * vol_pct:
+                d['durum'] = 'OLU'; d['olu_ts'] = simdi       # KIRILMA, supurme degil
+            elif simdi - d['delinme_ts'] > SUPURME_GERI_ALIM_MAX_DK * 60:
+                d['durum'] = 'OLU'; d['olu_ts'] = simdi       # geri alim gelmedi
+            elif geri_alim and d.get('kap_ts') and d.get('tas_ts'):
+                # ZORUNLU teyitler (spec §7.3): geri alim (kanitin kendisi) +
+                # kapitulasyon (fitilde agresif akis, latch) + tasfiye dikeni
+                # (stoplar GERCEKTEN toplandi, latch). Spot ve OI kapi DEGIL —
+                # 1 Tem kaniti: spot 10 saat gec geldi; kohortta GECIKMELI olculur.
+                d['durum'] = 'ONAYLI'
+                d['onay_ts'] = simdi
+                yeni_onaylar.append({'seviye': sev, 'test': d['test'],
+                                     'fitil_uc': d['fitil_uc'],
+                                     'delme_pct': round(asiri, 4),
+                                     'kap_gecikme_dk': round((d['kap_ts'] - d['delinme_ts']) / 60.0, 1),
+                                     'tas_gecikme_dk': round((d['tas_ts'] - d['delinme_ts']) / 60.0, 1),
+                                     'geri_alim_dk': round((simdi - d['delinme_ts']) / 60.0, 1)})
+
+    # Aktif (gecerli) ONAYLI kurulum var mi? En tazesi doner.
+    aktif = None
+    for d in durumlar.values():
+        if d['durum'] == 'ONAYLI' and (simdi - d['onay_ts']) <= SUPURME_GECERLILIK_DK * 60:
+            if aktif is None or d['onay_ts'] > aktif['onay_ts']:
+                aktif = d
+    return aktif, yeni_onaylar
+
+
 def surec_takip_et(durum_ref, rejim, anlik_fiyat, spot_cvd, vadeli_cvd,
                    bid_d, ask_d, bid_yas, ask_yas, funding, agg_liq_long,
                    agg_liq_short, seri):
@@ -1353,15 +1771,22 @@ def surec_takip_et(durum_ref, rejim, anlik_fiyat, spot_cvd, vadeli_cvd,
     """
     simdi = time.time()
     # Dagitim/toplama "yonlu surec" sayilir; digerleri surec baslatmaz
+    # v7.3: SHORT_TASFIYE = SHORT_SQUEEZE'in, LONG_KAPITULASYON = LONG_TASFIYE'nin
+    # zenginlestirilmis adi. AILE DAVRANISLARI BIREBIR AYNI — degilse Faz 1'in
+    # "davranis degismez" garantisi bozulur (rejim -> surec -> VE-kapisi akisi).
     yonlu = rejim in ("TEPE_DAGITIM", "DIP_TOPLAMA", "SHORT_SQUEEZE", "TAZE_ALIM",
-                      "TAZE_SATIS", "LONG_TASFIYE")
+                      "TAZE_SATIS", "LONG_TASFIYE", "SHORT_TASFIYE", "LONG_KAPITULASYON")
 
     # Surec devami mi, yeni surec mi?
+    _DAGITIM_SETI = {"TEPE_DAGITIM", "SHORT_SQUEEZE", "SHORT_TASFIYE"}
+    _TOPLAMA_SETI = {"DIP_TOPLAMA", "LONG_TASFIYE", "LONG_KAPITULASYON"}
     ayni_aile = {
-        "TEPE_DAGITIM": {"TEPE_DAGITIM", "SHORT_SQUEEZE"},   # dagitim + squeeze = ayni hikaye
-        "SHORT_SQUEEZE": {"TEPE_DAGITIM", "SHORT_SQUEEZE"},
-        "DIP_TOPLAMA": {"DIP_TOPLAMA", "LONG_TASFIYE"},
-        "LONG_TASFIYE": {"DIP_TOPLAMA", "LONG_TASFIYE"},
+        "TEPE_DAGITIM": _DAGITIM_SETI,       # dagitim + squeeze/tasfiye = ayni hikaye
+        "SHORT_SQUEEZE": _DAGITIM_SETI,
+        "SHORT_TASFIYE": _DAGITIM_SETI,      # v7.3: squeeze ile ayni aile
+        "DIP_TOPLAMA": _TOPLAMA_SETI,
+        "LONG_TASFIYE": _TOPLAMA_SETI,
+        "LONG_KAPITULASYON": _TOPLAMA_SETI,  # v7.3: long-tasfiye ile ayni aile
         "TAZE_ALIM": {"TAZE_ALIM"},
         "TAZE_SATIS": {"TAZE_SATIS"},
     }
@@ -1392,7 +1817,8 @@ def surec_takip_et(durum_ref, rejim, anlik_fiyat, spot_cvd, vadeli_cvd,
     # ============ TÜKENME SİNYALLERİ (dagitim/toplama icin) ============
     # Bir surecin BITISI, motorunun tukenmesiyle gelir. 4 klasik imza:
     tukenme_detay = []
-    dagitim_tarafi = durum_ref.surec_rejim in ("TEPE_DAGITIM", "SHORT_SQUEEZE", "TAZE_ALIM")
+    dagitim_tarafi = durum_ref.surec_rejim in ("TEPE_DAGITIM", "SHORT_SQUEEZE",
+                                               "SHORT_TASFIYE", "TAZE_ALIM")  # v7.3: es-aile
 
     # Pencere serisinden son ~20dk egilimleri
     def seri_deger(alan, geri=20):
@@ -1611,18 +2037,56 @@ def balina_skoru_hesapla(a, pencere, kalite):
     #   -> LONG skoru tavanini SINYAL_ESIGI ALTINA cek (65 alti) -> LONG cikmaz.
     # Fiyat asagi + OI asagi = LONG TASFIYE (kirilgan dusus).
     #   -> SHORT skoru tavanini SINYAL_ESIGI altina cek -> SHORT cikmaz.
+    # ===== KATMAN 4 — OI. v7.3: ARTIK IKI SORU SORULUYOR =====
+    # 1) OI artti mi, azaldi mi?  2) Bu degisim ZORLA mi, GONULLU mu?
+    #
+    # Ayni "OI dusuyor" gorunumu, likidasyon dikeniyle ESZAMANLIYSA bambaska
+    # bir sey anlatir: o bir pozisyon KACISI degil, bir TASFIYEDIR.
+    # Tasfiye, sinyalin karsiti degil, sinyalin KENDISI olabilir.
+    #
+    # Kanit (1 Tem 2026): fitil aninda OI 292K->288K DIKEY dustu; ayni anda
+    # grafigin en buyuk likidasyon dikeni vardi. O OI dususu "short'lar
+    # kapaniyor" degildi — zorla kapatilan LONG'lardi. Yakit ise SONRASINDA
+    # geldi (288K->272K, 30 saat). Dikey dusus (mekanik) ile yavas erime
+    # (yakit) AYRI seylerdir; kohort ikisini ayri olcer.
+    tasfiye_long = a.get('tasfiye_long_yogunluk', 0.0) >= TASFIYE_DIKEN_CARPANI
+    tasfiye_short = a.get('tasfiye_short_yogunluk', 0.0) >= TASFIYE_DIKEN_CARPANI
+    oi_dustu = d_oi <= -TASFIYE_OI_MIN_PCT
+    zorla_long_tasfiye = tasfiye_long and oi_dustu     # long'lar ZORLA kapatildi
+    zorla_short_tasfiye = tasfiye_short and oi_dustu   # short'lar ZORLA kapatildi
+
     VETO_TAVANI = SINYAL_ESIGI - 15.0  # 75: veto rejiminde sinyal matematiksel imkansiz
     rejim = "NOTR"
     if d_fiyat > 0.02 and d_oi > 0.05:
         rejim = "TAZE_ALIM"; long_skor *= 1.20      # saglikli -> odul
     elif d_fiyat > 0.02 and d_oi < -0.05:
-        rejim = "SHORT_SQUEEZE"
-        long_skor = min(long_skor, VETO_TAVANI)     # VETO
+        # AYNI DESEN, IKI ZIT ANLAM — tasfiye dikeni ayirt eder.
+        if zorla_short_tasfiye:
+            # Short'lar ZORLA kapatiliyor = zorunlu ALIM = yukselisin motoru.
+            # Bu "yakitsiz squeeze" DEGILDIR.
+            rejim = "SHORT_TASFIYE"
+            if not TASFIYE_AYRIMI_AKTIF:
+                long_skor = min(long_skor, VETO_TAVANI)   # FAZ 1: veto AYNEN durur
+            # FAZ 2: veto kalkar. BONUS YOK — olculmemis varsayim skora gomulmez;
+            # bonus AYRI bir hipotezdir, ayri olculur.
+        else:
+            rejim = "SHORT_SQUEEZE"
+            long_skor = min(long_skor, VETO_TAVANI)       # gonullu cikis: veto DOGRU
     elif d_fiyat < -0.02 and d_oi > 0.05:
         rejim = "TAZE_SATIS"; short_skor *= 1.20
+        # v7.3 NOT: bu bonus, supurme oncesi "surunme" fazinda dibin DIBINDE
+        # short'u odullendiriyor olabilir. FAZ 1'de DOKUNMA; SILAHLI durumdayken
+        # kac kez verildigi kohort sayacina yazilir — FAZ 2'nin ikinci sorusu bu.
     elif d_fiyat < -0.02 and d_oi < -0.05:
-        rejim = "LONG_TASFIYE"
-        short_skor = min(short_skor, VETO_TAVANI)   # VETO
+        if zorla_long_tasfiye:
+            # Long'lar ZORLA kapatiliyor = kapitulasyon = donus adayi.
+            # "Kirilgan dusus" DEGIL, "satici tukendi" olabilir.
+            rejim = "LONG_KAPITULASYON"
+            short_skor = min(short_skor, VETO_TAVANI)   # short'a girme (her iki fazda)
+            # FAZ 2: burada LONG kapisi acilabilir. FAZ 1: sadece etiketle.
+        else:
+            rejim = "LONG_TASFIYE"
+            short_skor = min(short_skor, VETO_TAVANI)   # VETO
 
     long_skor = max(0.0, min(100.0, long_skor))
     short_skor = max(0.0, min(100.0, short_skor))
@@ -1659,7 +2123,10 @@ def balina_skoru_hesapla(a, pencere, kalite):
     # yon serbest kalir (donus artik gercekci).
     surec_rejim = a.get('surec_rejim', 'NOTR')
     surec_tukenme = a.get('surec_tukenme', 0)
-    dagitim_ailesi = surec_rejim in ('TEPE_DAGITIM', 'SHORT_SQUEEZE', 'TAZE_SATIS')
+    # v7.3: SHORT_TASFIYE, SHORT_SQUEEZE'in es-ailesi (davranis birebir ayni olmali).
+    # LONG_KAPITULASYON bilerek YOK: es-ailesi LONG_TASFIYE de hicbir gate ailesinde
+    # degildi — eklemek davranisi DEGISTIRIRDI.
+    dagitim_ailesi = surec_rejim in ('TEPE_DAGITIM', 'SHORT_SQUEEZE', 'SHORT_TASFIYE', 'TAZE_SATIS')
     toplama_ailesi = surec_rejim in ('DIP_TOPLAMA', 'TAZE_ALIM')
     if dagitim_ailesi and surec_tukenme < 3:
         long_ve = False   # dagitim aktifken dususe karsi LONG yok
@@ -1710,6 +2177,244 @@ def balina_skoru_hesapla(a, pencere, kalite):
                 f"duvar={duvar_durum} rejim={rejim}{ve_kapisi_log}")
 
     return long_skor, short_skor, sinyal, rejim, aciklama
+
+
+# =========================================================================
+# v7.3 — TASFIYE KOHORTU YARDIMCILARI
+# =========================================================================
+# Kohort balina_ayarlar['tasfiye_kohortu'] JSONB'sinde yasar (sema degisikligi
+# YOK). Iki thread yazar (ozet: yeni olay; geri_test: getiri backfill) —
+# read-modify-write kayiplarina karsi ayri kilit. durum.lock KULLANILMAZ:
+# ag cagrisi o kilidin altinda WS handler'larini bloklardi.
+_kohort_lock = threading.Lock()
+
+def _tasfiye_kohortuna_ekle(yeni_olaylar):
+    """Basari bool'u dondurur; cagiran (tampon) yalnizca True'da temizler."""
+    try:
+        with _kohort_lock:
+            kayit = _ayarlar_oku("tasfiye_kohortu")
+            veri = (kayit or {}).get('deger') or {}
+            if isinstance(veri, str):
+                try:
+                    veri = json.loads(veri)
+                except Exception:
+                    veri = {}
+            olaylar = veri.get('olaylar', [])
+            olaylar.extend(yeni_olaylar)
+            if len(olaylar) > KOHORT_AZAMI_KAYIT:
+                olaylar = olaylar[-KOHORT_AZAMI_KAYIT:]
+            veri['olaylar'] = olaylar
+            meta = veri.get('meta', {})
+            # max(): restart bellek sayacini sifirlar; kalici deger GERIYE gitmesin
+            meta['taze_satis_silahli_sayac'] = max(
+                int(meta.get('taze_satis_silahli_sayac') or 0),
+                getattr(ozet_ve_analiz_dongusu, '_taze_satis_silahli', 0))
+            meta['guncelleme'] = datetime.datetime.utcnow().isoformat()
+            veri['meta'] = meta
+            return _ayarlar_yaz("tasfiye_kohortu", veri)
+    except Exception as e:
+        logging.warning(f"Tasfiye kohortu yazma hatasi: {e}")
+        return False
+
+
+def _aralik_min_max(zamanli, t0, ufuk_dk):
+    """t0 ile t0+ufuk arasindaki TUM barlarin (min, max, kapanis) fiyati.
+    Ufuk SONU fiyatina bakmak yetmez: islem 60. dakikada +%2'de olabilir ama
+    8. dakikada stop'unu vurmus olabilir — o +%2 HAYALI kardir (spec §8.2)."""
+    hedef = t0 + datetime.timedelta(minutes=ufuk_dk)
+    fiyatlar = []
+    kapanis = None
+    for (t2, s2) in zamanli:
+        if t0 < t2 <= hedef:
+            f = float(s2.get('anlik_fiyat') or 0)
+            if f > 0:
+                fiyatlar.append(f)
+        if t2 >= hedef and kapanis is None:
+            f = float(s2.get('anlik_fiyat') or 0)
+            kapanis = f if f > 0 else None
+    if not fiyatlar:
+        return None, None, kapanis
+    return min(fiyatlar), max(fiyatlar), kapanis
+
+
+def _kohort_ileri_olc(zamanli, simdi, ufuklar, maliyet_pct):
+    """
+    v7.3 — kohortun ileri getirisi + MAE/MFE + stop_vuruldu + gecikmeli teyit.
+    Kumeleme (spec §8.3): ayni yonde <=KOHORT_KUME_DK arayla VEYA ayni seviyeden
+    (±1 x vol) turemis girdiler ayni kume; ozet YALNIZ kume baslarindan.
+    """
+    try:
+        with _kohort_lock:
+            kayit = _ayarlar_oku("tasfiye_kohortu")
+            veri = (kayit or {}).get('deger') or {}
+            if isinstance(veri, str):
+                try:
+                    veri = json.loads(veri)
+                except Exception:
+                    return
+            olaylar = veri.get('olaylar', [])
+            if not olaylar:
+                return
+            degisti = False
+
+            for o in olaylar:
+                try:
+                    t0 = datetime.datetime.fromisoformat(
+                        str(o.get('zaman', '')).replace('Z', '+00:00')).replace(tzinfo=None)
+                except Exception:
+                    continue
+                f0 = float(o.get('giris_fiyati') or 0)
+                if f0 <= 0:
+                    continue
+                yon = 1 if o.get('yon') == 'LONG' else -1
+                stop_ref = float(o.get('stop_ref') or 0)
+
+                for ufuk in ufuklar:
+                    anahtar = f"{ufuk}dk"
+                    if anahtar in (o.get('getiri') or {}):
+                        continue
+                    if anahtar in (o.get('olculemez') or []):
+                        continue
+                    if (simdi - t0).total_seconds() / 60.0 < ufuk:
+                        continue
+                    # Kesinti korumasi: t0, eldeki pencerenin basindan ONCEYSE
+                    # min/max KISMI olur -> MAE kucuk, stop_vuruldu yanlis-negatif
+                    # (tehlikeli yon: kalibi oldugundan GUVENLI gosterir). Olcme,
+                    # kalici olarak 'olculemez' isaretle (sonsuz yeniden tarama da biter).
+                    if zamanli and t0 < zamanli[0][0]:
+                        o.setdefault('olculemez', []).append(anahtar)
+                        degisti = True
+                        continue
+                    mn, mx, kapanis = _aralik_min_max(zamanli, t0, ufuk)
+                    if mn is None or kapanis is None:
+                        continue
+                    getiri = (kapanis / f0 - 1) * 100 * yon
+                    if yon > 0:
+                        mfe = (mx / f0 - 1) * 100
+                        mae = (mn / f0 - 1) * 100
+                        stop_vuruldu = stop_ref > 0 and mn < stop_ref * (1 - 0.05 / 100)
+                    else:
+                        mfe = (f0 - mn) / f0 * 100
+                        mae = (f0 - mx) / f0 * 100
+                        stop_vuruldu = stop_ref > 0 and mx > stop_ref * (1 + 0.05 / 100)
+                    o.setdefault('getiri', {})[anahtar] = round(getiri, 4)
+                    o.setdefault('mae_mfe', {})[anahtar] = {
+                        "mfe": round(mfe, 4), "mae": round(mae, 4),
+                        "stop_vuruldu": bool(stop_vuruldu)}
+                    degisti = True
+
+                # GECIKMELI TEYIT (kapi degil, olcum): spot CVD / OI ne zaman dondu?
+                # Not: bu sorgunun penceresi max(ufuk)+30dk — 720dk'lik tam izleme
+                # yerine pencere iciyle sinirli; null = "pencerede donmedi" bilgisidir.
+                ham = o.get('ham') or {}
+                if o.get('spot_teyit_gecikmesi_dk') is None:
+                    # DIKKAT — COZUNURLUK TUZAGI (spec risk #5): spot_cvd kolonu
+                    # BIRIKIMLI degil, 15-dk KAYAN AKIS toplamidir. Giris anindaki
+                    # asiri-negatif zirveyle kiyaslamak, zirve pencereden cikinca
+                    # ~15dk'da mekanik "dondu" derdi (1 Tem gercegi ~600dk!).
+                    # Durust olcu: akisin kendisi islem yonunde SIFIRI GECTIGI ilk
+                    # bar — "net spot alimi belirdi" (LONG icin sc>0, SHORT sc<0).
+                    for (t2, s2) in zamanli:
+                        if t2 <= t0:
+                            continue
+                        sc = s2.get('spot_cvd')
+                        if sc is None:
+                            continue
+                        dondu = (float(sc) > 0) if yon > 0 else (float(sc) < 0)
+                        if dondu:
+                            o['spot_teyit_gecikmesi_dk'] = round(
+                                (t2 - t0).total_seconds() / 60.0, 1)
+                            degisti = True
+                            break
+                if o.get('oi_erime_gecikmesi_dk') is None and ham.get('oi_giris'):
+                    # OI erimesi = TUZAKTAKI pozisyonlarin kapanmasi; OI, islem
+                    # yonunden BAGIMSIZ olarak DUSER (tepe supurmesinde tuzakli
+                    # long'lar kapanir -> OI yine dusmeli). Eski kod SHORT icin
+                    # yukselis bekliyordu — tam tersi (dogrulayici tespiti).
+                    for (t2, s2) in zamanli:
+                        if t2 <= t0:
+                            continue
+                        oi2 = s2.get('open_interest')
+                        if oi2 is None or float(oi2) <= 0:
+                            continue
+                        if float(oi2) < ham['oi_giris']:
+                            o['oi_erime_gecikmesi_dk'] = round(
+                                (t2 - t0).total_seconds() / 60.0, 1)
+                            degisti = True
+                            break
+
+            # ---- KUMELEME + 2x2 OZET (yalniz kume baslarindan) ----
+            sirali = sorted(olaylar, key=lambda x: str(x.get('zaman', '')))
+            for i, o in enumerate(sirali):
+                kume_ici = False
+                try:
+                    ti = datetime.datetime.fromisoformat(
+                        str(o['zaman']).replace('Z', '+00:00')).replace(tzinfo=None)
+                except Exception:
+                    o['kume_ici'] = False
+                    continue
+                vol_i = (o.get('ham') or {}).get('esik_volatilite') or 0.0
+                for p in sirali[:i]:
+                    try:
+                        tp = datetime.datetime.fromisoformat(
+                            str(p['zaman']).replace('Z', '+00:00')).replace(tzinfo=None)
+                    except Exception:
+                        continue
+                    if p.get('yon') == o.get('yon') and \
+                            0 <= (ti - tp).total_seconds() / 60.0 <= KOHORT_KUME_DK:
+                        kume_ici = True
+                        break
+                    # ayni seviyeden tureyen girdiler HER ZAMAN ayni kume
+                    # (restart'ta cooldown kacabilir — spec §8.3)
+                    if o.get('seviye') and p.get('seviye') and vol_i > 0 and \
+                            abs(o['seviye'] - p['seviye']) / o['seviye'] * 100 <= vol_i:
+                        kume_ici = True
+                        break
+                if o.get('kume_ici') != kume_ici:
+                    o['kume_ici'] = kume_ici
+                    degisti = True
+
+            ozet = {}
+            for o in sirali:
+                if o.get('kume_ici'):
+                    continue
+                hucre = (f"tasfiye_{'var' if o.get('tasfiye_var') else 'yok'}"
+                         f"__supurme_{'var' if o.get('supurme_var') else 'yok'}")
+                h = ozet.setdefault(hucre, {"n": 0})
+                h["n"] += 1
+                for anahtar, g in (o.get('getiri') or {}).items():
+                    u = h.setdefault(anahtar, {"n": 0, "dogru": 0, "toplam": 0.0, "stop": 0})
+                    u["n"] += 1
+                    u["toplam"] += g
+                    if g > 0:
+                        u["dogru"] += 1
+                    mm = (o.get('mae_mfe') or {}).get(anahtar) or {}
+                    if mm.get('stop_vuruldu'):
+                        u["stop"] += 1
+            for hucre, h in ozet.items():
+                for anahtar in list(h.keys()):
+                    if anahtar == "n":
+                        continue
+                    u = h[anahtar]
+                    if u["n"]:
+                        ort = u["toplam"] / u["n"]
+                        h[anahtar] = {"n": u["n"],
+                                      "isabet": round(100.0 * u["dogru"] / u["n"], 1),
+                                      "ort_getiri": round(ort, 4),
+                                      "net_getiri": round(ort - maliyet_pct, 4),
+                                      "stop_orani": round(100.0 * u["stop"] / u["n"], 1)}
+            # Yazim amplifikasyonu korumasi: 'ozet dolu' surekli True olur ve her
+            # 180sn'de ~yuzlerce KB'lik ayni JSONB yeniden yazilirdi (hatalar
+            # muzesi #1: API istismari). Yalnizca GERCEK degisimde yaz.
+            if degisti or ozet != (veri.get('ozet_2x2') or {}):
+                veri['olaylar'] = olaylar
+                veri['ozet_2x2'] = ozet
+                veri['guncelleme'] = simdi.isoformat()
+                _ayarlar_yaz("tasfiye_kohortu", veri)
+            return ozet
+    except Exception as e:
+        logging.warning(f"Kohort ileri olcum hatasi: {e}")
+        return None
 
 
 # =========================================================================
@@ -1857,6 +2562,21 @@ def ozet_ve_analiz_dongusu():
                 esik_c_neg = durum.esik_cvd_negatif
                 esik_c_poz = durum.esik_cvd_pozitif
 
+                # v7.3: adaptif birimler + seviyeler + WS yon-bazli likidasyon (ham metrik)
+                esik_vol = durum.esik_volatilite
+                esik_lik_long_med = durum.esik_lik_long_medyan
+                esik_lik_short_med = durum.esik_lik_short_medyan
+                likidite_dipler = list(durum.likidite_dipler)
+                likidite_tepeler = list(durum.likidite_tepeler)
+                # Deque yalniz YAZIMDA budaniyor; sakin piyasada saatlerce yeni
+                # forceOrder gelmez -> okuyucu kendi 5dk filtresini uygulamali,
+                # yoksa ham metrik onlarca dakika bayat kalir.
+                _lik_sinir_ms = (time.time() - 300) * 1000
+                ws_lik_long = sum(u for (t, u, y) in durum.likidasyonlar
+                                  if y == 'LONG' and t >= _lik_sinir_ms)
+                ws_lik_short = sum(u for (t, u, y) in durum.likidasyonlar
+                                   if y == 'SHORT' and t >= _lik_sinir_ms)
+
                 son_guncelleme_gecen = time.time() - durum.son_guncelleme
 
             if agg_oi > 0:
@@ -1951,6 +2671,12 @@ def ozet_ve_analiz_dongusu():
                 'surec_tukenme': durum.surec_tukenme,
                 'en_yakin_ask_fiyat': en_yakin_ask_fiyat,
                 'en_yakin_bid_fiyat': en_yakin_bid_fiyat,
+                # v7.3: TASFIYE AYRIMI girdileri — yon-bazli likidasyonun kendi
+                # adaptif medyanina orani (pay: Coinalyze 5dk, payda: ayni kolonun
+                # 7g sifir-olmayan medyani; birimler tutarli).
+                'tasfiye_long_yogunluk': likidasyon_yogunlugu(agg_liq_long, esik_lik_long_med),
+                'tasfiye_short_yogunluk': likidasyon_yogunlugu(agg_liq_short, esik_lik_short_med),
+                'esik_volatilite': esik_vol,
             }
             # A) VERİ KALİTE KAPISI — kotu veriyle skor uretme
             kalite = veri_kalitesi_degerlendir(
@@ -1960,6 +2686,48 @@ def ozet_ve_analiz_dongusu():
                 son_guncelleme_gecen=son_guncelleme_gecen,
                 funding=funding_rate
             )
+
+            # ---- v7.3: SUPURME DURUM MAKINESI (tespit + kayit; skora dokunmaz) ----
+            # Kalite kapisi kapaliysa veya pencere yoksa HIC calistirilmaz
+            # (spec §7.4: gecis yapilmaz, mevcut durumlar korunur).
+            supurme_dip_aktif = False
+            supurme_tepe_aktif = False
+            supurme_yeni_onaylar = []   # [(yon, detay), ...] — kohort icin
+            if SUPURME_TESPIT_AKTIF and kalite['cvd_guvenilir'] and pencere is not None:
+                d_vadeli_p = pencere['d_vadeli_cvd']
+                kap_dip = d_vadeli_p <= (esik_c_neg * KAPITULASYON_CARPANI)   # agresif satis
+                kap_tepe = d_vadeli_p >= (esik_c_poz * KAPITULASYON_CARPANI)  # agresif alim
+                tl_yog = skor_girdi['tasfiye_long_yogunluk'] >= TASFIYE_DIKEN_CARPANI
+                ts_yog = skor_girdi['tasfiye_short_yogunluk'] >= TASFIYE_DIKEN_CARPANI
+                # Fitil penceresi ARDISIK degerlendirmeleri bosluksuz DOSEMELI:
+                # sabit 60sn, dongu suresi 60sn+govde oldugundan her turda birkac
+                # saniyelik KOR aralik birakir (istisna turunda tam 60sn) -> fitil
+                # kacar, KIRILMA supurme sanilir. Son degerlendirmeden bu yana
+                # gecen sure kullanilir (tampon: +5sn, tavan: deque'in 15dk'si).
+                son_eval = getattr(ozet_ve_analiz_dongusu, '_son_supurme_eval', 0.0)
+                fitil_pencere_sn = min(900, max(60, (simdi_epoch - son_eval) + 5)) \
+                    if son_eval > 0 else 60
+                ozet_ve_analiz_dongusu._son_supurme_eval = simdi_epoch
+                fitil_dip = durum.tick_min(fitil_pencere_sn)
+                fitil_tepe = durum.tick_max(fitil_pencere_sn)
+                akt_d, onay_d = supurme_takip_et(
+                    durum.supurme_dip_durumlari, likidite_dipler, False,
+                    anlik_fiyat, fitil_dip, esik_vol, kap_dip, tl_yog, simdi_epoch)
+                akt_t, onay_t = supurme_takip_et(
+                    durum.supurme_tepe_durumlari, likidite_tepeler, True,
+                    anlik_fiyat, fitil_tepe, esik_vol, kap_tepe, ts_yog, simdi_epoch)
+                supurme_dip_aktif = akt_d is not None
+                supurme_tepe_aktif = akt_t is not None
+                supurme_yeni_onaylar = [('LONG', o) for o in onay_d] + \
+                                       [('SHORT', o) for o in onay_t]
+                for yon_o, o in supurme_yeni_onaylar:
+                    logging.info(
+                        f"SUPURME ONAYLI ({yon_o}) -> seviye ${o['seviye']:,.0f} "
+                        f"(test {o['test']}) | fitil ${o['fitil_uc']:,.0f} | "
+                        f"delme {o['delme_pct']:.3f}% (vol %{esik_vol:.3f})")
+            skor_girdi['supurme_dip_aktif'] = supurme_dip_aktif
+            skor_girdi['supurme_tepe_aktif'] = supurme_tepe_aktif
+
             long_skor, short_skor, sinyal, rejim, aciklama = balina_skoru_hesapla(
                 skor_girdi, pencere, kalite)
 
@@ -2076,7 +2844,112 @@ def ozet_ve_analiz_dongusu():
             }
 
             if anlik_fiyat > 0:
-                supabase.table("balina_avcisi_data").insert(payload).execute()
+                # v7.3: insert kendi try'inda — gecici Supabase hatasi (503/timeout),
+                # ayni dakika ONAYLI'ya gecen supurmenin kohort kaydini KACIRAMAZ
+                # (rising-edge makinede tuketildi; olay bir daha uretilmez).
+                yeni_satir_id = None
+                try:
+                    ins = supabase.table("balina_avcisi_data").insert(payload).execute()
+                    if ins.data:
+                        yeni_satir_id = ins.data[0].get('id')
+                except Exception as e:
+                    logging.warning(f"Veri enjekte hatasi (kohort akisi devam eder): {e}")
+
+                # ---- v7.3: TASFIYE KOHORTU — 2x2 faktoriyel olay kaydi ----
+                # A: rejim SHORT_TASFIYE/LONG_KAPITULASYON (zorla kapatma + OI dususu)
+                # B: taze supurme onayi. Ikisi ayni dakikada catisirsa TEK kayit,
+                # iki bayrakla — iki hafta sonra hangi hucrenin kenar urettigi okunur.
+                tasfiye_a = rejim in ('SHORT_TASFIYE', 'LONG_KAPITULASYON')
+                if kalite['cvd_guvenilir'] and (tasfiye_a or supurme_yeni_onaylar):
+                    olaylar = []
+                    d_oi_k = pencere['d_oi_pct'] if pencere else 0.0
+                    ham = {
+                        "d_vadeli": round(pencere['d_vadeli_cvd'], 1) if pencere else None,
+                        "d_spot": round(pencere['d_spot_cvd'], 1) if pencere else None,
+                        "d_fiyat_pct": round(pencere['d_fiyat_pct'], 4) if pencere else None,
+                        "d_oi_pct": round(d_oi_k, 4),
+                        "esik_c_neg": round(esik_c_neg, 1),
+                        "tasfiye_long_yogunluk": round(skor_girdi['tasfiye_long_yogunluk'], 2),
+                        "tasfiye_short_yogunluk": round(skor_girdi['tasfiye_short_yogunluk'], 2),
+                        "esik_lik_long_medyan": round(esik_lik_long_med, 0),
+                        "esik_lik_short_medyan": round(esik_lik_short_med, 0),
+                        "esik_volatilite": round(esik_vol, 4),
+                        "ws_lik_long_5dk": round(ws_lik_long, 0),
+                        "ws_lik_short_5dk": round(ws_lik_short, 0),
+                        "aktif_borsa": aktif_borsa_sayisi,
+                        "funding": funding_rate,
+                        "spot_cvd_giris": round(spot_cvd, 1),
+                        "oi_giris": round(open_interest, 0),
+                    }
+                    if supurme_yeni_onaylar:
+                        for yon_o, o in supurme_yeni_onaylar:
+                            stop_ref = o['fitil_uc']
+                            olaylar.append({
+                                "id": yeni_satir_id,
+                                "zaman": datetime.datetime.utcnow().isoformat(),
+                                "yon": yon_o, "rejim": rejim,
+                                "tasfiye_var": bool(tasfiye_a),
+                                "supurme_var": True,
+                                "seviye": o['seviye'], "seviye_test_sayisi": o['test'],
+                                "fitil_ucu": o['fitil_uc'],
+                                "delme_vol_kati": round(o['delme_pct'] / esik_vol, 2) if esik_vol else None,
+                                "giris_fiyati": anlik_fiyat, "stop_ref": stop_ref,
+                                "ham": ham,
+                                "spot_teyit_gecikmesi_dk": None,
+                                "oi_erime_gecikmesi_dk": None,
+                                "getiri": {}, "mae_mfe": {},
+                            })
+                    elif tasfiye_a:
+                        # Yon: her iki A-rejimi de LONG lehine (SHORT_TASFIYE = squeeze
+                        # yakiti; LONG_KAPITULASYON = satici tukenmesi/donus adayi).
+                        yon_a = 'LONG'
+                        simdi_cd2 = time.time()
+                        # Kaskad boyunca her dakika yazma (Supabase sisirme); 10dk
+                        # rising-edge — kumeleme ozeti zaten kume basindan okur.
+                        if simdi_cd2 - durum.son_tasfiye_kohort_ts.get(yon_a, 0) >= 600:
+                            durum.son_tasfiye_kohort_ts[yon_a] = simdi_cd2
+                            vol_stop = (esik_vol or 0.02) * 2 / 100.0
+                            stop_ref = anlik_fiyat * (1 - vol_stop) if yon_a == 'LONG' \
+                                else anlik_fiyat * (1 + vol_stop)
+                            olaylar.append({
+                                "id": yeni_satir_id,
+                                "zaman": datetime.datetime.utcnow().isoformat(),
+                                "yon": yon_a, "rejim": rejim,
+                                "tasfiye_var": True, "supurme_var": False,
+                                "seviye": None, "seviye_test_sayisi": None,
+                                "fitil_ucu": None, "delme_vol_kati": None,
+                                "giris_fiyati": anlik_fiyat,
+                                "stop_ref": round(stop_ref, 1),
+                                "ham": ham,
+                                "spot_teyit_gecikmesi_dk": None,
+                                "oi_erime_gecikmesi_dk": None,
+                                "getiri": {}, "mae_mfe": {},
+                            })
+                    if olaylar:
+                        durum.kohort_bekleyen.extend(olaylar)
+                        logging.info(f"TASFIYE KOHORTU -> {len(olaylar)} olay kuyrukta "
+                                     f"(rejim={rejim}, supurme={bool(supurme_yeni_onaylar)})")
+
+                # Tamponu bosalt (yeni olay olmasa da onceki turdan kalan olabilir);
+                # yalnizca DOGRULANMIS yazimda temizle — olay kaybi yasak.
+                if durum.kohort_bekleyen:
+                    if _tasfiye_kohortuna_ekle(list(durum.kohort_bekleyen)):
+                        logging.info(f"TASFIYE KOHORTU -> {len(durum.kohort_bekleyen)} "
+                                     f"olay kalici olarak yazildi.")
+                        durum.kohort_bekleyen = []
+                    else:
+                        logging.warning(f"Kohort yazimi basarisiz; {len(durum.kohort_bekleyen)} "
+                                        f"olay tamponda, sonraki turda yeniden denenecek.")
+
+                # v7.3 (spec §6 notu): TAZE_SATIS bonusu SILAHLI supurme fazinda kac
+                # kez verildi? FAZ 2'nin ikinci sorusu — sayaci kohort meta'ya yaz.
+                if rejim == 'TAZE_SATIS':
+                    silahli_var = any(d.get('durum') in ('SILAHLI', 'DELINDI')
+                                      for d in durum.supurme_dip_durumlari.values())
+                    if silahli_var:
+                        ozet_ve_analiz_dongusu._taze_satis_silahli = \
+                            getattr(ozet_ve_analiz_dongusu, '_taze_satis_silahli', 0) + 1
+
                 surec_log = ""
                 if surec["surec_rejim"] != "NOTR":
                     surec_log = (f" || SÜREÇ: {surec['surec_rejim']} {surec['sure_dk']:.0f}dk "
@@ -2130,8 +3003,11 @@ def geri_test_dongusu():
             simdi = datetime.datetime.utcnow()
             # En uzun ufuk + pay kadar geriye bak
             pencere_bas = (simdi - datetime.timedelta(minutes=max(UFUKLAR) + 30)).isoformat()
+            # v7.3: spot_cvd + open_interest EKLENDI (gecikmeli teyit olcumu icin;
+            # sorgu zaten atiliyor — ek REST yok).
             res = (supabase.table("balina_avcisi_data")
-                   .select("id,kayit_zamani,anlik_fiyat,long_skor,short_skor,is_win,sinyal_durumu")
+                   .select("id,kayit_zamani,anlik_fiyat,long_skor,short_skor,"
+                           "is_win,sinyal_durumu,spot_cvd,open_interest")
                    .gte("kayit_zamani", pencere_bas)
                    .order("kayit_zamani", desc=False)
                    .limit(5000)
@@ -2262,6 +3138,9 @@ def geri_test_dongusu():
             except Exception as e:
                 logging.warning(f"Istatistik yazma hatasi: {e}")
 
+            # ---- v7.3: TASFIYE KOHORTU ILERI OLCUMU (2x2 + MAE/stop) ----
+            kohort_ozet = _kohort_ileri_olc(zamanli, simdi, UFUKLAR, MALIYET_PCT)
+
             # Ozet log (her turda degil, 15 dakikada bir yeter)
             if not hasattr(geri_test_dongusu, "_son_log"):
                 geri_test_dongusu._son_log = 0
@@ -2282,6 +3161,17 @@ def geri_test_dongusu():
                         f"turda borsa dislandi (%{bv_ist['dislanma_orani']}) | "
                         f"suclular: {bv_ist['borsa_sayaclari'] or 'yok'}"
                     )
+                # v7.3: kohort 2x2 ozeti (15dk'da bir)
+                if kohort_ozet:
+                    parcalar2 = []
+                    for hucre, h in kohort_ozet.items():
+                        u = h.get('15dk')
+                        if isinstance(u, dict) and u.get('n'):
+                            parcalar2.append(
+                                f"{hucre}: n={h['n']} 15dk %{u['isabet']} "
+                                f"net {u['net_getiri']:+.3f}% stop %{u['stop_orani']}")
+                    if parcalar2:
+                        logging.info("TASFIYE KOHORTU 2x2 -> " + " | ".join(parcalar2))
 
             if guncellenen > 0:
                 logging.info(f"GERI TEST: {guncellenen} kaydin is_win degeri islendi.")
