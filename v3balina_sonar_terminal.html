@@ -536,7 +536,9 @@ function cooldownDurum(rows){
 function surecKapi(surec,yonLong){
   if(!surec||!surec.rejim||surec.rejim==='NOTR') return {gecti:true};
   const tuk=surec.tukenme||0;
-  const dag=['TEPE_DAGITIM','SHORT_SQUEEZE','TAZE_SATIS'].includes(surec.rejim);
+  // v7.3.1: motorun FAZ-1 kapisiyla birebir (tasfiye rejimleri es-aile;
+  // LONG_KAPITULASYON bilerek yok — motor tarafinda da hicbir gate ailesinde degil)
+  const dag=['TEPE_DAGITIM','SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS','TAZE_SATIS'].includes(surec.rejim);
   const top=['DIP_TOPLAMA','TAZE_ALIM'].includes(surec.rejim);
   if(yonLong && dag && tuk<3) return {gecti:false,neden:`dağıtım sürüyor, tükenme ${tuk}/3`};
   if(!yonLong && top && tuk<3) return {gecti:false,neden:`toplama sürüyor, tükenme ${tuk}/3`};
@@ -672,7 +674,7 @@ function surecPanel(surec,L){
     el.innerHTML='';  // aktif süreç yoksa panel gizli
     return;
   }
-  const dagitim = ['TEPE_DAGITIM','SHORT_SQUEEZE','TAZE_ALIM'].includes(surec.rejim);
+  const dagitim = ['TEPE_DAGITIM','SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS','TAZE_ALIM'].includes(surec.rejim);
   const ad = dagitim?'DAĞITIM SÜRECİ':'TOPLAMA SÜRECİ';
   const renk = dagitim?'var(--alarm)':'var(--sonar)';
   const bg = dagitim?'rgba(255,84,112,.08)':'rgba(47,245,200,.08)';
@@ -982,7 +984,7 @@ function heroBar(L,rows,pencere,rejim,surec){
   const enBid=bids.length?Math.max(...bids.map(b=>b.fiyat)):0;
   const enAsk=asks.length?Math.min(...asks.map(a=>a.fiyat)):0;
   const surecHtml = (surec&&surec.rejim&&surec.rejim!=='NOTR')
-    ? `<div class="hero-item"><span class="hero-lbl">Süreç</span><span class="hero-val" style="color:${['TEPE_DAGITIM','SHORT_SQUEEZE'].includes(surec.rejim)?'var(--alarm)':'var(--sonar)'}">${(surec.rejim||'').replace('_',' ')} ${(surec.sure_dk||0).toFixed(0)}dk · ${surec.tukenme||0}/4</span></div>`
+    ? `<div class="hero-item"><span class="hero-lbl">Süreç</span><span class="hero-val" style="color:${['TEPE_DAGITIM','SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS'].includes(surec.rejim)?'var(--alarm)':'var(--sonar)'}">${(surec.rejim||'').replace('_',' ')} ${(surec.sure_dk||0).toFixed(0)}dk · ${surec.tukenme||0}/4</span></div>`
     : '';
   document.getElementById('heroBar').innerHTML=`
     <div class="hero-item hero-fiyat"><span class="hero-lbl">BTC</span>

@@ -1348,6 +1348,24 @@ def likidasyon_yogunlugu(agg_hacim, esik_medyan):
     return (agg_hacim or 0.0) / esik_medyan
 
 
+def _tasfiye_bayraklari(tasfiye_long_yog, tasfiye_short_yog, d_oi_pct):
+    """
+    v7.3.1 — kohort etiketi REJIM ADINDAN degil HAM OLGUDAN.
+    Dip supurmesinin geri-alim barinda tasfiye edilenler LONG'lardir ama o barin
+    OI-matris rejimi SHORT_SQUEEZE/TASFIYE_SONRASI_DONUS cikar; rejim-adina bagli
+    etiketleme kanonik supurmeyi (1 Tem) 2x2'de YANLIS HUCREYE dusuruyor ve saf
+    tasfiye olaylarini (orta fiyat bandi) tamamen kaciriyordu.
+    Donus: (tasfiye_var, tasfiye_yonu) — yon 'LONG'/'SHORT'/'IKISI'/None.
+    Test edilebilir olsun diye ayri fonksiyon (G1b bunu dogrudan cagirir).
+    """
+    zl = tasfiye_long_yog >= TASFIYE_DIKEN_CARPANI
+    zs = tasfiye_short_yog >= TASFIYE_DIKEN_CARPANI
+    oi_dustu = d_oi_pct <= -TASFIYE_OI_MIN_PCT
+    tasfiye_var = (zl or zs) and oi_dustu
+    yon = ('IKISI' if (zl and zs) else 'LONG' if zl else 'SHORT' if zs else None)
+    return tasfiye_var, yon
+
+
 def adaptif_esik_guncelle():
     time.sleep(30)
     while True:
@@ -1774,16 +1792,23 @@ def surec_takip_et(durum_ref, rejim, anlik_fiyat, spot_cvd, vadeli_cvd,
     # v7.3: SHORT_TASFIYE = SHORT_SQUEEZE'in, LONG_KAPITULASYON = LONG_TASFIYE'nin
     # zenginlestirilmis adi. AILE DAVRANISLARI BIREBIR AYNI — degilse Faz 1'in
     # "davranis degismez" garantisi bozulur (rejim -> surec -> VE-kapisi akisi).
+    # v7.3.1: TASFIYE_SONRASI_DONUS eklendi. DIKKAT — duzeltme talimati yalnizca
+    # _DAGITIM_SETI + dagitim_tarafi diyordu; 'yonlu' ve ayni_aile ANAHTARI
+    # eklenmezse yeni rejim NOTR sayilir, surec sifirlanir ve v7.2'de ayni barin
+    # surec baslattigi durumda davranis SAPARDI (talimatin kendi KABUL #1 ihlali).
     yonlu = rejim in ("TEPE_DAGITIM", "DIP_TOPLAMA", "SHORT_SQUEEZE", "TAZE_ALIM",
-                      "TAZE_SATIS", "LONG_TASFIYE", "SHORT_TASFIYE", "LONG_KAPITULASYON")
+                      "TAZE_SATIS", "LONG_TASFIYE", "SHORT_TASFIYE",
+                      "LONG_KAPITULASYON", "TASFIYE_SONRASI_DONUS")
 
     # Surec devami mi, yeni surec mi?
-    _DAGITIM_SETI = {"TEPE_DAGITIM", "SHORT_SQUEEZE", "SHORT_TASFIYE"}
+    _DAGITIM_SETI = {"TEPE_DAGITIM", "SHORT_SQUEEZE", "SHORT_TASFIYE",
+                     "TASFIYE_SONRASI_DONUS"}
     _TOPLAMA_SETI = {"DIP_TOPLAMA", "LONG_TASFIYE", "LONG_KAPITULASYON"}
     ayni_aile = {
         "TEPE_DAGITIM": _DAGITIM_SETI,       # dagitim + squeeze/tasfiye = ayni hikaye
         "SHORT_SQUEEZE": _DAGITIM_SETI,
         "SHORT_TASFIYE": _DAGITIM_SETI,      # v7.3: squeeze ile ayni aile
+        "TASFIYE_SONRASI_DONUS": _DAGITIM_SETI,  # v7.3.1: squeeze es-ailesi
         "DIP_TOPLAMA": _TOPLAMA_SETI,
         "LONG_TASFIYE": _TOPLAMA_SETI,
         "LONG_KAPITULASYON": _TOPLAMA_SETI,  # v7.3: long-tasfiye ile ayni aile
@@ -1817,8 +1842,13 @@ def surec_takip_et(durum_ref, rejim, anlik_fiyat, spot_cvd, vadeli_cvd,
     # ============ TÜKENME SİNYALLERİ (dagitim/toplama icin) ============
     # Bir surecin BITISI, motorunun tukenmesiyle gelir. 4 klasik imza:
     tukenme_detay = []
-    dagitim_tarafi = durum_ref.surec_rejim in ("TEPE_DAGITIM", "SHORT_SQUEEZE",
-                                               "SHORT_TASFIYE", "TAZE_ALIM")  # v7.3: es-aile
+    dagitim_tarafi = durum_ref.surec_rejim in ("TEPE_DAGITIM", "SHORT_SQUEEZE", "TAZE_ALIM")
+    if not TASFIYE_AYRIMI_AKTIF:
+        # FAZ 1: tasfiye rejimleri es-aile -> davranis v7.2 ile BIREBIR.
+        # FAZ 2: aileden cikar (tukenme sayaci kapiya gidiyor; bkz. asagida
+        # dagitim_ailesi'ndeki NO-OP aciklamasi).
+        dagitim_tarafi = dagitim_tarafi or durum_ref.surec_rejim in (
+            "SHORT_TASFIYE", "TASFIYE_SONRASI_DONUS")
 
     # Pencere serisinden son ~20dk egilimleri
     def seri_deger(alan, geri=20):
@@ -2060,8 +2090,17 @@ def balina_skoru_hesapla(a, pencere, kalite):
     if d_fiyat > 0.02 and d_oi > 0.05:
         rejim = "TAZE_ALIM"; long_skor *= 1.20      # saglikli -> odul
     elif d_fiyat > 0.02 and d_oi < -0.05:
-        # AYNI DESEN, IKI ZIT ANLAM — tasfiye dikeni ayirt eder.
-        if zorla_short_tasfiye:
+        # AYNI DESEN, UC ANLAM — likidasyon dikeninin YONU ayirt eder (v7.3.1).
+        # Eski iki-yollu dal, kanonik supurmenin GERI-ALIM barini (long flush +
+        # fiyat toparlanmasi) SHORT_SQUEEZE sayiyordu — spec §1 ile §6 celisiyordu.
+        if zorla_long_tasfiye:
+            # Long'lar AZ ONCE zorla flush edildi ve fiyat GERI ALIYOR.
+            # OI dususu = flush'in KENDISI (mekanik), "yakitsizlik" DEGIL.
+            # 1 Tem'in geri-alim bari tam olarak budur.
+            rejim = "TASFIYE_SONRASI_DONUS"
+            if not TASFIYE_AYRIMI_AKTIF:
+                long_skor = min(long_skor, VETO_TAVANI)   # FAZ 1: veto AYNEN durur
+        elif zorla_short_tasfiye:
             # Short'lar ZORLA kapatiliyor = zorunlu ALIM = yukselisin motoru.
             # Bu "yakitsiz squeeze" DEGILDIR.
             rejim = "SHORT_TASFIYE"
@@ -2123,10 +2162,16 @@ def balina_skoru_hesapla(a, pencere, kalite):
     # yon serbest kalir (donus artik gercekci).
     surec_rejim = a.get('surec_rejim', 'NOTR')
     surec_tukenme = a.get('surec_tukenme', 0)
-    # v7.3: SHORT_TASFIYE, SHORT_SQUEEZE'in es-ailesi (davranis birebir ayni olmali).
-    # LONG_KAPITULASYON bilerek YOK: es-ailesi LONG_TASFIYE de hicbir gate ailesinde
-    # degildi — eklemek davranisi DEGISTIRIRDI.
-    dagitim_ailesi = surec_rejim in ('TEPE_DAGITIM', 'SHORT_SQUEEZE', 'SHORT_TASFIYE', 'TAZE_SATIS')
+    # LONG_KAPITULASYON bilerek hicbir ailede YOK: es-ailesi LONG_TASFIYE de
+    # hicbir gate ailesinde degildi — eklemek davranisi DEGISTIRIRDI.
+    dagitim_ailesi = surec_rejim in ('TEPE_DAGITIM', 'SHORT_SQUEEZE', 'TAZE_SATIS')
+    if not TASFIYE_AYRIMI_AKTIF:
+        # FAZ 1: tasfiye rejimleri es-aile -> davranis v7.2 ile BIREBIR korunur.
+        # FAZ 2 (v7.3.1 Duzeltme 2): aileden CIKARLAR — yoksa OI vetosu kalkar
+        # ama VE-kapisi-2 LONG'u yine keser ve Faz 2 bir NO-OP olur
+        # (simule edildi: skor 100.0, sinyal BEKLE — sebebini haftalarca ararsin).
+        dagitim_ailesi = dagitim_ailesi or surec_rejim in (
+            'SHORT_TASFIYE', 'TASFIYE_SONRASI_DONUS')
     toplama_ailesi = surec_rejim in ('DIP_TOPLAMA', 'TAZE_ALIM')
     if dagitim_ailesi and surec_tukenme < 3:
         long_ve = False   # dagitim aktifken dususe karsi LONG yok
@@ -2856,13 +2901,17 @@ def ozet_ve_analiz_dongusu():
                     logging.warning(f"Veri enjekte hatasi (kohort akisi devam eder): {e}")
 
                 # ---- v7.3: TASFIYE KOHORTU — 2x2 faktoriyel olay kaydi ----
-                # A: rejim SHORT_TASFIYE/LONG_KAPITULASYON (zorla kapatma + OI dususu)
+                # A: zorla kapatma dikeni + OI dususu (v7.3.1: HAM OLGUDAN —
+                #    rejim adina bagli etiket, kanonik supurmenin geri-alim
+                #    barini yanlis hucreye dusuruyor, saf tasfiyeyi kaciriyordu)
                 # B: taze supurme onayi. Ikisi ayni dakikada catisirsa TEK kayit,
                 # iki bayrakla — iki hafta sonra hangi hucrenin kenar urettigi okunur.
-                tasfiye_a = rejim in ('SHORT_TASFIYE', 'LONG_KAPITULASYON')
+                d_oi_k = pencere['d_oi_pct'] if pencere else 0.0
+                tasfiye_a, tasfiye_yonu = _tasfiye_bayraklari(
+                    skor_girdi['tasfiye_long_yogunluk'],
+                    skor_girdi['tasfiye_short_yogunluk'], d_oi_k)
                 if kalite['cvd_guvenilir'] and (tasfiye_a or supurme_yeni_onaylar):
                     olaylar = []
-                    d_oi_k = pencere['d_oi_pct'] if pencere else 0.0
                     ham = {
                         "d_vadeli": round(pencere['d_vadeli_cvd'], 1) if pencere else None,
                         "d_spot": round(pencere['d_spot_cvd'], 1) if pencere else None,
@@ -2880,6 +2929,7 @@ def ozet_ve_analiz_dongusu():
                         "funding": funding_rate,
                         "spot_cvd_giris": round(spot_cvd, 1),
                         "oi_giris": round(open_interest, 0),
+                        "tasfiye_yonu": tasfiye_yonu,   # v7.3.1: hangi taraf flush oldu
                     }
                     if supurme_yeni_onaylar:
                         for yon_o, o in supurme_yeni_onaylar:
@@ -2900,8 +2950,9 @@ def ozet_ve_analiz_dongusu():
                                 "getiri": {}, "mae_mfe": {},
                             })
                     elif tasfiye_a:
-                        # Yon: her iki A-rejimi de LONG lehine (SHORT_TASFIYE = squeeze
-                        # yakiti; LONG_KAPITULASYON = satici tukenmesi/donus adayi).
+                        # Yon hipotezi LONG: long-flush = satici tukenmesi/donus adayi,
+                        # short-flush = squeeze yakiti. Hangi tarafin flush oldugu
+                        # ham.tasfiye_yonu'nda — Faz 2 analizi oradan ayristirir.
                         yon_a = 'LONG'
                         simdi_cd2 = time.time()
                         # Kaskad boyunca her dakika yazma (Supabase sisirme); 10dk

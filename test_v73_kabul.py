@@ -30,7 +30,8 @@ SABITLER = {'SINYAL_ESIGI','SINYAL_MARJI','MALIYET_CITASI_PCT','VE_ISLEM_MIN',
             'SUPURME_MIN_DELME_VOL','SUPURME_MAX_DELME_VOL','SUPURME_GERI_ALIM_MAX_DK',
             'SUPURME_GECERLILIK_DK','SUPURME_COOLDOWN_DK','KAPITULASYON_CARPANI'}
 FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
-                'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et'}
+                'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et',
+                '_tasfiye_bayraklari'}
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -53,7 +54,7 @@ def check(ad,c,d=""):
 random.seed(73)
 V72_REJIMLER = ['NOTR','TEPE_DAGITIM','DIP_TOPLAMA','SHORT_SQUEEZE','LONG_TASFIYE',
                 'TAZE_ALIM','TAZE_SATIS']
-IZINLI = {'SHORT_SQUEEZE':{'SHORT_SQUEEZE','SHORT_TASFIYE'},
+IZINLI = {'SHORT_SQUEEZE':{'SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS'},
           'LONG_TASFIYE':{'LONG_TASFIYE','LONG_KAPITULASYON'}}
 farkli=0; rejim_zengin=0
 for i in range(500):
@@ -116,6 +117,8 @@ y_sq = skorla(YENI,'SHORT_SQUEEZE')
 check("surec_rejim=SHORT_TASFIYE == v7.2 SHORT_SQUEEZE", e_sq[:3]==y_st[:3]==y_sq[:3])
 e_lt = skorla(ESKI,'LONG_TASFIYE'); y_lk = skorla(YENI,'LONG_KAPITULASYON')
 check("surec_rejim=LONG_KAPITULASYON == v7.2 LONG_TASFIYE", e_lt[:3]==y_lk[:3])
+y_tsd = skorla(YENI,'TASFIYE_SONRASI_DONUS')
+check("surec_rejim=TASFIYE_SONRASI_DONUS == v7.2 SHORT_SQUEEZE (FAZ 1)", e_sq[:3]==y_tsd[:3])
 
 # ---------- 3) SÜPÜRME DURUM MAKİNESİ (spec §9 senaryolari) ----------
 sup = YENI['supurme_takip_et']
@@ -211,6 +214,43 @@ e_r = ESKI['balina_skoru_hesapla'](dict(a_t),dict(p_t),{'cvd_guvenilir':True,'se
 y_r = YENI['balina_skoru_hesapla'](dict(a_t),dict(p_t),{'cvd_guvenilir':True,'sebep':'ok'})
 check("T1: zorla long tasfiyesi -> rejim LONG_KAPITULASYON", y_r[3]=='LONG_KAPITULASYON', f"eski={e_r[3]}")
 check("T2: FAZ 1'de skorlar birebir ayni (veto duruyor)", e_r[:3]==y_r[:3])
+
+# ---------- 5) v7.3.1 GERÇEKLİK TESTLERİ ----------
+# G1 — 1 Tem kanonik supurmesinin GERI ALIM bari (dogrulanmis piyasa vakasi):
+# fiyat +0.15%, OI -0.35% (LONG flush), LONG diken 8.0x, SHORT diken 0.
+# Spec kurali: her spec, dogru siniflandirmasi ZORUNLU bir gercek vaka icerir.
+a_g1 = {'fiyat':60000,'bid_d':6e7,'ask_d':3e7,'bnb_delta':.1,'byb_delta':.1,
+        'okx_delta':.1,'aktif_borsa':3,'vadeli_cvd':-2e5,'spot_cvd':-1e6,'oi':1.2e10,
+        'funding':0.0001,'bid_yas':400,'ask_yas':100,'likid':2e5,'esik_d':4.5e7,
+        'esik_l':2e5,'esik_c_neg':-3e5,'esik_c_poz':3e5,'surec_rejim':'NOTR',
+        'surec_tukenme':0,'en_yakin_ask_fiyat':0,'en_yakin_bid_fiyat':0,
+        'tasfiye_long_yogunluk':8.0,'tasfiye_short_yogunluk':0.0,'esik_volatilite':0.11}
+p_g1 = {'d_fiyat_pct':0.15,'d_oi_pct':-0.35,'d_vadeli_cvd':-9e5,'d_spot_cvd':-3e6,
+        'cvd_iraksama':0.5}
+Lg,Sg,sigg,rejg,_ = YENI['balina_skoru_hesapla'](dict(a_g1),dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
+check("G1a: kanonik geri-alim bari SHORT_SQUEEZE DEGIL", rejg!='SHORT_SQUEEZE', f"rejim={rejg}")
+check("G1a2: dogru etiket TASFIYE_SONRASI_DONUS", rejg=='TASFIYE_SONRASI_DONUS')
+# G1b: GERCEK kod yolu (_tasfiye_bayraklari) dogru hucreyi secmeli — totoloji degil,
+# ana dongudeki fonksiyonun kendisi cagriliyor.
+tv, ty = YENI['_tasfiye_bayraklari'](8.0, 0.0, -0.35)
+check("G1b: kanonik supurmede tasfiye_var=True (2x2 dogru hucre)", tv is True and ty=='LONG',
+      f"tasfiye_var={tv} yon={ty}")
+tv2, _ = YENI['_tasfiye_bayraklari'](8.0, 0.0, +0.10)   # OI dusmedi -> tasfiye degil
+check("G1c: OI dususu olmadan diken tek basina tasfiye SAYILMAZ", tv2 is False)
+
+# G2 — FAZ 2 ANLAMLILIK: flag acikken sinyal GERCEKTEN cikmali (NO-OP korumasi).
+FAZ2 = yukle(yeni_kaynak, {'fn':FONKSIYONLAR,'sabit':SABITLER})
+FAZ2['TASFIYE_AYRIMI_AKTIF'] = True
+for sr in ('NOTR','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS'):
+    a = dict(a_g1); a['surec_rejim']=sr
+    L2,S2,sig2,rej2,_ = FAZ2['balina_skoru_hesapla'](a,dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
+    check(f"G2: FAZ2 surec_rejim={sr} -> LONG (NO-OP degil)", sig2=='LONG',
+          f"long={L2:.1f} sinyal={sig2}")
+# G2-negatif: FAZ 2'de bile GONULLU squeeze (diken yok) veto + aile korunur
+a_n = dict(a_g1); a_n['tasfiye_long_yogunluk']=0.0; a_n['surec_rejim']='SHORT_SQUEEZE'
+L3,S3,sig3,rej3,_ = FAZ2['balina_skoru_hesapla'](a_n,dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
+check("G2n: FAZ2'de gonullu SHORT_SQUEEZE hala vetolu (BEKLE)", sig3=='BEKLE' and rej3=='SHORT_SQUEEZE',
+      f"long={L3:.1f} sinyal={sig3} rejim={rej3}")
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
