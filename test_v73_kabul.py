@@ -35,7 +35,9 @@ SABITLER = {'SINYAL_ESIGI','SINYAL_MARJI','MALIYET_CITASI_PCT','VE_ISLEM_MIN',
             'TUKENME_DILIM_SAYISI','TUKENME_SONME_ORANI','TUKENME_MAX_DUSUS_VOL','PENCERE_DK',
             # v7.5/v7.6:
             'EMILIM_YONU_AKTIF','TUKENME_DILIM_DK','TUKENME_MIN_AKIS',
-            'SPOT_OB_MAX_YAS_SN','EMILIM_EGILIM_ESIGI','EMILIM_DERINLIK_PCT'}
+            'SPOT_OB_MAX_YAS_SN','EMILIM_EGILIM_ESIGI','EMILIM_DERINLIK_PCT',
+            # v7.7:
+            'PERP_OB_MAX_YAS_SN'}
 FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et',
                 '_tasfiye_bayraklari',
@@ -346,6 +348,19 @@ a_ts = dict(a_t); a_ts.update({'alici_tukenmesi':True,'spot_bid_d':2e6,'spot_ask
 _,_,_,rej_ts,_,_ = YENI['balina_skoru_hesapla'](dict(a_ts),dict(p_t),{'cvd_guvenilir':True,'sebep':'ok'})
 check("V2Ts: alici tukendi + spot ASK-agir taze defter -> TEPE_DAGITIM_SPOT",
       rej_ts=='TEPE_DAGITIM_SPOT', f"rejim={rej_ts}")
+
+# VAKA 2P — v7.7: PERP mutabakati emilim dict'ine YANSIR ama skoru ETKILEMEZ.
+# Perp defteri zaten 3 borsa toplaniyordu; simetrik mutabakat sayaci eklendi.
+a_p = dict(a_v2); a_p.update({'perp_borsa_sayisi':3,'perp_bid_agir_sayi':2,'perp_ask_agir_sayi':0})
+Lp,Sp,sigp,rejp,acp,emp = YENI['balina_skoru_hesapla'](dict(a_p),dict(p_v2),{'cvd_guvenilir':True,'sebep':'ok'})
+check("V2P: perp mutabakati emilim dict'ine yansir (3 borsa, 2 bid-agir)",
+      emp['perp_borsa_sayisi']==3 and emp['perp_bid_agir_sayi']==2 and emp['perp_ask_agir_sayi']==0,
+      f"={emp['perp_borsa_sayisi']}/{emp['perp_bid_agir_sayi']}/{emp['perp_ask_agir_sayi']}")
+check("V2P: perp mutabakati (long,short,sinyal,rejim) ETKILEMEZ (olcum-only)",
+      (Lp,Sp,sigp,rejp)==(L2,S2,sig2,rej2), f"perp={(Lp,Sp,sigp,rejp)} baz={(L2,S2,sig2,rej2)}")
+# Girdi hic YOKKEN de emilim dict guvenli varsayilan (0) doner (KeyError DEGIL)
+check("V2P: perp girdisi yoksa emilim dict 0 doner (KeyError degil)",
+      em2['perp_borsa_sayisi']==0 and em2['perp_bid_agir_sayi']==0)
 
 # VAKA 3 — REGRESYON: 1 Tem kanonik supurmesi hala TASFIYE_SONRASI_DONUS + tasfiye_var.
 tv3,_ = YENI['_tasfiye_bayraklari'](8.0, 0.0, -0.35)

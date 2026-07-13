@@ -116,6 +116,13 @@ class CanliDurum:
         self.bybit_asks = {}
         self.okx_bids = {}       # D: 3. borsa derinligi
         self.okx_asks = {}
+        # v7.7: PERP defter bayatlik damgalari (spot ile simetrik). REST cekimi
+        # basarisiz olursa eski defter SESSIZCE oy vermeye devam etmesin diye
+        # her borsanin son basarili cekim zamani tutulur. FAZ 1: sadece OLCULUR
+        # (mutabakat sayaci); skor yolu (order_book_depth_*) DEGISMEZ.
+        self.perp_bids_zaman = 0.0     # Binance perp (fapi/depth)
+        self.bybit_perp_zaman = 0.0    # Bybit perp (linear)
+        self.okx_perp_zaman = 0.0      # OKX perp (SWAP)
 
         # ===== v7.5: SPOT ORDER BOOK =====
         # NEDEN: absorbsiyonun YONUNU ayirt eden en guclu gozlem, EMEN TARAFIN
@@ -351,6 +358,9 @@ TUKENME_MIN_AKIS = 0.50           # ilk dilimde en az bu kadar (adaptif birim) s
 
 # --- emilim borsasi (SPOT order book) ---
 SPOT_OB_MAX_YAS_SN = 180          # spot defter bundan bayatsa metrik None (0.0 DEGIL)
+PERP_OB_MAX_YAS_SN = 180          # v7.7: perp defter bayatlik siniri (spot ile simetrik).
+                                  # SADECE mutabakat sayimini kapsar; skor yolunu (duvar
+                                  # haritasi) FAZ 1'de DEGISTIRMEZ — v7.2 esdegerligi korunur.
 EMILIM_EGILIM_ESIGI = 0.15        # (bid-ask)/(bid+ask) >= 0.15 -> o defter BID-AGIR
 EMILIM_DERINLIK_PCT = 0.01        # +/-%1 bandi (mevcut derinlik olcusuyle ayni)
 
@@ -503,6 +513,7 @@ def rest_yardimci_guncelle():
                         if m > 0:
                             yeni_asks[float(fiyat_s)] = m
                     durum.asks = yeni_asks
+                    durum.perp_bids_zaman = time.time()   # v7.7: bayatlik damgasi
 
             time.sleep(0.3)
 
@@ -601,6 +612,7 @@ def rest_yardimci_guncelle():
                             if m > 0:
                                 by_asks[float(fiyat_s)] = m
                         durum.bybit_asks = by_asks
+                        durum.bybit_perp_zaman = time.time()   # v7.7: bayatlik damgasi
             except Exception as e:
                 logging.warning(f"Bybit derinlik hatasi: {e}")
 
@@ -651,6 +663,7 @@ def rest_yardimci_guncelle():
                             if btc > 0:
                                 okx_asks[fiyat] = btc
                         durum.okx_asks = okx_asks
+                        durum.okx_perp_zaman = time.time()   # v7.7: bayatlik damgasi
             except Exception as e:
                 logging.warning(f"OKX derinlik hatasi: {e}")
 
@@ -2512,6 +2525,12 @@ def balina_skoru_hesapla(a, pencere, kalite):
         'spot_borsa_sayisi': a.get('spot_borsa_sayisi', 0),
         'spot_bid_agir_sayi': a.get('spot_bid_agir_sayi', 0),
         'spot_ask_agir_sayi': a.get('spot_ask_agir_sayi', 0),
+        # v7.7: PERP mutabakati (spot ile simetrik). Perp defteri zaten 3 borsa
+        # (Binance/Bybit/OKX) toplaniyordu; artik KAC borsada ayni yon oldugu da
+        # sayilir. SADECE olcum — skoru ETKILEMEZ (skor yolu duvar haritasindan gelir).
+        'perp_borsa_sayisi': a.get('perp_borsa_sayisi', 0),
+        'perp_bid_agir_sayi': a.get('perp_bid_agir_sayi', 0),
+        'perp_ask_agir_sayi': a.get('perp_ask_agir_sayi', 0),
     }
     # ---- v7.6: GERCEK DEFTER egilimiyle teyit (v7.5 etiket uyumsuzlugu duzeltildi) --
     # ONCEKI HATA: zenginlestirme 'emilim_bors == VADELI' kontrol ediyordu ama
@@ -2932,6 +2951,11 @@ def ozet_ve_analiz_dongusu():
                 spot_borsa_sayisi = 0        # v7.6: kac spot borsasi taze
                 spot_bid_agir_sayi = 0       # v7.6: kacinda spot bid-agir (mutabakat)
                 spot_ask_agir_sayi = 0
+                # v7.7: PERP defter mutabakati (spot ile simetrik; SADECE olcum).
+                perp_borsa_sayisi = 0        # kac perp borsasi TAZE + derinlikli
+                perp_bid_agir_sayi = 0       # kacinda perp bid-agir
+                perp_ask_agir_sayi = 0
+                perp_ob_yasi = None          # dahil edilen perp borsalari icinde en yasli
                 buyuk_bidler = []; buyuk_asklar = []
                 tum_bidler = []; tum_asklar = []
                 # v5.2: UC-BORSALI DUVAR HARITASI
@@ -3029,6 +3053,26 @@ def ozet_ve_analiz_dongusu():
                 okx_delta = (okx_bid_d - okx_ask_d) / okx_toplam if okx_toplam > 0 else 0.0
                 # Kac borsada aktif derinlik var (spoofing dayanikliligi icin)
                 aktif_borsa_sayisi = sum(1 for t in [bnb_toplam, byb_toplam, okx_toplam] if t > 0)
+
+                # ---- v7.7: PERP defter MUTABAKATI (spot ile SIMETRIK; SADECE OLCUM) ----
+                # Spot'ta oldugu gibi perp defterinin de KAC borsada ayni yonde
+                # durdugunu sayariz. Tek borsa spoof'a acik; 2-3 perp borsa ayni
+                # yonde = gercek kaldiracli konumlanma. BAYAT borsa SAYILMAZ (REST
+                # cekimi durmussa eski defter mutabakati SISIRMESIN). ONEMLI: skor
+                # yolu (order_book_depth_*/bid_d/ask_d) YUKARIDA DEGISMEDEN kalir ->
+                # v7.2 esdegerligi korunur; bu blok yalnizca kohorta yazilir.
+                for _pt, _pd, _pz in ((bnb_toplam, bnb_delta, durum.perp_bids_zaman),
+                                      (byb_toplam, byb_delta, durum.bybit_perp_zaman),
+                                      (okx_toplam, okx_delta, durum.okx_perp_zaman)):
+                    if _pt <= 0 or _pz <= 0 or (_snow - _pz) > PERP_OB_MAX_YAS_SN:
+                        continue
+                    perp_borsa_sayisi += 1
+                    _pyas = _snow - _pz
+                    perp_ob_yasi = _pyas if perp_ob_yasi is None else max(perp_ob_yasi, _pyas)
+                    if _pd >= EMILIM_EGILIM_ESIGI:
+                        perp_bid_agir_sayi += 1
+                    elif _pd <= -EMILIM_EGILIM_ESIGI:
+                        perp_ask_agir_sayi += 1
 
                 # ---- EMİR YAŞI (spoofing filtresi girdisi) ----
                 simdi_ms = int(time.time() * 1000)
@@ -3265,6 +3309,9 @@ def ozet_ve_analiz_dongusu():
             skor_girdi['spot_borsa_sayisi'] = spot_borsa_sayisi        # v7.6 mutabakat
             skor_girdi['spot_bid_agir_sayi'] = spot_bid_agir_sayi
             skor_girdi['spot_ask_agir_sayi'] = spot_ask_agir_sayi
+            skor_girdi['perp_borsa_sayisi'] = perp_borsa_sayisi        # v7.7 perp mutabakat
+            skor_girdi['perp_bid_agir_sayi'] = perp_bid_agir_sayi
+            skor_girdi['perp_ask_agir_sayi'] = perp_ask_agir_sayi
 
             long_skor, short_skor, sinyal, rejim, aciklama, emilim = balina_skoru_hesapla(
                 skor_girdi, pencere, kalite)
@@ -3435,6 +3482,13 @@ def ozet_ve_analiz_dongusu():
                         "spot_borsa_sayisi": (emilim or {}).get('spot_borsa_sayisi'),  # v7.6 mutabakat
                         "spot_bid_agir_sayi": (emilim or {}).get('spot_bid_agir_sayi'),
                         "spot_ask_agir_sayi": (emilim or {}).get('spot_ask_agir_sayi'),
+                        "perp_borsa_sayisi": (emilim or {}).get('perp_borsa_sayisi'),  # v7.7 perp mutabakat
+                        "perp_bid_agir_sayi": (emilim or {}).get('perp_bid_agir_sayi'),
+                        "perp_ask_agir_sayi": (emilim or {}).get('perp_ask_agir_sayi'),
+                        # v7.7: perp defterlerinin en yaslisi (sn). FAZ 2'de "perp
+                        # ne siklikta bayatliyor, duvar vetosunu bayat oy kirletiyor mu?"
+                        # sorusunu POST-HOC yanitlar; simdilik SADECE olculur.
+                        "perp_ob_yasi_sn": round(perp_ob_yasi, 1) if perp_ob_yasi is not None else None,
                         "spot_bid_d": round(spot_bid_d, 0) if spot_bid_d else None,
                         "spot_ask_d": round(spot_ask_d, 0) if spot_ask_d else None,
                         "tasfiye_short_yogunluk": round(skor_girdi['tasfiye_short_yogunluk'], 2),
