@@ -32,11 +32,15 @@ SABITLER = {'SINYAL_ESIGI','SINYAL_MARJI','MALIYET_CITASI_PCT','VE_ISLEM_MIN',
             # v7.4:
             'EMILIM_AYRIMI_AKTIF','EMILIM_OLCUM_AKTIF','EMILIM_MIN_AKIS',
             'EMILIM_GUCLU_ESIK','EMILIM_YOK_ESIK','EMILIM_SPOT_ESIGI',
-            'TUKENME_DILIM_SAYISI','TUKENME_SONME_ORANI','TUKENME_MAX_DUSUS_VOL','PENCERE_DK'}
+            'TUKENME_DILIM_SAYISI','TUKENME_SONME_ORANI','TUKENME_MAX_DUSUS_VOL','PENCERE_DK',
+            # v7.5/v7.6:
+            'EMILIM_YONU_AKTIF','TUKENME_DILIM_DK','TUKENME_MIN_AKIS',
+            'SPOT_OB_MAX_YAS_SN','EMILIM_EGILIM_ESIGI','EMILIM_DERINLIK_PCT'}
 FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et',
                 '_tasfiye_bayraklari',
-                '_emilim_esnekligi','_emilim_borsasi','_satici_tukenmesi'}  # v7.4
+                '_emilim_esnekligi','_emilim_borsasi','_satici_tukenmesi',
+                '_akis_tukenmesi'}  # v7.4/v7.6
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -62,7 +66,9 @@ V72_REJIMLER = ['NOTR','TEPE_DAGITIM','DIP_TOPLAMA','SHORT_SQUEEZE','LONG_TASFIY
 IZINLI = {'SHORT_SQUEEZE':{'SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS'},
           'LONG_TASFIYE':{'LONG_TASFIYE','LONG_KAPITULASYON'},
           # v7.4: DIP_TOPLAMA emilim-zenginlesmesi (izinli — skor/sinyal degismez)
-          'DIP_TOPLAMA':{'DIP_TOPLAMA','DIP_TOPLAMA_SPOT','DIP_TOPLAMA_TEYITSIZ','DIP_TOPLAMA_PERP'}}
+          'DIP_TOPLAMA':{'DIP_TOPLAMA','DIP_TOPLAMA_SPOT','DIP_TOPLAMA_TEYITSIZ','DIP_TOPLAMA_PERP'},
+          # v7.6: TEPE_DAGITIM emilim-zenginlesmesi (simetrik)
+          'TEPE_DAGITIM':{'TEPE_DAGITIM','TEPE_DAGITIM_SPOT','TEPE_DAGITIM_TEYITSIZ','TEPE_DAGITIM_PERP'}}
 farkli=0; rejim_zengin=0; dip_kapsama=0   # v7.4: DIP_TOPLAMA_* yoluna giren
 for i in range(500):
     esik_d = random.uniform(1e7, 1e8)
@@ -275,7 +281,21 @@ YOK, GUCLU = YENI['EMILIM_YOK_ESIK'], YENI['EMILIM_GUCLU_ESIK']
 
 # None YAYILIMI (§9.2 sifir tuzagi): akis yoksa None, 0.0 DEGIL
 check("E-None: akis yok -> esneklik None (0.0 DEGIL)", esnek(0.0,0,0,E_C,E_S,E_VOL) is None)
-check("E-None: akis yok -> borsa (None,None)", bors(0,0,E_C,E_S)==(None,None))
+# v7.5: _emilim_borsasi 4-tuple (borsa, spot_eg, perp_eg, spot_pay); akis+defter yok -> hepsi None
+check("E-None: akis+defter yok -> borsa 4-tuple hepsi None (0.0 DEGIL)",
+      bors(0,0,E_C,E_S)==(None,None,None,None))
+# v7.5: GERCEK spot defter — spot bid-agir -> 'SPOT' (envanter alimi teyitli)
+b_sp = bors(-4e5,-1.5e6,E_C,E_S, spot_bid_d=8e6, spot_ask_d=2e6,
+            perp_bid_d=5e7, perp_ask_d=5e7, spot_ob_yasi_sn=30)
+check("E-defter: spot bid-agir -> borsa 'SPOT'", b_sp[0]=='SPOT' and b_sp[1] is not None, f"={b_sp}")
+b_ap = bors(-4e5,-1.5e6,E_C,E_S, spot_bid_d=2e6, spot_ask_d=8e6,
+            perp_bid_d=5e7, perp_ask_d=5e7, spot_ob_yasi_sn=30)
+check("E-defter: spot ask-agir -> spot_egilim NEGATIF (dagitim teyidi)", b_ap[1] < 0, f"={b_ap}")
+# v7.5: defter BAYAT -> v7.4 vekiline dus ('_AKIS' son eki ile).
+# spot-baskin akis (spot_pay>=EMILIM_SPOT_ESIGI) -> 'SPOT_AKIS' (defterden DEGIL).
+b_st = bors(-2e5,-4e6,E_C,E_S, spot_bid_d=8e6, spot_ask_d=2e6,
+            perp_bid_d=5e7, perp_ask_d=5e7, spot_ob_yasi_sn=9999)
+check("E-defter: bayat defter -> '_AKIS' vekiline duser", str(b_st[0]).endswith('_AKIS'), f"={b_st}")
 
 # VAKA 1 — NEGATIF (en kritik): tavan reddi, -1.24% cakilma, spot -20M vadeli -3K.
 # Sistem bunu ASLA emilim saymamali -> esneklik > EMILIM_YOK_ESIK.
@@ -303,27 +323,66 @@ e_v2b = ESKI['balina_skoru_hesapla'](dict(a_v2),dict(p_v2),{'cvd_guvenilir':True
 check("V2b: (long,short,sinyal) v7.2 ile BIREBIR (olcum skoru ETKILEMEZ)",
       e_v2b[:3]==(L2,S2,sig2), f"v72={e_v2b[:3]} v74={(L2,S2,sig2)}")
 
+# VAKA 2T — SIMETRIK (v7.6): TEPE_DAGITIM tarafi. Agresif ALIS emiliyor, fiyat
+# tutmuyor, ask-duvar agir -> base rejim TEPE_DAGITIM. alici_tuk YOK -> _TEYITSIZ;
+# alici_tuk VAR + spot ASK-agir taze defter -> _SPOT. V2 (DIP) ile birebir ayna.
+a_t = {'fiyat':60000,'bid_d':2e7,'ask_d':8e7,'bnb_delta':-.1,'byb_delta':-.1,'okx_delta':-.1,
+       'aktif_borsa':3,'vadeli_cvd':6e5,'spot_cvd':2e6,'oi':1.2e10,'funding':0.0001,
+       'bid_yas':100,'ask_yas':400,'likid':2e5,'esik_d':4.5e7,'esik_l':2e5,
+       'esik_c_neg':E_C,'esik_c_poz':3e5,'surec_rejim':'NOTR','surec_tukenme':0,
+       'en_yakin_ask_fiyat':0,'en_yakin_bid_fiyat':0,'tasfiye_long_yogunluk':0.0,
+       'tasfiye_short_yogunluk':0.0,'esik_volatilite':E_VOL,'esik_spot_neg':E_S,
+       'alici_tukenmesi':False,'alici_sonme_orani':0.94}
+p_t = {'d_fiyat_pct':-0.01,'d_vadeli_cvd':6e5,'d_spot_cvd':2e6,'d_oi_pct':0.0,'cvd_iraksama':0.5}
+Lt,St,sigt,rejt,act,emt = YENI['balina_skoru_hesapla'](dict(a_t),dict(p_t),{'cvd_guvenilir':True,'sebep':'ok'})
+check("V2T: alici tukenmeyen guclu emilim -> TEPE_DAGITIM_TEYITSIZ (simetri)",
+      rejt=='TEPE_DAGITIM_TEYITSIZ', f"rejim={rejt} esneklik={emt['emilim_esnekligi']}")
+e_tb = ESKI['balina_skoru_hesapla'](dict(a_t),dict(p_t),{'cvd_guvenilir':True,'sebep':'ok'})
+check("V2Tb: (long,short,sinyal) v7.2 ile BIREBIR (TEPE_DAGITIM_* es-aile)",
+      e_tb[:3]==(Lt,St,sigt), f"v72={e_tb[:3]} v76={(Lt,St,sigt)}")
+# alici_tuk VAR + spot ASK-agir taze defter -> _SPOT (gercek dagitim, alici tukeniyor)
+a_ts = dict(a_t); a_ts.update({'alici_tukenmesi':True,'spot_bid_d':2e6,'spot_ask_d':8e6,
+                               'spot_ob_yasi_sn':30})
+_,_,_,rej_ts,_,_ = YENI['balina_skoru_hesapla'](dict(a_ts),dict(p_t),{'cvd_guvenilir':True,'sebep':'ok'})
+check("V2Ts: alici tukendi + spot ASK-agir taze defter -> TEPE_DAGITIM_SPOT",
+      rej_ts=='TEPE_DAGITIM_SPOT', f"rejim={rej_ts}")
+
 # VAKA 3 — REGRESYON: 1 Tem kanonik supurmesi hala TASFIYE_SONRASI_DONUS + tasfiye_var.
 tv3,_ = YENI['_tasfiye_bayraklari'](8.0, 0.0, -0.35)
 check("V3: 1 Tem regresyonu — tasfiye_var hala True", tv3 is True)
 # (rejim TASFIYE_SONRASI_DONUS zaten G1a2'de dogrulandi)
 
-# SATICI TUKENMESI fonksiyonu — sonen seri True, sabit seri False
-def seri_yap(akislar):
-    # akislar: dilim basina hedef |akis|; her dilimi 6 kayitla doldur (PENCERE_DK=5dk)
-    seri=[]; t0=100000.0; w=YENI['PENCERE_DK']*60
-    for di,ak in enumerate(akislar):   # akislar[0]=en eski -> en erken zaman
-        bas=t0 + di*w
-        # dilim ici spot_cvd degisimi = ak * esik_s buyuklugunde (negatif satis)
-        seri.append({'ts':bas, 'spot_cvd':0.0, 'vadeli_cvd':0.0, 'fiyat':60000})
-        seri.append({'ts':bas+w-1, 'spot_cvd':-ak*abs(E_S), 'vadeli_cvd':0.0, 'fiyat':60000})
+# AKIS TUKENMESI fonksiyonu (v7.6 yonlu) — sonen seri True, sabit seri False.
+# v7.6: dilim = TUKENME_DILIM_DK(15dk); yon SATIS=negatif CVD, ALIS=pozitif CVD.
+akis_tuk = YENI['_akis_tukenmesi']
+def seri_yap(akislar, yon='SATIS'):
+    # akislar[0]=EN ESKI dilim -> son=EN YENI. Her dilim TUKENME_DILIM_DK dk;
+    # dilim ici birikimli CVD, yone gore isaretli (SATIS=asagi, ALIS=yukari).
+    W = YENI['TUKENME_DILIM_DK']*60
+    isaret = -1.0 if yon=='SATIS' else 1.0
+    seri=[]; t0=1_000_000.0; cvd=0.0
+    for di,ak in enumerate(akislar):        # di=0 en eski dilim
+        bas=t0 + di*W
+        seri.append({'ts':bas+1,     'spot_cvd':cvd, 'vadeli_cvd':0.0, 'fiyat':60000})
+        cvd += isaret*ak*abs(E_S)
+        seri.append({'ts':bas+W-1,   'spot_cvd':cvd, 'vadeli_cvd':0.0, 'fiyat':60000})
     return sorted(seri,key=lambda r:r['ts'])
+# --- SATIS yonu (satici tukenmesi -> toplama imzasi) ---
 tv_son,orn_son = tuk(seri_yap([1.0,0.6,0.3]), E_C, E_S, E_VOL)   # sonuyor: 0.3/1.0=0.3<0.5
 check("E-tuk: sonen satis + duz fiyat -> tukenme True", tv_son is True, f"sonme={orn_son}")
 tv_sbt,_ = tuk(seri_yap([1.0,1.0,1.0]), E_C, E_S, E_VOL)         # sabit: 1.0/1.0=1.0
 check("E-tuk: sabit satis -> tukenme False", tv_sbt is False)
 tv_az,orn_az = tuk([{'ts':1,'spot_cvd':0,'vadeli_cvd':0,'fiyat':60000}], E_C, E_S, E_VOL)
 check("E-tuk: yetersiz veri -> (False, None) (0.0 DEGIL)", tv_az is False and orn_az is None)
+# --- ALIS yonu (alici tukenmesi -> dagitim/tepe imzasi) — SATIS ile SIMETRIK ---
+av_son,ao_son = akis_tuk(seri_yap([1.0,0.6,0.3],'ALIS'),'ALIS', E_C, E_S, E_VOL)
+check("E-tuk(ALIS): sonen alis + duz fiyat -> alici tukenmesi True", av_son is True, f"sonme={ao_son}")
+av_sbt,_ = akis_tuk(seri_yap([1.0,1.0,1.0],'ALIS'),'ALIS', E_C, E_S, E_VOL)
+check("E-tuk(ALIS): sabit alis -> tukenme False", av_sbt is False)
+# YON AYRIMI: sonen SATIS serisi ALIS yonunden bakildiginda tukenme SAYILMAZ
+# (v7.4 abs()'i bunlari ayirt EDEMEZDI — v7.6 yonlu ayrimi bunu ispatliyor).
+av_yanlis,_ = akis_tuk(seri_yap([1.0,0.6,0.3],'SATIS'),'ALIS', E_C, E_S, E_VOL)
+check("E-tuk: yon ayrimi (sonen SATIS != alici tukenmesi)", av_yanlis is False, f"={av_yanlis}")
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
