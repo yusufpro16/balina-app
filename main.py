@@ -3467,7 +3467,32 @@ def ozet_ve_analiz_dongusu():
                 "guven_skoru": guven_skoru,
                 "sinyal_durumu": sinyal,
                 "yakin_likidite_bid": likidite_bid_json,
-                "yakin_likidite_ask": likidite_ask_json
+                "yakin_likidite_ask": likidite_ask_json,
+                # v7.10: EMILIM ARSIVI — dakikalik KALICI kayit (balina_avcisi_data).
+                # GEREKCE: canli_emilim (balina_ayarlar) her dakika UZERINE yazilir ->
+                # gecmis YOK. Faz 1'in TAMAMI "iki hafta veri" uzerine kurulu; arsiv
+                # olmadan DIP_TOPLAMA_SPOT vs _TEYITSIZ ayrimi POST-HOC sorgulanamaz.
+                # Skoru ETKILEMEZ (olcum-only). Kolonlar NULLABLE — olculemeyen dakikada
+                # None yazilir, 0 DEGIL (spec §9.2 sifir tuzagi). spot/perp_ob_yasi_sn
+                # dogrudan dongu degiskeninden (emilim dict'inde yok); ikisi de 2976/2984'te
+                # KOSULSUZ init edildi -> payload'da her zaman tanimli (NameError yok).
+                "emilim_borsasi":     (emilim or {}).get('emilim_borsasi'),
+                "spot_egilim":        (emilim or {}).get('spot_egilim'),
+                "perp_egilim":        (emilim or {}).get('perp_egilim'),
+                "emilim_spot_pay":    (emilim or {}).get('emilim_spot_pay'),
+                "emilim_esnekligi":   (emilim or {}).get('emilim_esnekligi'),
+                "satici_tukenmesi":   (emilim or {}).get('satici_tukenmesi'),
+                "sonme_orani":        (emilim or {}).get('sonme_orani'),
+                "alici_tukenmesi":    (emilim or {}).get('alici_tukenmesi'),
+                "alici_sonme_orani":  (emilim or {}).get('alici_sonme_orani'),
+                "spot_bid_agir_sayi": (emilim or {}).get('spot_bid_agir_sayi'),
+                "spot_ask_agir_sayi": (emilim or {}).get('spot_ask_agir_sayi'),
+                "spot_borsa_sayisi":  (emilim or {}).get('spot_borsa_sayisi'),
+                "perp_bid_agir_sayi": (emilim or {}).get('perp_bid_agir_sayi'),
+                "perp_ask_agir_sayi": (emilim or {}).get('perp_ask_agir_sayi'),
+                "perp_borsa_sayisi":  (emilim or {}).get('perp_borsa_sayisi'),
+                "spot_ob_yasi_sn":    round(spot_ob_yasi, 1) if spot_ob_yasi is not None else None,
+                "perp_ob_yasi_sn":    round(perp_ob_yasi, 1) if perp_ob_yasi is not None else None,
             }
 
             if anlik_fiyat > 0:
