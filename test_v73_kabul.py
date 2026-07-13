@@ -8,7 +8,11 @@ v7.3 KABUL TESTLERİ
    v7.2'ye es-ailesini vermekle aynı skorları üretmeli.
 3) SÜPÜRME durum makinesi sentetik senaryoları (spec §9 tablosu).
 """
-import ast, random, subprocess, datetime, calendar, time, sys
+import ast, random, subprocess, datetime, calendar, time, sys, os
+
+# v7.9: mutlak yol yerine dosyanin kendi konumu — test artik repo nereye
+# klonlanirsa klonlansin calisir (git show da ayni dizinde kosar).
+REPO = os.path.dirname(os.path.abspath(__file__))
 
 def yukle(kaynak, isimler):
     tree = ast.parse(kaynak)
@@ -49,9 +53,9 @@ FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
 # dogrulayici tespiti.)
 V72_COMMIT = 'e6ee0ac'
 eski_kaynak = subprocess.run(['git','show',f'{V72_COMMIT}:main.py'],capture_output=True,
-                             text=True,cwd='/home/user/balina-app').stdout
+                             text=True,cwd=REPO).stdout
 assert eski_kaynak, "v7.2 taban commit'i bulunamadi"
-yeni_kaynak = open('/home/user/balina-app/main.py').read()
+yeni_kaynak = open(os.path.join(REPO,'main.py')).read()
 ESKI = yukle(eski_kaynak, {'fn':FONKSIYONLAR,'sabit':SABITLER})
 YENI = yukle(yeni_kaynak, {'fn':FONKSIYONLAR,'sabit':SABITLER})
 assert YENI['TASFIYE_AYRIMI_AKTIF'] is False, "FAZ 1 bayragi ACIK olamaz!"

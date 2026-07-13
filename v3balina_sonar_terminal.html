@@ -656,15 +656,17 @@ async function load(){
   const rejim=rejimTuret(L,pencere);
 
   // v7: motorun KENDİ yorum kayıtları — süreç + kapı redleri + geri test
-  let surec=null, veRed=null, geriTest=null;
+  // v7.9: + canli_emilim ("şu an emen kim?" — motor her dakika yazar)
+  let surec=null, veRed=null, geriTest=null, canliEmilim=null;
   try{
     const {data:ay}=await sb.from('balina_ayarlar').select('*')
-      .in('anahtar',['surec_durumu','ve_kapisi_redleri','geri_test_istatistik']);
+      .in('anahtar',['surec_durumu','ve_kapisi_redleri','geri_test_istatistik','canli_emilim']);
     (ay||[]).forEach(k=>{
       const v = typeof k.deger==='string'?JSON.parse(k.deger):k.deger;
       if(k.anahtar==='surec_durumu') surec=v;
       else if(k.anahtar==='ve_kapisi_redleri') veRed=v;
       else if(k.anahtar==='geri_test_istatistik') geriTest=v;
+      else if(k.anahtar==='canli_emilim') canliEmilim=v;
     });
   }catch(e){}
 
@@ -672,7 +674,7 @@ async function load(){
   surecPanel(surec,L);
   verdict(L,rejim,pencere,rows,surec);
   layerRadar(L,pencere,rejim);
-  kpis(L,rows,pencere,rejim,esik);
+  kpis(L,rows,pencere,rejim,esik,canliEmilim);
   scores(L.long_skor||0, L.short_skor||0, rows, geriTest);
   otopsi(veRed,geriTest);
   cPrice(labels,rows); cLiq(labels,rows); cDelta(labels,rows);
@@ -945,7 +947,7 @@ function layerRadar(L,pencere,rejim){
 }
 
 // ============ KPI ============
-function kpis(L,rows,pencere,rejim,esik){
+function kpis(L,rows,pencere,rejim,esik,canliEmilim){
   const vcA=cvdAnlam(rows,'vadeli_cvd',L.vadeli_cvd||0);
   const scA=cvdAnlam(rows,'spot_cvd',L.spot_cvd||0);
   const funding=L.funding_rate||0;
@@ -969,8 +971,39 @@ function kpis(L,rows,pencere,rejim,esik){
       cls:yzd>=85?(dv>0?'pos':'neg'):yzd>=60?'warn':'neu'};
   }
 
+  // v7.9: CANLI EMİLİM — motorun KENDİ ölçümü ("şu an emen kim?"). Panel tahmini
+  // DEĞİL: balina_ayarlar['canli_emilim']'den okunur. Sıfır tuzağı kuralları:
+  // kayıt yok/bayat/ölçülemedi → "ÖLÇÜLEMEDİ" denir, 0 ya da boş GÖSTERİLMEZ.
+  let emKpi={lbl:'Emici (motor)',val:'—',sub:'motor henüz yazmadı',cls:'neu'};
+  if(canliEmilim && canliEmilim.guncelleme){
+    const gTs=new Date(canliEmilim.guncelleme.endsWith('Z')?canliEmilim.guncelleme:canliEmilim.guncelleme+'Z').getTime();
+    const yasSn=(Date.now()-gTs)/1000;
+    const sb=canliEmilim.spot_bid_agir_sayi, sn=canliEmilim.spot_borsa_sayisi;
+    const pb=canliEmilim.perp_bid_agir_sayi, pn=canliEmilim.perp_borsa_sayisi;
+    const mutabakat=(sn||pn)?`spot ${sb??'?'}/${sn??'?'} bid · perp ${pb??'?'}/${pn??'?'} bid`:'defter mutabakatı yok';
+    const st=canliEmilim.satici_tukenmesi, at=canliEmilim.alici_tukenmesi;
+    const tukNot=`tükenme: satıcı ${canliEmilim.sonme_orani==null?'—':(st?'✓':'✗')} · alıcı ${canliEmilim.alici_sonme_orani==null?'—':(at?'✓':'✗')}`;
+    const b=canliEmilim.emilim_borsasi;
+    if(yasSn>180){
+      emKpi={lbl:'Emici (motor)',val:'BAYAT',sub:`son yazım ${(yasSn/60).toFixed(0)}dk önce`,cls:'neu'};
+    }else if(b==null){
+      emKpi={lbl:'Emici (motor)',val:'ÖLÇÜLEMEDİ',sub:'akış eşiğin altında — uydurmuyoruz',cls:'neu',not:tukNot};
+    }else if(b==='HER_IKISI'){
+      emKpi={lbl:'Emici (motor)',val:'SPOT+PERP',sub:`envanter + kaldıraçlı destek · ${mutabakat}`,cls:'pos',not:tukNot};
+    }else if(b==='SPOT'){
+      emKpi={lbl:'Emici (motor)',val:'SPOT',sub:`gerçek envanter alımı · ${mutabakat}`,cls:'pos',not:tukNot};
+    }else if(b==='PERP'){
+      emKpi={lbl:'Emici (motor)',val:'PERP',sub:`kaldıraçlı destek — envanter YOK · ${mutabakat}`,cls:'warn',not:tukNot};
+    }else if(b==='YOK'){
+      emKpi={lbl:'Emici (motor)',val:'YOK',sub:`iki defter de ask-ağır — emici yok · ${mutabakat}`,cls:'neg',not:tukNot};
+    }else{ // SPOT_AKIS / VADELI_AKIS / KARISIK — defter bayat, akış VEKİLİ
+      emKpi={lbl:'Emici (motor)',val:String(b).replace(/_/g,' '),sub:'defter bayat — akış vekili (defterden DEĞİL)',cls:'neu',not:tukNot};
+    }
+  }
+
   const kpiler=[
     dKpi,
+    emKpi,
     {lbl:'Vadeli CVD',val:bigSigned(L.vadeli_cvd),
       sub:`${vcA.metin} · ${vcA.konum}`,cls:vcA.sinif,
       not:vcA.guvenilir?'':'⚠ yedek kaynak'},

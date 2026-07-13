@@ -3482,6 +3482,34 @@ def ozet_ve_analiz_dongusu():
                 except Exception as e:
                     logging.warning(f"Veri enjekte hatasi (kohort akisi devam eder): {e}")
 
+                # ---- v7.9: CANLI EMILIM anlik goruntusu ----
+                # "Su an emen kim?" sorusu bugune kadar HICBIR YERDEN okunamiyordu:
+                # emilim_borsasi yalnizca tasfiye/supurme OLAYI aninda kohorta
+                # yaziliyordu; dakikalik tabloda yok (sema sabit). balina_ayarlar
+                # zaten key-value JSONB ve panel zaten okuyor -> sifir migrasyon.
+                # Skoru ETKILEMEZ — sadece gozlemlenebilirlik. (_ayarlar_yaz kendi
+                # hatasini yutar; akis kesilmez.)
+                _ayarlar_yaz('canli_emilim', {
+                    'guncelleme': datetime.datetime.utcnow().isoformat(),
+                    'emilim_borsasi': (emilim or {}).get('emilim_borsasi'),
+                    'spot_egilim': (emilim or {}).get('spot_egilim'),
+                    'perp_egilim': (emilim or {}).get('perp_egilim'),
+                    'emilim_esnekligi': (emilim or {}).get('emilim_esnekligi'),
+                    'satici_tukenmesi': (emilim or {}).get('satici_tukenmesi'),
+                    'sonme_orani': (emilim or {}).get('sonme_orani'),
+                    'alici_tukenmesi': (emilim or {}).get('alici_tukenmesi'),
+                    'alici_sonme_orani': (emilim or {}).get('alici_sonme_orani'),
+                    'spot_borsa_sayisi': (emilim or {}).get('spot_borsa_sayisi'),
+                    'spot_bid_agir_sayi': (emilim or {}).get('spot_bid_agir_sayi'),
+                    'spot_ask_agir_sayi': (emilim or {}).get('spot_ask_agir_sayi'),
+                    'perp_borsa_sayisi': (emilim or {}).get('perp_borsa_sayisi'),
+                    'perp_bid_agir_sayi': (emilim or {}).get('perp_bid_agir_sayi'),
+                    'perp_ask_agir_sayi': (emilim or {}).get('perp_ask_agir_sayi'),
+                    'spot_ob_yasi_sn': round(spot_ob_yasi, 1) if spot_ob_yasi is not None else None,
+                    'perp_ob_yasi_sn': round(perp_ob_yasi, 1) if perp_ob_yasi is not None else None,
+                    'cvd_kaynak': cvd_kaynak_etiketi,
+                })
+
                 # ---- v7.3: TASFIYE KOHORTU — 2x2 faktoriyel olay kaydi ----
                 # A: zorla kapatma dikeni + OI dususu (v7.3.1: HAM OLGUDAN —
                 #    rejim adina bagli etiket, kanonik supurmenin geri-alim
@@ -3501,18 +3529,16 @@ def ozet_ve_analiz_dongusu():
                         "d_oi_pct": round(d_oi_k, 4),
                         "esik_c_neg": round(esik_c_neg, 1),
                         "tasfiye_long_yogunluk": round(skor_girdi['tasfiye_long_yogunluk'], 2),
-                        # ---- v7.5: EMİLİMİN YÖNÜ (sürekli değer; yeni HÜCRE AÇILMAZ) ----
-                        # 2x2 kohort yapisi KORUNUR. Ucuncu faktor hucre yapilsaydi
-                        # 8 hucre olurdu; ~30 olayda hucre basi n~4 -> hicbir sey
-                        # soylenemez ama biri sansen parlar ve "kesif" sanilir.
-                        # Surekli deger olarak yazilir; iki hafta sonra POST-HOC
-                        # dilimlenir ve post-hoc oldugu BILINEREK yorumlanir.
                         # ---- v7.5: EMİLİMİN YÖNÜ (surekli deger; yeni HUCRE ACILMAZ) ----
                         # 2x2 kohort yapisi KORUNUR. Ucuncu faktoru hucre yapmak
                         # 8 hucre demekti; ~30 olayda hucre basi n~4 -> hicbir sey
                         # soylenemez ama biri sansen parlar ve "kesif" sanilir.
                         # Surekli deger yazilir; iki hafta sonra POST-HOC dilimlenir
                         # ve post-hoc OLDUGU BILINEREK yorumlanir.
+                        # v7.9: v7.4'ten kalan MUKERRER blok kaldirildi — ayni 4 anahtar
+                        # asagida emilim['...'] ile bir daha yaziliyordu (son atama
+                        # kazandigi icin davranis ayniydi ama dogrudan indeksleme
+                        # _bos_emilim'in anahtar setine kirilgan bagimlilikti).
                         "emilim_borsasi": (emilim or {}).get('emilim_borsasi'),
                         "spot_egilim": (emilim or {}).get('spot_egilim'),
                         "perp_egilim": (emilim or {}).get('perp_egilim'),
@@ -3547,14 +3573,10 @@ def ozet_ve_analiz_dongusu():
                         "spot_cvd_giris": round(spot_cvd, 1),
                         "oi_giris": round(open_interest, 0),
                         "tasfiye_yonu": tasfiye_yonu,   # v7.3.1: hangi taraf flush oldu
-                        # v7.4: EMILIM AYRIMI — SUREKLI degerler (yeni hucre ACMA, §6).
-                        # None olabilir (akis yok); post-hoc dilimleme icin ham saklanir.
-                        "emilim_esnekligi": emilim['emilim_esnekligi'],
-                        "emilim_borsasi": emilim['emilim_borsasi'],
-                        "emilim_spot_pay": emilim['emilim_spot_pay'],
-                        "satici_tukenmesi": emilim['satici_tukenmesi'],
-                        "sonme_orani": emilim['sonme_orani'],
-                        "esik_spot_neg": emilim['esik_spot_neg'],
+                        # v7.9: eski v7.4 blogundan TEKIL kalan iki anahtar guvenli
+                        # (.get) bicimde tasindi; mukerrer 4'lusu yukarida tek kez var.
+                        "emilim_spot_pay": (emilim or {}).get('emilim_spot_pay'),
+                        "esik_spot_neg": (emilim or {}).get('esik_spot_neg'),
                     }
                     if supurme_yeni_onaylar:
                         for yon_o, o in supurme_yeni_onaylar:
