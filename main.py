@@ -345,8 +345,11 @@ SUPURME_COOLDOWN_DK = 60          # ayni seviye icin tekrar tetiklenme yasagi
 KAPITULASYON_CARPANI = 1.5        # d_vadeli <= esik_c_neg * 1.5 (tepe icin simetrik)
 
 # ================== v7.5 — EMİLİMİN YÖNÜ ==================
-# FAZ 1: SADECE ÖLÇER. Skoru ve sinyali ETKİLEMEZ (flag kapalı).
-EMILIM_YONU_AKTIF = False         # Faz 2'de acilir; once kohort kanit istesin
+# FAZ 1: SADECE ÖLÇER. Skoru ve sinyali ETKİLEMEZ.
+# v7.8 NOT: v7.5'in EMILIM_YONU_AKTIF bayragi KALDIRILDI — hicbir kod okumuyordu.
+# Boyle bir bayrak tam v7.3.1'de ogrenilen NO-OP mayinidir: Faz 2'de True yapilir,
+# hicbir sey degismez, sebebi haftalarca aranir. Emilimin Faz-2 salteri ZATEN
+# EMILIM_AYRIMI_AKTIF'tir (aile eslemesine bagli); ikinci bir salter kafa karistirir.
 EMILIM_OLCUM_AKTIF = True         # olcum + kohort kaydi acik (davranis DEGISMEZ)
 
 # --- satici tukenmesi ---
@@ -1546,11 +1549,30 @@ def _akis_tukenmesi(seri, yon, esik_c, esik_s, vol_pct):
     else:
         fiyat_ok = d_fiyat_tw < TUKENME_MAX_DUSUS_VOL * vol_pct
     return ((sonme_orani < TUKENME_SONME_ORANI) and fiyat_ok), sonme_orani
+# v7.8: _satici_tukenmesi sarmalayicisi KALDIRILDI — uretimde hicbir yer cagirmiyordu
+# (ana dongu dogrudan _akis_tukenmesi(seri,'SATIS',...) kullanir) ve imzasindaki
+# pencere_dk parametresi YOK SAYILIYORDU (yaniltici). Testler de gercek giris
+# noktasini (_akis_tukenmesi) cagirir.
 
 
-def _satici_tukenmesi(seri, esik_c, esik_s, vol_pct, pencere_dk=PENCERE_DK):
-    """Geriye-uyum sarmalayici: v7.6'da yonlu _akis_tukenmesi'ye devreder."""
-    return _akis_tukenmesi(seri, 'SATIS', esik_c, esik_s, vol_pct)
+def _cvd_kaynagi_tutarli(seri, pencere_sn):
+    """
+    v7.8 — Son pencere_sn icindeki kayitlar TEK CVD kaynagindan mi geldi?
+
+    calculated_cvd iki kaynaktan gelebilir: Coinalyze agregasi ('AGG') veya
+    WS-yedek ('WS', yalniz Binance). Ikisinin TABAN SEVIYESI farklidir; kaynak
+    gecisinin ustunden delta almak OLCUM degil GURULTUDUR (FIX1 ile ayni sinif:
+    outage/restart sonrasi dev sahte delta). Ozellikle Coinalyze DUZELDIKTEN
+    sonraki ilk dakikalarda kalite kapisi tekrar 'guvenilir' der ama pencerenin
+    eski ucu hala WS-tabanlidir -> karisik-tabanli delta skora sizabilirdi.
+
+    Karisiksa False -> arayan o dakika olcumu ATLAR (None yazar), 0.0 uydurmaz
+    (sifir tuzagi §9.2). Bos seri de False (olculemez)."""
+    if not seri:
+        return False
+    alt = seri[-1]['ts'] - pencere_sn
+    kaynaklar = {r.get('cvd_kaynak', 'BILINMIYOR') for r in seri if r['ts'] >= alt}
+    return len(kaynaklar) <= 1
 
 
 def _likidite_seviyeleri_bul(zaman_fiyat, vol_pct, tepe_mi=False):
@@ -2936,6 +2958,10 @@ def ozet_ve_analiz_dongusu():
                 else:
                     calculated_cvd = ws_vadeli_cvd
                     spot_cvd = ws_spot_cvd
+                # v7.8: kaynak ETIKETI seriye yazilir. AGG (Coinalyze) ve WS
+                # (Binance-yedek) TABANLARI farkli — gecisin ustunden delta almak
+                # gurultu uretir; okuyucular ayni-kaynak sartini bununla denetler.
+                cvd_kaynak_etiketi = 'AGG' if cvd_kaynak_saglikli else 'WS'
 
                 # ---- %1 DERİNLİK: Binance, Bybit ve OKX AYRI hesaplaniyor ----
                 bnb_bid_d = 0.0; bnb_ask_d = 0.0
@@ -2975,8 +3001,11 @@ def ozet_ve_analiz_dongusu():
                     kovalar[k]['borsalar'].add(borsa)
 
                 if anlik_fiyat > 0:
-                    alt_limit = anlik_fiyat * 0.99
-                    ust_limit = anlik_fiyat * 1.01
+                    # v7.8: 0.99/1.01 elle yazimi EMILIM_DERINLIK_PCT'ye baglandi
+                    # (sabit tanimliydi ama KULLANILMIYORDU — band tek yerden yonetilir;
+                    # 1-0.01/1+0.01 = ayni sayilar, davranis BIREBIR).
+                    alt_limit = anlik_fiyat * (1.0 - EMILIM_DERINLIK_PCT)
+                    ust_limit = anlik_fiyat * (1.0 + EMILIM_DERINLIK_PCT)
                     # v7.6: COK-BORSALI SPOT defter (ayri hesap, duvar haritasina
                     # girmez). Her TAZE borsanin bid/ask derinligi toplanir + mutabakat
                     # sayilir (kac borsada spot bid-agir). BUG DUZELTME: v7.5 burada
@@ -3144,7 +3173,8 @@ def ozet_ve_analiz_dongusu():
                 'ts': simdi_epoch, 'fiyat': anlik_fiyat,
                 'bid_d': order_book_depth_bid_1pct, 'ask_d': order_book_depth_ask_1pct,
                 'bnb_delta': bnb_delta, 'byb_delta': byb_delta, 'okx_delta': okx_delta,
-                'vadeli_cvd': calculated_cvd, 'spot_cvd': spot_cvd, 'oi': open_interest
+                'vadeli_cvd': calculated_cvd, 'spot_cvd': spot_cvd, 'oi': open_interest,
+                'cvd_kaynak': cvd_kaynak_etiketi   # v7.8: delta ancak AYNI kaynakla alinir
             }
             with durum.lock:
                 durum.gecmis_seri.append(anlik_kayit)
@@ -3169,7 +3199,14 @@ def ozet_ve_analiz_dongusu():
                 # sonrasi delik-asiri DEV delta, temiz delta'lara gore kalibre esigi
                 # saturasyona itip (yogunluk=1.0) YANLIS sinyal uretebilir -> BEKLE.
                 pencere_yasi = simdi_epoch - eski['ts']
-                if 150 <= pencere_yasi <= PENCERE_DK * 60 * 2.5 and eski['fiyat'] > 0:
+                # v7.8 (FIX1 sinifi): pencerenin IKI UCU da ayni CVD kaynagindan olmali.
+                # Coinalyze dusup WS-yedege gecince kalite kapisi zaten reddeder; ama
+                # Coinalyze DUZELINCE kapi hemen 'guvenilir' der, oysa eski uc ~12dk
+                # boyunca hala WS-tabanli olabilir -> karisik-tabanli DEV sahte delta
+                # skora sizardi. Karisiksa o dakika pencere=None (VERI_BEKLENIYOR) —
+                # olcemedigimizde uydurmayiz, BEKLEriz.
+                if (150 <= pencere_yasi <= PENCERE_DK * 60 * 2.5 and eski['fiyat'] > 0
+                        and eski.get('cvd_kaynak') == cvd_kaynak_etiketi):
                     d_vadeli = calculated_cvd - eski['vadeli_cvd']
                     d_spot = spot_cvd - eski['spot_cvd']
                     pencere = {
@@ -3236,7 +3273,12 @@ def ozet_ve_analiz_dongusu():
             }
             # v7.4/v7.6: satici VE alici tukenmesi ozet dongusunde (seri_kopya
             # burada var; balina_skoru_hesapla'ya seri gecirmemek icin burada).
-            if EMILIM_OLCUM_AKTIF:
+            # v7.8: tukenme 45dk'lik pencereden delta alir — pencere KARISIK
+            # kaynakli ise (Coinalyze<->WS gecisi) delta gurultudur; olcum ATLANIR
+            # (sonme=None). Kirli olcum, Faz-2 kararlarinin dayanacagi kohortu
+            # zehirlemesin: bosluk > cop.
+            if EMILIM_OLCUM_AKTIF and _cvd_kaynagi_tutarli(
+                    seri_kopya, TUKENME_DILIM_SAYISI * TUKENME_DILIM_DK * 60):
                 _sat_var, _sat_sonme = _akis_tukenmesi(
                     seri_kopya, 'SATIS', esik_c_neg, esik_spot_neg, esik_vol)
                 _ali_var, _ali_sonme = _akis_tukenmesi(
@@ -3489,6 +3531,9 @@ def ozet_ve_analiz_dongusu():
                         # ne siklikta bayatliyor, duvar vetosunu bayat oy kirletiyor mu?"
                         # sorusunu POST-HOC yanitlar; simdilik SADECE olculur.
                         "perp_ob_yasi_sn": round(perp_ob_yasi, 1) if perp_ob_yasi is not None else None,
+                        # v7.8: bu satir HANGI cetvelle olculdu? (AGG=Coinalyze, WS=yedek)
+                        # Faz-2 analizi WS-donemi satirlarini ayri tutabilsin diye.
+                        "cvd_kaynak": cvd_kaynak_etiketi,
                         "spot_bid_d": round(spot_bid_d, 0) if spot_bid_d else None,
                         "spot_ask_d": round(spot_ask_d, 0) if spot_ask_d else None,
                         "tasfiye_short_yogunluk": round(skor_girdi['tasfiye_short_yogunluk'], 2),

@@ -33,16 +33,16 @@ SABITLER = {'SINYAL_ESIGI','SINYAL_MARJI','MALIYET_CITASI_PCT','VE_ISLEM_MIN',
             'EMILIM_AYRIMI_AKTIF','EMILIM_OLCUM_AKTIF','EMILIM_MIN_AKIS',
             'EMILIM_GUCLU_ESIK','EMILIM_YOK_ESIK','EMILIM_SPOT_ESIGI',
             'TUKENME_DILIM_SAYISI','TUKENME_SONME_ORANI','TUKENME_MAX_DUSUS_VOL','PENCERE_DK',
-            # v7.5/v7.6:
-            'EMILIM_YONU_AKTIF','TUKENME_DILIM_DK','TUKENME_MIN_AKIS',
+            # v7.5/v7.6 (v7.8: EMILIM_YONU_AKTIF kaldirildi — olu salterdi):
+            'TUKENME_DILIM_DK','TUKENME_MIN_AKIS',
             'SPOT_OB_MAX_YAS_SN','EMILIM_EGILIM_ESIGI','EMILIM_DERINLIK_PCT',
             # v7.7:
             'PERP_OB_MAX_YAS_SN'}
 FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et',
                 '_tasfiye_bayraklari',
-                '_emilim_esnekligi','_emilim_borsasi','_satici_tukenmesi',
-                '_akis_tukenmesi'}  # v7.4/v7.6
+                '_emilim_esnekligi','_emilim_borsasi',
+                '_akis_tukenmesi','_cvd_kaynagi_tutarli'}  # v7.4/v7.6/v7.8
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -278,7 +278,9 @@ check("G2n: FAZ2'de gonullu SHORT_SQUEEZE hala vetolu (BEKLE)", sig3=='BEKLE' an
 # ---------- 6) v7.4 REFERANS VAKALARI (§7) + None yayilimi ----------
 # Gercek veri esikleri (578 kayittan olculdu): esik_c=382K, esik_s=1.73M, vol=0.022
 E_C, E_S, E_VOL = -381834.0, -1731424.0, 0.0221
-esnek = YENI['_emilim_esnekligi']; bors = YENI['_emilim_borsasi']; tuk = YENI['_satici_tukenmesi']
+esnek = YENI['_emilim_esnekligi']; bors = YENI['_emilim_borsasi']
+# v7.8: sarmalayici kaldirildi — test GERCEK uretim giris noktasini cagirir
+tuk = lambda seri, c, s, v: YENI['_akis_tukenmesi'](seri, 'SATIS', c, s, v)
 YOK, GUCLU = YENI['EMILIM_YOK_ESIK'], YENI['EMILIM_GUCLU_ESIK']
 
 # None YAYILIMI (§9.2 sifir tuzagi): akis yoksa None, 0.0 DEGIL
@@ -398,6 +400,19 @@ check("E-tuk(ALIS): sabit alis -> tukenme False", av_sbt is False)
 # (v7.4 abs()'i bunlari ayirt EDEMEZDI — v7.6 yonlu ayrimi bunu ispatliyor).
 av_yanlis,_ = akis_tuk(seri_yap([1.0,0.6,0.3],'SATIS'),'ALIS', E_C, E_S, E_VOL)
 check("E-tuk: yon ayrimi (sonen SATIS != alici tukenmesi)", av_yanlis is False, f"={av_yanlis}")
+
+# ---------- 7) v7.8: CVD KAYNAK TUTARLILIGI (FIX1 sinifi) ----------
+# Coinalyze<->WS gecisinde taban ziplar; karisik-kaynakli pencerede delta
+# gurultudur. Koruma: pencere icinde TEK kaynak yoksa olcum atlanir.
+kt = YENI['_cvd_kaynagi_tutarli']
+s_homo = [{'ts':1000.0+i*60,'cvd_kaynak':'AGG'} for i in range(10)]
+check("K1: tek kaynak -> tutarli", kt(s_homo, 600) is True)
+s_mix = [dict(r) for r in s_homo]; s_mix[7]['cvd_kaynak']='WS'
+check("K2: pencere icinde kaynak gecisi -> TUTARSIZ", kt(s_mix, 600) is False)
+# pencere DISINDA kalan eski gecis SAYILMAZ (sadece bakilan pencere onemli)
+s_eski = [{'ts':100.0,'cvd_kaynak':'WS'}] + [{'ts':5000.0+i*60,'cvd_kaynak':'AGG'} for i in range(5)]
+check("K3: pencere disi eski gecis sayilmaz", kt(s_eski, 240) is True)
+check("K4: bos seri -> False (olculemez, 0.0/True UYDURULMAZ)", kt([], 600) is False)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
