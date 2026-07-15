@@ -41,20 +41,43 @@ SABITLER = {'SINYAL_ESIGI','SINYAL_MARJI','MALIYET_CITASI_PCT','VE_ISLEM_MIN',
             'TUKENME_DILIM_DK','TUKENME_MIN_AKIS',
             'SPOT_OB_MAX_YAS_SN','EMILIM_EGILIM_ESIGI','EMILIM_DERINLIK_PCT',
             # v7.7:
-            'PERP_OB_MAX_YAS_SN'}
+            'PERP_OB_MAX_YAS_SN',
+            # v8.0 swing seviye haritasi:
+            'SWING_SEVIYE_AKTIF','SWING_ONCELIK','SWING_ROUND_ADIM','SWING_ROUND_MENZIL_VOL',
+            'SWING_VP_KOVA_VOL','SWING_VP_DEGER_ALANI','SWING_LIQ_KOVA_VOL',
+            'SWING_LIQ_MIN_KAT',
+            # v8.1 FAZ B swing motoru:
+            'SWING_MOTOR_AKTIF','SCALP_SINYAL_AKTIF','SWING_YAKINLIK_VOL','SWING_MIN_RR',
+            'SWING_STOP_TAMPON_VOL','SWING_FUNDING_ASIRI','SWING_YAPISAL',
+            # v8.2 FAZ C kayit:
+            'SWING_ARSIV_AKTIF','SWING_UFUKLAR'}
 FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et',
                 '_tasfiye_bayraklari',
                 '_emilim_esnekligi','_emilim_borsasi',
-                '_akis_tukenmesi','_cvd_kaynagi_tutarli'}  # v7.4/v7.6/v7.8
+                '_akis_tukenmesi','_cvd_kaynagi_tutarli',
+                '_swing_seviye_haritasi',
+                '_emici_yon','_swing_kademe','_swing_hedef_stop',
+                '_swing_backtest','_grab_ozeti'}  # v7.4/v7.6/v7.8/v8.0/v8.1/v8.2
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
 # dogrulayici tespiti.)
+# v7.9 (tasinabilirlik): taban ONCE git-ref'ten okunur; bu repo'nun tarihcesinde
+# o commit YOKSA (kod baska repoya kopyalandi — orn. balina-avcisi-core) yani
+# sabitlenmis v72_taban_main.py DOSYASINDAN okunur. Ikisi de ayni donmus v7.2
+# kaynagidir; frozen-taban garantisi korunur, git tarihcesine bagimlilik biter.
 V72_COMMIT = 'e6ee0ac'
-eski_kaynak = subprocess.run(['git','show',f'{V72_COMMIT}:main.py'],capture_output=True,
-                             text=True,cwd=REPO).stdout
-assert eski_kaynak, "v7.2 taban commit'i bulunamadi"
+try:
+    eski_kaynak = subprocess.run(['git','show',f'{V72_COMMIT}:main.py'],capture_output=True,
+                                 text=True,cwd=REPO).stdout
+except (FileNotFoundError, OSError):
+    eski_kaynak = ''   # v8.7: git binary'si olmayan makinede dosya-yedege dus (crash degil)
+if not eski_kaynak:
+    _taban_dosya = os.path.join(REPO, 'v72_taban_main.py')
+    if os.path.exists(_taban_dosya):
+        eski_kaynak = open(_taban_dosya).read()
+assert eski_kaynak, "v7.2 taban ne git commit ('e6ee0ac') ne de v72_taban_main.py dosyasi olarak bulundu"
 yeni_kaynak = open(os.path.join(REPO,'main.py')).read()
 ESKI = yukle(eski_kaynak, {'fn':FONKSIYONLAR,'sabit':SABITLER})
 YENI = yukle(yeni_kaynak, {'fn':FONKSIYONLAR,'sabit':SABITLER})
@@ -417,6 +440,200 @@ check("K2: pencere icinde kaynak gecisi -> TUTARSIZ", kt(s_mix, 600) is False)
 s_eski = [{'ts':100.0,'cvd_kaynak':'WS'}] + [{'ts':5000.0+i*60,'cvd_kaynak':'AGG'} for i in range(5)]
 check("K3: pencere disi eski gecis sayilmaz", kt(s_eski, 240) is True)
 check("K4: bos seri -> False (olculemez, 0.0/True UYDURULMAZ)", kt([], 600) is False)
+
+# ---------- 8) v8.0: SWING SEVIYE HARITASI (scalp'tan AYRI kod yolu) ----------
+# SAF fonksiyon: coklu kaynak -> tek liste, priority-merge. Skoru ETKILEMEZ
+# (bu blok balina_skoru_hesapla'yi hic cagirmaz; esdegerlik yukarida fark=0).
+import math as _m
+ssh = YENI['_swing_seviye_haritasi']
+_t0 = 1_000_000.0
+_seri = [(_t0 + i*60, 62000 + 800*_m.sin(i/120)
+          + (600 if 700 < i < 720 else 0) - (1000 if 200 < i < 210 else 0))
+         for i in range(1500)]                                   # ~25 saat
+_dip = [{'fiyat':61000.0,'test':4,'yas_dk':300}]
+_tep = [{'fiyat':63500.0,'test':3,'yas_dk':500}]
+_liq = [(61050.0,5e6,0),(61040.0,4e6,0),(63480.0,0,3e6),(62000.0,1e5,1e5)]
+_elle = [{'fiyat':61010.0,'not':'benim dip'}]                    # 61000 pivotuna 1xvol icinde
+_out = ssh(62000.0, _seri, 0.15, _dip, _tep, _liq, _elle)
+_gor = [s for s in _out if not s['gizli']]
+_kaynaklar = set(s['kaynak'] for s in _gor)
+check("W1: coklu kaynak uretildi (SWING_PIVOT/HL/ROUND/VP)",
+      {'ROUND','VP','HL'} <= _kaynaklar and len(_gor) > 0, f"={sorted(_kaynaklar)}")
+# A3: elle seviye, yakin pivotu/round'u GIZLER; kendisi GORUNUR kalir + oncelik 0
+_yakin = [s for s in _out if 60950 < s['fiyat'] < 61080]
+_elle_gor = [s for s in _yakin if s['kaynak']=='ELLE']
+_pivot_giz = [s for s in _yakin if s['kaynak']=='SWING_PIVOT' and s['gizli']]
+check("W2 (A3): elle seviye gorunur + oncelik 0",
+      len(_elle_gor)==1 and _elle_gor[0]['gizli'] is False and _elle_gor[0]['oncelik']==0)
+check("W3 (A3): 1xvol icindeki oto pivot GIZLENDI (elle KAZANDI)",
+      len(_pivot_giz)>=1, f"yakin={[(s['kaynak'],s['gizli']) for s in _yakin]}")
+# oncelik dogru sirali: ELLE(0) < VP(1) < HL(2) < LIQ(3) < SWING_PIVOT(4) < ROUND(5)
+check("W4: oncelik haritasi dogru", YENI['SWING_ONCELIK']['ELLE']==0
+      and YENI['SWING_ONCELIK']['ROUND']==5 and YENI['SWING_ONCELIK']['VP']<YENI['SWING_ONCELIK']['HL'])
+# vol=0 -> VP/LIQ (vol-bagimli) ATLANIR; vol-bagimsizlar (ELLE/HL/ROUND/PIVOT) uretilir
+_vz = [s for s in ssh(62000.0, _seri, 0.0, _dip, _tep, _liq, _elle) if not s['gizli']]
+_vz_k = set(s['kaynak'] for s in _vz)
+check("W5: vol=0 -> VP/LIQ atlanir, digerleri uretilir",
+      'VP' not in _vz_k and 'LIQ' not in _vz_k and 'ROUND' in _vz_k, f"={sorted(_vz_k)}")
+# SIFIR TUZAGI: bos girdi -> bos liste (sahte seviye UYDURULMAZ)
+check("W6: bos girdi -> bos liste (sahte seviye uydurulmaz)", ssh(0,[],0,[],[],[],[])==[])
+# round-number'lar gercekten yuvarlak ($1000 kati) ve anlik fiyat menzilinde
+_round = [s['fiyat'] for s in _out if s['kaynak']=='ROUND']
+check("W7: ROUND seviyeler $1000 kati", all(abs(r % 1000.0) < 0.5 for r in _round) and len(_round)>=2, f"={_round[:5]}")
+
+# ---------- 9) v8.1 FAZ B: KADEMELI SWING MOTORU (scalp'tan AYRI) ----------
+# SAF fonksiyonlar; balina_skoru_hesapla'yi HIC cagirmaz (fark=0 yukarida korunur).
+kdm = YENI['_swing_kademe']; hst = YENI['_swing_hedef_stop']; eyn = YENI['_emici_yon']
+_emL = {'emilim_esnekligi':0.2,'satici_tukenmesi':True,'alici_tukenmesi':False,'spot_egilim':0.3}
+_emS = {'emilim_esnekligi':0.2,'satici_tukenmesi':False,'alici_tukenmesi':True,'spot_egilim':-0.3}
+check("SB0: emici_yon LONG/SHORT/None dogru",
+      eyn(_emL)=='LONG' and eyn(_emS)=='SHORT' and eyn({}) is None and eyn({'emilim_esnekligi':2.0}) is None)
+_sev = [{'fiyat':61000.0,'kaynak':'SWING_PIVOT','gizli':False},
+        {'fiyat':62000.0,'kaynak':'ROUND','gizli':False},
+        {'fiyat':63500.0,'kaynak':'HL','gizli':False,'not':'dun H'},
+        {'fiyat':63624.0,'kaynak':'VP','gizli':False},
+        {'fiyat':60480.0,'kaynak':'LIQ','gizli':False,'hacim':9e7}]
+_vol=0.15
+_g0={'yon':None,'baslad':False,'tamam':False}
+_gL={'yon':'LONG','baslad':True,'tamam':True}
+_gS={'yon':'SHORT','baslad':True,'tamam':True}
+check("SB1: seviye yok -> kademe YOK", kdm(62000,[],_vol,{},False,{},0.0001,0.0)['kademe']=='YOK')
+_izle=kdm(61150,_sev,_vol,_g0,False,{},0.0001,0.0)
+check("SB2: seviyeye 2xvol yakin, sensor yok -> IZLE (skor 25)",
+      _izle['kademe']=='IZLE' and _izle['kademe_skoru']==25, f"={_izle['kademe']}/{_izle['kademe_skoru']}")
+_haz=kdm(61150,_sev,_vol,_g0,False,_emL,0.0001,0.0)
+check("SB3: + emici basladi -> HAZIRLAN", _haz['kademe']=='HAZIRLAN' and _haz['yon']=='LONG')
+_sinL=kdm(61150,_sev,_vol,_gL,True,_emL,0.0001,0.0)
+check("SB4: 4/4 (seviye+grab+tasfiye+emici) uyumlu -> SINYAL LONG skor 100",
+      _sinL['kademe']=='SINYAL' and _sinL['yon']=='LONG' and _sinL['kademe_skoru']==100,
+      f"={_sinL['kademe']}/{_sinL['yon']}/{_sinL['kademe_skoru']}")
+_sinS=kdm(63450,_sev,_vol,_gS,True,_emS,0.0001,0.0)
+check("SB5: direnc altinda 4/4 SHORT -> SINYAL SHORT", _sinS['kademe']=='SINYAL' and _sinS['yon']=='SHORT')
+# YON CELISKISI: grab LONG ama emici SHORT (gercek yonlu sensorler celisir) -> SINYAL YOK.
+# (v8.4: seviye_yon yon uzlasisindan cikarildi; celiski artik SADECE grab<->emici'den.)
+_cel=kdm(61150,_sev,_vol,_gL,True,_emS,0.0001,0.0)
+check("SB6: grab<->emici yon celiskisi -> SINYAL DEGIL (yon=None)",
+      _cel['kademe']!='SINYAL' and _cel['yon'] is None, f"={_cel['kademe']}/{_cel['yon']}")
+# UZLASMA: grab SHORT + emici SHORT, seviye altta (eski seviye_yon LONG olurdu) ->
+# artik seviye_yon karismaz -> SHORT SINYAL (eski kod bunu YANLISLIKLA bloklardi)
+_uzl=kdm(61150,_sev,_vol,_gS,True,_emS,0.0001,0.0)
+check("SB6b: grab+emici SHORT uzlasti (seviye konumu karismaz) -> SINYAL SHORT",
+      _uzl['kademe']=='SINYAL' and _uzl['yon']=='SHORT', f"={_uzl['kademe']}/{_uzl['yon']}")
+# uzak seviye -> IZLE'ye bile girmez (mesafe>2xvol)
+_uzak=kdm(62800,_sev,_vol,_gL,True,_emL,0.0001,0.0)
+check("SB7: seviye 2xvol'den uzak -> kademe YOK (yakin degil)", _uzak['kademe']=='YOK')
+# --- _swing_hedef_stop ---
+_hS=hst('SHORT',63450,_sev,_vol,magnet=60480.0)
+check("SB8: SHORT hedef/stop yapidan; stop YAPISAL (63500 HL, ROUND degil) + tampon",
+      _hS['kisa_hedef']==62000.0 and _hS['swing_hedef']==60480.0 and 63500 < _hS['stop'] < 63600
+      and _hS['gecerli'] is True, f"={_hS}")
+check("SB9: rr_swing hesabi dogru (giris-swing)/(stop-giris)",
+      abs(_hS['rr_swing'] - (63450-60480)/(_hS['stop']-63450)) < 0.1)
+_hL=hst('LONG',61150,_sev,_vol,magnet=None)
+check("SB10: LONG simetrik; stop ALT yapisal (61000 pivot) - tampon, gecerli",
+      _hL['kisa_hedef']==62000.0 and _hL['stop'] < 61000 and _hL['gecerli'] is True)
+# R/R vetosu: swing hedef cok yakin -> rr_swing<1.5 -> gecerli False
+_bad=hst('SHORT',62050,[{'fiyat':62000.0,'kaynak':'HL','gizli':False},
+                        {'fiyat':63624.0,'kaynak':'VP','gizli':False}],_vol,magnet=62000.0)
+check("SB11: rr_swing < SWING_MIN_RR -> gecerli False (kotu R/R -> sinyal yok)",
+      _bad['gecerli'] is False and _bad['rr_swing'] < YENI['SWING_MIN_RR'])
+check("SB12: yon yok / yapisal eksik -> gecerli False (uydurmaz)",
+      hst(None,62000,_sev,_vol)['gecerli'] is False
+      and hst('SHORT',62000,[{'fiyat':61000.0,'kaynak':'ROUND','gizli':False}],_vol)['gecerli'] is False)
+# BAYRAKLAR: swing acik, scalp susturuldu; Faz 1 hala kapali
+check("SB13: SWING_MOTOR_AKTIF=True, SCALP_SINYAL_AKTIF=False (scalp sustu)",
+      YENI['SWING_MOTOR_AKTIF'] is True and YENI['SCALP_SINYAL_AKTIF'] is False)
+# AYRI KOD YOLU ISPATI: swing fonksiyonlari balina_skoru_hesapla cagirmaz
+import ast as _ast
+_src = open(os.path.join(REPO,'main.py')).read()
+_swing_fn = [n for n in _ast.walk(_ast.parse(_src)) if isinstance(n,_ast.FunctionDef)
+             and n.name in ('_swing_kademe','_swing_hedef_stop','_emici_yon')]
+_cagrilar = set()
+for _fn in _swing_fn:
+    for _n in _ast.walk(_fn):
+        if isinstance(_n,_ast.Call) and isinstance(_n.func,_ast.Name): _cagrilar.add(_n.func.id)
+check("SB14: swing fonksiyonlari SKOR fonksiyonu cagirmaz (ayri kod yolu)",
+      'balina_skoru_hesapla' not in _cagrilar and 'supurme_takip_et' not in _cagrilar,
+      f"cagirdiklari={sorted(_cagrilar)}")
+
+# ---------- 10) v8.2 FAZ C: SWING KOHORT GERI-TESTI (scalp'tan AYRI) ----------
+import datetime as _dt
+bt = YENI['_swing_backtest']
+UF = YENI['SWING_UFUKLAR']
+_t0 = 2_000_000.0
+def _seri_yon(bas, adim, n=600):    # dogrusal fiyat serisi (dakikada 1)
+    return [(_t0 + i*60, bas + i*adim) for i in range(n)]
+_z = _dt.datetime.utcfromtimestamp(_t0 + 60).isoformat()   # sinyal: 2. kayit
+# WIN: SHORT, fiyat DUSUYOR -> hedef 61000 once vurulur (stop 64000 hic)
+_win_seri = _seri_yon(63450, -15)         # dik dusus: 4s icinde 61000 vurulur
+_o_win = [{'zaman':_z,'yon':'SHORT','swing_hedef':61000.0,'stop':64000.0,'rr_swing':3.0}]
+_r_win = bt(_o_win, _win_seri, UF)['4s']
+check("SC1: SHORT hedef ONCE vuruldu -> WIN + ort_r=+rr",
+      _r_win['win']==1 and _r_win['loss']==0 and _r_win['isabet']==100.0 and _r_win['ort_r']==3.0,
+      f"={_r_win}")
+# LOSS: SHORT, fiyat YUKSELIYOR -> stop 64000 once vurulur (hedef 61000 hic)
+_loss_seri = _seri_yon(63450, +5)
+_o_loss = [{'zaman':_z,'yon':'SHORT','swing_hedef':61000.0,'stop':64000.0,'rr_swing':3.0}]
+_r_loss = bt(_o_loss, _loss_seri, UF)['4s']
+check("SC2: SHORT stop ONCE vuruldu -> LOSS + ort_r=-1",
+      _r_loss['loss']==1 and _r_loss['win']==0 and _r_loss['isabet']==0.0 and _r_loss['ort_r']==-1.0,
+      f"={_r_loss}")
+# ACIK: olay serinin SONUNA yakin -> uzun ufuk (3g) henuz dolmadi + hedef/stop uzak
+_z_yeni = _dt.datetime.utcfromtimestamp(_win_seri[-1][0]-120).isoformat()
+_o_acik = [{'zaman':_z_yeni,'yon':'LONG','swing_hedef':999999.0,'stop':1.0,'rr_swing':3.0}]
+_r_acik = bt(_o_acik, _win_seri, UF)
+check("SC3: cozulmemis olay -> ACIK (win/loss'a sayilmaz)",
+      _r_acik['3g']['acik']==1 and _r_acik['3g']['n']==0 and _r_acik['3g']['isabet'] is None)
+# LONG simetrik WIN: fiyat yukseliyor -> hedef ustte vurulur
+_o_long = [{'zaman':_z,'yon':'LONG','swing_hedef':64000.0,'stop':61000.0,'rr_swing':2.0}]
+_r_long = bt(_o_long, _seri_yon(63450,+5), UF)['4s']
+check("SC4: LONG simetrik -> hedef ust vuruldu WIN", _r_long['win']==1 and _r_long['ort_r']==2.0)
+# 4 ufuk uretiliyor + dayaniklilik
+check("SC5: 4 ufuk (4s/12s/1g/3g) + bos girdi guvenli",
+      [e for e,_ in UF]==['4s','12s','1g','3g'] and bt([], _win_seri, UF)['4s']['n']==0
+      and bt(_o_win, [], UF)['4s']['n']==0)
+check("SC6: SWING_ARSIV_AKTIF + ufuk sabiti dogru",
+      YENI['SWING_ARSIV_AKTIF'] is True and len(YENI['SWING_UFUKLAR'])==4)
+
+# ---------- 11) v8.7: DENETIM DUZELTMELERI ----------
+go = YENI['_grab_ozeti']; GECER = YENI['SUPURME_GECERLILIK_DK']*60
+_now=1_000_000.0
+# SILAHLI baslad SAYILMAZ (denetim 2/2 KESIN: HAZIRLAN pivot yakininda surekli aciliyordu)
+check("GO1: SILAHLI tek basina -> baslad False (yakinlik IZLE'nin isi)",
+      go({58000:{'durum':'SILAHLI'}},{},_now)=={'yon':None,'baslad':False,'tamam':False})
+check("GO2: DELINDI -> baslad True, tamam False, yon LONG(dip)",
+      go({58000:{'durum':'DELINDI'}},{},_now)=={'yon':'LONG','baslad':True,'tamam':False})
+check("GO3: taze ONAYLI -> tamam True",
+      go({58000:{'durum':'ONAYLI','onay_ts':_now-60}},{},_now)['tamam'] is True)
+# yetim/bayat ONAYLI (gecerlilik doldu) tamam SAYILMAZ (denetim 2/2 KESIN)
+check("GO4: bayat ONAYLI (gecerlilik doldu) -> tamam False, baslad False",
+      go({58000:{'durum':'ONAYLI','onay_ts':_now-GECER-60}},{},_now)=={'yon':None,'baslad':False,'tamam':False})
+check("GO5: tepe DELINDI -> yon SHORT",
+      go({},{62000:{'durum':'DELINDI'}},_now)['yon']=='SHORT')
+check("GO6: dip+tepe ayni anda aktif -> yon None (celiski, SINYAL kapanir)",
+      go({58000:{'durum':'DELINDI'}},{62000:{'durum':'DELINDI'}},_now)['yon'] is None)
+# funding_asiri dali (100x funding hatasinin regresyon kapisi)
+_fh=kdm(61150,_sev,_vol,_g0,False,{},0.001,0.0)
+check("SB15: funding asiri (0.001>0.0005) tek basina -> HAZIRLAN + sebep",
+      _fh['kademe']=='HAZIRLAN' and any('funding' in s for s in _fh['sebepler']))
+_fn=kdm(61150,_sev,_vol,_g0,False,{},0.0001,0.0)
+check("SB16: normal funding (0.0001) -> IZLE (HAZIRLAN tetiklenmez)", _fn['kademe']=='IZLE')
+# SHORT + magnet=None -> swing_hedef en uzak ALT seviye
+_hm=hst('SHORT',63450,_sev,_vol,magnet=None)
+check("SB17: SHORT magnet=None -> swing_hedef en uzak alt seviye (60480)",
+      _hm['swing_hedef']==60480.0 and _hm['gecerli'] is True, f"={_hm['swing_hedef']}")
+# W8: LIQ kaynagi pozitif assert. Kume esigi MEDYAN-kovanin katidir; gercekci
+# arka-plan (cok sayida kucuk kova) olmadan medyan buyur ve kume gecemez —
+# ilk fixtur bu yuzden kusurluydu. 40 kucuk arka-plan + 1 buyuk kume.
+_liq_arka=[(60000.0+i*137.0, 1e4, 1e4) for i in range(40)]
+_w8=ssh(62000.0,_seri,0.15,[],[],_liq_arka+[(58200.0,9e6,0)],[])
+check("W8: LIQ kumesi gorunur uretildi (pozitif kanit)",
+      any(s['kaynak']=='LIQ' and not s['gizli'] and abs(s['fiyat']-58200)<200 for s in _w8),
+      f"LIQ={[s['fiyat'] for s in _w8 if s['kaynak']=='LIQ']}")
+# _swing_backtest TZ bagimsizligi: naive zaman UTC varsayilir (Istanbul'da da ayni sonuc)
+import os as _os
+check("SC7: backtest naive zamani UTC varsayar (fixtur utcfromtimestamp ile uyumlu)",
+      bt(_o_win,_win_seri,UF)['4s']['win']==1)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")

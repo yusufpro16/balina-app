@@ -152,6 +152,9 @@ class CanliDurum:
         self.agg_open_interest = 0.0
         self.agg_funding = 0.0
         self.agg_ls_ratio = 0.0
+        # v8.6: Binance global hesap L/S orani (Coinalyze L/S bos donunce fallback)
+        self.binance_ls_ratio = 0.0
+        self.binance_ls_zaman = 0.0
         self.agg_spot_cvd = 0.0
         self.agg_vadeli_cvd = 0.0
         self.coinalyze_saglikli = False
@@ -217,6 +220,11 @@ class CanliDurum:
         # Supurme durum makinesi: {seviye_fiyat: {...durum...}} (SupurmeTakipci yonetir)
         self.supurme_dip_durumlari = {}
         self.supurme_tepe_durumlari = {}
+        # v8.0/v8.1 SWING: seviye haritasi (adaptif_esik 10dk yazar) + karar (ozet dk)
+        self.swing_seviyeler = []
+        self.swing_karar = {}
+        self.swing_son_kademe = 'YOK'   # v8.2: rising-edge (SINYAL kohort kaydi bir kez)
+        self.son_swing_kohort_ts = {}   # v8.7: yon-bazli cooldown (SINYAL titremesi coklu kayit acmasin)
         # Kohort tekrar-yazim korumasi (rising-edge):
         self.son_tasfiye_kohort_ts = {"LONG": 0.0, "SHORT": 0.0}
         # Kohort bekleyen-olay tamponu: Supabase gecici hatasi (503/timeout)
@@ -334,6 +342,38 @@ SEVIYE_KORUMA_DK = 60             # son 60dk'da olusan dip/tepe likidite HAVUZU 
 SEVIYE_KUMELEME_VOL = 1.0         # 1 x volatilite icindeki pivotlar ayni seviye
 SEVIYE_PIVOT_PENCERE_DK = 15      # pivot tespiti icin +/- pencere
 
+# --- v8.0: SWING SEVIYE HARITASI (scalp'tan AYRI kod yolu) ---
+# KURAL: scalp skor yoluna (balina_skoru_hesapla) DOKUNMAZ. _swing_seviye_haritasi
+# SAF fonksiyondur; ciktisi yalnizca balina_ayarlar['swing_seviyeler_oto']'ya yazilir.
+# Faz 1 esdegerligi (fark=0) korunur.
+SWING_SEVIYE_AKTIF   = True        # oto seviye uretimi + yazimi acik (skoru ETKILEMEZ)
+# Oncelik: kucuk sayi = yuksek oncelik. Elle > VP > HL > LIQ > SWING_PIVOT > ROUND.
+SWING_ONCELIK = {'ELLE': 0, 'VP': 1, 'HL': 2, 'LIQ': 3, 'SWING_PIVOT': 4, 'ROUND': 5}
+SWING_ROUND_ADIM       = 1000.0    # yuvarlak-sayi araligi ($). Round sayilar dogasi geregi mutlak.
+SWING_ROUND_MENZIL_VOL = 30.0      # anlik fiyatin +/- (bu x vol%) menzilindeki yuvarlaklar
+SWING_VP_KOVA_VOL      = 0.25       # VP fiyat kovasi genisligi (vol% kati)
+SWING_VP_DEGER_ALANI   = 0.70       # value area orani (POC etrafinda hacmin %70'i — standart VA)
+SWING_LIQ_KOVA_VOL     = 0.50       # likidasyon kumesi kova genisligi (vol% kati)
+SWING_LIQ_MIN_KAT      = 3.0        # kova hacmi medyan-kovanin bu kati ise "kume" sayilir
+
+# --- v8.1 FAZ B: KADEMELI SWING MOTORU (scalp'tan AYRI kod yolu) ---
+# KURAL: scalp skor yoluna (balina_skoru_hesapla) DOKUNULMAZ. Swing kararlari
+# _swing_kademe/_swing_hedef_stop SAF fonksiyonlarindan gelir; cikti yalniz
+# balina_ayarlar['swing_karar']'a yazilir. Scalp SUSTURMA payload seviyesinde
+# (sinyal_durumu) yapilir -> balina_skoru_hesapla degismez, Faz 1 fark=0 korunur.
+SWING_MOTOR_AKTIF    = True         # swing motoru uretir + yazar (ayri anahtar)
+SCALP_SINYAL_AKTIF   = False        # scalp sinyali SUSTURULDU (kohort/skorlar KAYITTA KALIR;
+                                    # yalniz DB'ye yazilan aktif sinyal_durumu susar)
+SWING_YAKINLIK_VOL   = 2.0          # fiyat seviyeye bu x vol yaklasinca IZLE kademesi
+SWING_MIN_RR         = 1.5          # rr_swing < bu -> SINYAL VERILMEZ (kotu R/R)
+SWING_STOP_TAMPON_VOL = 0.2         # stop = yapisal seviye +/- bu x vol (tampon)
+SWING_FUNDING_ASIRI  = 0.0005       # |funding| > bu -> kalabalik asiri (HAZIRLAN tetigi)
+SWING_YAPISAL = ('ELLE', 'VP', 'HL', 'SWING_PIVOT', 'LIQ')  # stop bunlardan (ROUND zayif, stop olmaz)
+# v8.2 FAZ C: KAYIT (arsiv + swing kohortu). Scalp'tan AYRI; skoru ETKILEMEZ.
+SWING_ARSIV_AKTIF = True            # dakikalik swing kolonlarini balina_avcisi_data'ya YAZ
+                                   # (UPDATE ile; SQL kolonlari yoksa gracefully atlar).
+SWING_UFUKLAR = (('4s', 4*3600), ('12s', 12*3600), ('1g', 86400), ('3g', 3*86400))  # swing geri-test ufuklari
+
 SUPURME_YAKINLIK_VOL = 2.0        # fiyat seviyeye 2 x vol yaklasinca "silahlan"
 SUPURME_MIN_DELME_VOL = 0.3       # fitil en az 0.3 x vol kadar otesine gecmeli
 SUPURME_MAX_DELME_VOL = 8.0       # bundan derin = KIRILMA, supurme degil
@@ -350,7 +390,8 @@ KAPITULASYON_CARPANI = 1.5        # d_vadeli <= esik_c_neg * 1.5 (tepe icin sime
 # Boyle bir bayrak tam v7.3.1'de ogrenilen NO-OP mayinidir: Faz 2'de True yapilir,
 # hicbir sey degismez, sebebi haftalarca aranir. Emilimin Faz-2 salteri ZATEN
 # EMILIM_AYRIMI_AKTIF'tir (aile eslemesine bagli); ikinci bir salter kafa karistirir.
-EMILIM_OLCUM_AKTIF = True         # olcum + kohort kaydi acik (davranis DEGISMEZ)
+# v8.7: buradaki EMILIM_OLCUM_AKTIF cift tanimi KALDIRILDI (asagida v7.4 blogunda
+# tek tanim var; ilkini degistirmek sessiz NO-OP idi — denetim bulgusu).
 
 # --- satici tukenmesi ---
 TUKENME_DILIM_DK = 15             # ardisik dilim uzunlugu (dakika)
@@ -520,6 +561,28 @@ def rest_yardimci_guncelle():
 
             time.sleep(0.3)
 
+            # ===== v8.6: BINANCE GLOBAL L/S ORANI (Coinalyze fallback'i) =====
+            # Coinalyze long-short-ratio canli ortamda bos/0 donuyor (panel 'veri yok').
+            # Binance /futures/data/globalLongShortAccountRatio ucretsiz+public ve
+            # kalabalik baglami icin yeterli. Oncelik Coinalyze'da kalir: ozet dongusu
+            # yalniz agg_ls<=0 iken bunu kullanir. +1 cagri/dk, dusuk agirlik — ban
+            # riski yok. Basarisizsa zaman damgasi guncellenmez -> bayat sayilir
+            # (sifir tuzagi: eski deger taze gibi okunmaz).
+            try:
+                bls = session.get(
+                    f"{base}/futures/data/globalLongShortAccountRatio"
+                    f"?symbol=BTCUSDT&period=5m&limit=1", timeout=5).json()
+                if isinstance(bls, list) and bls:
+                    _blsv = float(bls[-1].get('longShortRatio', 0) or 0)
+                    if _blsv > 0:
+                        with durum.lock:
+                            durum.binance_ls_ratio = _blsv
+                            durum.binance_ls_zaman = time.time()
+            except Exception as e:
+                logging.warning(f"Binance L/S hatasi: {e}")
+
+            time.sleep(0.3)
+
             # ===== v7.5: BINANCE SPOT ORDER BOOK =====
             # api.binance.com = SPOT (fapi = vadeli). Ayri host, ayri limit havuzu.
             # depth?limit=1000 agirligi 50; dakikada 1 kez -> limitin %2'si. Guvenli.
@@ -625,10 +688,13 @@ def rest_yardimci_guncelle():
             # ÖNEMLİ: BTC-USDT-SWAP'ta 1 kontrat = 0.0001 BTC (100 kontrat = 0.01 BTC).
             # Kontrat degeri (ctVal) borsanin instruments API'sinden BİR KEZ cekilir;
             # OKX ileride degistirse kod kendini duzeltir. Cekilemezse guvenli
-            # varsayilan 0.0001 kullanilir. (Eski 0.01 sabiti 100x YANLISTI.)
+            # varsayilan 0.01 kullanilir. v8.7: canli Render logu API'nin 0.01
+            # dondugunu KANITLADI ("ctVal API'den alindi: 0.01 BTC/kontrat");
+            # eski 0.0001 varsayilani 100x KUCUKTU — API dusseydi OKX derinligi
+            # 100x eksik olurdu. (Onceki yorum tersini iddia ediyordu; canli veri kazanir.)
             try:
                 if not hasattr(rest_yardimci_guncelle, "_okx_ctval"):
-                    rest_yardimci_guncelle._okx_ctval = 0.0001  # guvenli varsayilan
+                    rest_yardimci_guncelle._okx_ctval = 0.01  # guvenli varsayilan (canli API degeri)
                     try:
                         inst = session.get(
                             "https://www.okx.com/api/v5/public/instruments"
@@ -748,6 +814,19 @@ def _ayarlar_oku(anahtar):
     except Exception as e:
         logging.warning(f"Ayarlar okuma hatasi ({anahtar}): {e}")
         return None
+
+
+def _ayarlar_oku_katilim(anahtar):
+    """v8.7 — read-modify-write icin okuma: (ok, kayit) doner. ok=False = OKUMA
+    HATASI; 'kayit yok' (ok=True, None) ile AYRILIR. RMW yapan cagiran, hatada
+    yazmayi ATLAMALIDIR — yoksa gecici bir 503 tum olay gecmisini bos listeyle
+    ezer (denetim bulgusu; kullanici benzer bir veri kaybini zaten yasadi)."""
+    try:
+        res = supabase.table("balina_ayarlar").select("*").eq("anahtar", anahtar).limit(1).execute()
+        return True, (res.data[0] if res.data else None)
+    except Exception as e:
+        logging.warning(f"Ayarlar okuma hatasi ({anahtar}): {e}")
+        return False, None
 
 
 def _ayarlar_yaz(anahtar, deger):
@@ -1018,7 +1097,15 @@ def coinalyze_guncelle():
                 data = fr_res.json()
                 if isinstance(data, list) and len(data) > 0:
                     degerler = [float(b.get('value', 0) or 0) for b in data]
-                    agg_fr = sum(degerler) / len(degerler)
+                    # v8.5 BIRIM DUZELTMESI: Coinalyze funding 'value' YUZDE doner
+                    # (0.01 = %0.01), Binance lastFundingRate ise ONDALIK (0.0001 = %0.01).
+                    # Kod bunlari ayni sayiyordu -> agg_funding funding_rate'i EZERKEN
+                    # 100x sisiyordu (panel %1 gosteriyor, gercekte ~%0.01). Sonuc:
+                    # SWING_FUNDING_ASIRI + surec_takip_et funding esikleri SUREKLI
+                    # yaniliyordu (sahte "funding asiri" -> sahte HAZIRLAN). /100 ile
+                    # Binance ondalik birimine hizalanir. (Funding scalp SKORUNA girmez;
+                    # Faz 1 fark=0 etkilenmez.)
+                    agg_fr = (sum(degerler) / len(degerler)) / 100.0
 
             time.sleep(0.4)
 
@@ -1037,6 +1124,16 @@ def coinalyze_guncelle():
                             son_oranlar.append(float(hist[-1].get('r', 0) or 0))
                     if son_oranlar:
                         agg_ls = sum(son_oranlar) / len(son_oranlar)
+            if agg_ls <= 0:
+                # v8.6 TANI: L/S neden 0? (canli panel 'veri yok' gosteriyordu, sebep
+                # hic loglanmiyordu). 30 dongude bir logla — spam yapmadan Render
+                # loglarinda kok neden gorunur olsun (status/govde). Binance fallback
+                # devrede oldugundan metrik yine dolar.
+                coinalyze_guncelle._ls_diag = getattr(coinalyze_guncelle, '_ls_diag', 0) + 1
+                if coinalyze_guncelle._ls_diag % 30 == 1:
+                    logging.warning(
+                        f"Coinalyze L/S bos (status={ls_res.status_code}, "
+                        f"govde[:120]={ls_res.text[:120]!r}) — Binance fallback kullanilacak")
 
             time.sleep(0.4)
 
@@ -1648,6 +1745,395 @@ def _likidite_seviyeleri_bul(zaman_fiyat, vol_pct, tepe_mi=False):
     return out
 
 
+def _swing_seviye_haritasi(anlik_fiyat, fiyat_seri, vol_pct, dipler, tepeler,
+                           liq_kayitlari, elle_seviyeler=None):
+    """
+    v8.0 — COKLU KAYNAKTAN tek SWING seviye listesi. SAF fonksiyon (yan etkisiz;
+    "simdi" fiyat_seri'nin son zaman damgasindan turetilir -> deterministik, test
+    edilebilir). Scalp skor yoluna DOKUNMAZ; cikti yalniz balina_ayarlar'a yazilir.
+
+    Kaynaklar (her seviye 'kaynak' etiketli):
+      SWING_PIVOT : _likidite_seviyeleri_bul'dan 24s dip/tepe (zaten hesaplanmis)
+      HL          : dun (24s) + hafta (7g) high/low
+      LIQ         : likidasyon kumeleri (fiyat-etiketli long/short hacim yogunlasmasi)
+      ROUND       : yuvarlak sayilar (60000, 61000...) anlik fiyat menzilinde
+      VP          : YAKLASIK hacim profili — POC/VAH/VAL (tick YOK; zaman-agirlikli
+                    TPO, "yaklasik" etiketiyle)
+      ELLE        : kullanicinin girdigi seviyeler (en yuksek oncelik)
+
+    Girdi:
+      anlik_fiyat  : su anki fiyat (ROUND menzili + VP penceresi merkezi)
+      fiyat_seri   : [(epoch, fiyat), ...] son ~7 gun
+      vol_pct      : esik_volatilite (%); <=0 ise vol-bagimli kaynaklar (LIQ/VP) atlanir
+      dipler,tepeler: _likidite_seviyeleri_bul ciktisi ([{'fiyat','test','yas_dk'}])
+      liq_kayitlari: [(fiyat, long_liq, short_liq), ...] (LIQ kumeleri icin)
+      elle_seviyeler: [{'fiyat',...}] veya [float, ...] (opsiyonel)
+
+    A3 BIRLESTIRME: iki seviye SEVIYE_KUMELEME_VOL x vol_pct (%) bandi icindeyse
+    YUKSEK oncelikli KAZANIR; digeri gizli=True (silinmez — panel gizli olmayani gosterir).
+
+    Donus: [{'fiyat','kaynak','oncelik','not','gizli', ...}, ...] fiyata gore sirali.
+    """
+    ham = []
+
+    def ekle(fiyat, kaynak, notu='', ekstra=None):
+        if not fiyat or fiyat <= 0:
+            return
+        d = {'fiyat': round(float(fiyat), 1), 'kaynak': kaynak,
+             'oncelik': SWING_ONCELIK.get(kaynak, 9), 'not': notu, 'gizli': False}
+        if ekstra:
+            d.update(ekstra)
+        ham.append(d)
+
+    seri = sorted(((t, f) for t, f in (fiyat_seri or []) if f and f > 0),
+                  key=lambda x: x[0])
+    simdi = seri[-1][0] if seri else None
+    af = anlik_fiyat if (anlik_fiyat and anlik_fiyat > 0) else (seri[-1][1] if seri else 0.0)
+
+    # 1) SWING_PIVOT — zaten hesaplanmis 24s dip/tepe
+    for d in (dipler or []):
+        ekle(d.get('fiyat'), 'SWING_PIVOT', 'dip', {'test': d.get('test')})
+    for t in (tepeler or []):
+        ekle(t.get('fiyat'), 'SWING_PIVOT', 'tepe', {'test': t.get('test')})
+
+    # 2) HL — dun (24s) ve hafta (7g) high/low
+    if seri and simdi is not None:
+        for etiket, gun in (('dun', 1), ('hafta', 7)):
+            dilim = [f for t, f in seri if t >= simdi - gun * 86400]
+            if dilim:
+                ekle(max(dilim), 'HL', f'{etiket} H')
+                ekle(min(dilim), 'HL', f'{etiket} L')
+
+    # 3) LIQ — likidasyon kumeleri (fiyat-etiketli hacim yogunlasmasi)
+    if liq_kayitlari and vol_pct and vol_pct > 0 and af > 0:
+        kova_gen = af * (SWING_LIQ_KOVA_VOL * vol_pct) / 100.0
+        if kova_gen > 0:
+            kovalar = {}
+            for satir in liq_kayitlari:
+                fiyat = satir[0]
+                if not fiyat or fiyat <= 0:
+                    continue
+                hac = (satir[1] or 0) + (satir[2] or 0)
+                k = round(fiyat / kova_gen) * kova_gen
+                kovalar[k] = kovalar.get(k, 0.0) + hac
+            if kovalar:
+                hacimler = sorted(kovalar.values())
+                medyan = hacimler[len(hacimler) // 2] or 0.0
+                esik = max(medyan * SWING_LIQ_MIN_KAT, 1.0)
+                for k, h in kovalar.items():
+                    if h >= esik:
+                        ekle(k, 'LIQ', 'likidasyon kumesi', {'hacim': round(h, 0)})
+
+    # 4) ROUND — yuvarlak sayilar, anlik fiyat menzilinde (math yok: int-ceil)
+    if af > 0:
+        menzil = af * (SWING_ROUND_MENZIL_VOL * (vol_pct or 0.1)) / 100.0
+        menzil = max(menzil, SWING_ROUND_ADIM)          # en az +/- 1 yuvarlak adim
+        r = int((af - menzil) // SWING_ROUND_ADIM) * SWING_ROUND_ADIM
+        if r < af - menzil:
+            r += SWING_ROUND_ADIM
+        ust = af + menzil
+        while r <= ust:
+            ekle(r, 'ROUND', 'yuvarlak')
+            r += SWING_ROUND_ADIM
+
+    # 5) VP — YAKLASIK hacim profili (zaman-agirlikli TPO, tick YOK). Son 24s.
+    if seri and simdi is not None and vol_pct and vol_pct > 0 and af > 0:
+        kova_gen = af * (SWING_VP_KOVA_VOL * vol_pct) / 100.0
+        gunluk = [f for t, f in seri if t >= simdi - 86400]
+        if kova_gen > 0 and gunluk:
+            prof = {}
+            for f in gunluk:
+                k = round(f / kova_gen) * kova_gen
+                prof[k] = prof.get(k, 0) + 1             # her kayit = 1 zaman birimi
+            poc = max(prof, key=lambda kk: prof[kk])
+            ekle(poc, 'VP', 'POC (yaklasik)')
+            # Value area: POC'tan disa dogru, komsunun buyugunu ekleyerek %70 hacme kadar
+            hedef = sum(prof.values()) * SWING_VP_DEGER_ALANI
+            sk = sorted(prof)
+            i = sk.index(poc)
+            lo = hi = i
+            biriken = prof[poc]
+            while biriken < hedef and (lo > 0 or hi < len(sk) - 1):
+                asagi = prof[sk[lo - 1]] if lo > 0 else -1
+                yukari = prof[sk[hi + 1]] if hi < len(sk) - 1 else -1
+                if yukari >= asagi and hi < len(sk) - 1:
+                    hi += 1; biriken += prof[sk[hi]]
+                elif lo > 0:
+                    lo -= 1; biriken += prof[sk[lo]]
+                else:
+                    break
+            ekle(sk[hi], 'VP', 'VAH (yaklasik)')
+            ekle(sk[lo], 'VP', 'VAL (yaklasik)')
+
+    # 6) ELLE — kullanici seviyeleri (en yuksek oncelik)
+    for e in (elle_seviyeler or []):
+        if isinstance(e, dict):
+            ekle(e.get('fiyat'), 'ELLE', e.get('not') or e.get('etiket') or 'elle')
+        else:
+            ekle(e, 'ELLE', 'elle')
+
+    # --- A3: PRIORITY-MERGE — 1 x vol bandinda YUKSEK oncelik kazanir ---
+    # (_likidite_seviyeleri_bul kumeleme formuluyle BIREBIR: |a-b|/b*100 <= KAT*vol)
+    band = SEVIYE_KUMELEME_VOL * (vol_pct or 0.0)
+    ham.sort(key=lambda d: (d['oncelik'], d['fiyat']))
+    korunan = []
+    for d in ham:
+        cakisti = False
+        for kv in korunan:
+            ref = kv['fiyat'] or 1.0
+            if band > 0:
+                if abs(d['fiyat'] - kv['fiyat']) / ref * 100.0 <= band:
+                    cakisti = True
+                    break
+            elif d['fiyat'] == kv['fiyat']:
+                cakisti = True
+                break
+        if cakisti:
+            d['gizli'] = True          # yuksek oncelikliye yakin -> gizle (silme)
+        else:
+            korunan.append(d)
+    ham.sort(key=lambda d: d['fiyat'])
+    return ham
+
+
+def _emici_yon(emilim):
+    """
+    v8.1 — Emilim dict'inden swing YON tahmini: 'LONG'|'SHORT'|None. SAF.
+      guclu emilim + satici tukendi + spot BID-agir -> toplama (LONG)
+      guclu emilim + alici tukendi  + spot ASK-agir -> dagitim (SHORT)
+    Emilim yoksa (esneklik>=YOK) veya yon belirsizse None (sifir tuzagi: uydurmaz)."""
+    if not emilim:
+        return None
+    esnek = emilim.get('emilim_esnekligi')
+    if esnek is None or esnek >= EMILIM_YOK_ESIK:
+        return None
+    sp = emilim.get('spot_egilim')
+    if emilim.get('satici_tukenmesi') and sp is not None and sp >= EMILIM_EGILIM_ESIGI:
+        return 'LONG'
+    if emilim.get('alici_tukenmesi') and sp is not None and sp <= -EMILIM_EGILIM_ESIGI:
+        return 'SHORT'
+    return None
+
+
+def _swing_kademe(anlik_fiyat, seviyeler, vol_pct, grab, tasfiye_var, emilim,
+                  funding, d_oi):
+    """
+    v8.1 — KADEMELI SWING durum makinesi. SAF fonksiyon; scalp skor yoluna DOKUNMAZ.
+
+      YOK      : yakin seviye yok / veri yok
+      IZLE     : fiyat bir seviyeye SWING_YAKINLIK_VOL x vol yaklasti
+      HAZIRLAN : IZLE + (grab basladi VEYA funding asiri VEYA emici yon verdi)
+      SINYAL   : 4/4 -> seviye + grab TAMAM + tasfiye teyidi + emici YON (uzlasili)
+
+    grab: {'yon':'LONG'|'SHORT'|None, 'baslad':bool, 'tamam':bool} (supurme ozeti).
+    emilim: emilim dict; funding/d_oi: kalabalik baglami.
+    Donus: {'kademe','yon','kademe_skoru'(0-100),'yakin_seviye','mesafe_vol',
+            'sartlar','sebepler'}.
+    """
+    bos = {'kademe': 'YOK', 'yon': None, 'kademe_skoru': 0, 'yakin_seviye': None,
+           'mesafe_vol': None, 'sartlar': {}, 'sebepler': []}
+    gorunur = [s for s in (seviyeler or []) if not s.get('gizli')]
+    if not gorunur or not anlik_fiyat or anlik_fiyat <= 0 or not vol_pct or vol_pct <= 0:
+        return bos
+    en = min(gorunur, key=lambda s: abs(s['fiyat'] - anlik_fiyat))
+    mesafe_vol = abs(en['fiyat'] - anlik_fiyat) / anlik_fiyat * 100.0 / vol_pct
+    if mesafe_vol > SWING_YAKINLIK_VOL:
+        return {**bos, 'yakin_seviye': en, 'mesafe_vol': round(mesafe_vol, 2)}
+
+    # aday yon uzlasisi: seviye konumu (destek altta->LONG / direnc ustte->SHORT),
+    # grab yonu, emici yonu CELISMEMELI. Celiskide yon=None -> SINYAL yok.
+    # YON: yalniz GERCEK yonlu sensorlerden (grab + emici). "seviye_yon" (en yakin
+    # seviye altta/ustte) KALDIRILDI — fiyat seviyenin uzerinde salinirken LONG<->SHORT
+    # cakiliyor, grab'la celisip yonu null'a dusuruyor ve KARAR ANINDA gercek sinyali
+    # BLOKLUYORDU (canli veride LONG<->null titremesi gorulmustu). Grab hangi seviyenin
+    # supuruldugunu zaten kodluyor; emici emilim yonunu verir. Ikisi CELISIRSE sinyal yok.
+    emici = _emici_yon(emilim)
+    gyon = grab.get('yon') if grab else None
+    yonler = [y for y in (gyon, emici) if y]
+    celiski = len(set(yonler)) > 1
+    yon = None if celiski else (yonler[0] if yonler else None)
+
+    grab_tamam = bool(grab and grab.get('tamam'))
+    grab_basla = bool(grab and (grab.get('baslad') or grab.get('tamam')))
+    funding_asiri = abs(funding or 0) > SWING_FUNDING_ASIRI
+    emici_var = emici is not None
+    sartlar = {'seviye': True, 'grab_tamam': grab_tamam,
+               'tasfiye': bool(tasfiye_var), 'emici_yon': emici_var}
+
+    skor = 25                                    # seviyeye yakin
+    skor += 25 if grab_tamam else (12 if grab_basla else 0)
+    skor += 25 if tasfiye_var else 0
+    skor += 25 if emici_var else 0
+    skor = min(100, skor)
+
+    sebepler = []
+    if grab_tamam:
+        sebepler.append(f"grab TAMAM ({gyon or '?'})")
+    elif grab_basla:
+        sebepler.append("grab basladi")
+    if tasfiye_var:
+        sebepler.append("tasfiye teyidi (OI coktu)")
+    if emici_var:
+        sebepler.append(f"emici yon: {emici}")
+    if funding_asiri:
+        sebepler.append(f"funding asiri ({funding:.4f})")
+    if celiski:
+        sebepler.append(f"YON CELISKISI {sorted(set(yonler))} -> sinyal yok")
+
+    dort_dort = (grab_tamam and bool(tasfiye_var) and emici_var
+                 and not celiski and yon is not None)
+    if dort_dort:
+        kademe = 'SINYAL'
+    elif grab_basla or funding_asiri or emici_var:
+        kademe = 'HAZIRLAN'
+    else:
+        kademe = 'IZLE'
+    return {'kademe': kademe, 'yon': yon, 'kademe_skoru': skor, 'yakin_seviye': en,
+            'mesafe_vol': round(mesafe_vol, 2), 'sartlar': sartlar, 'sebepler': sebepler}
+
+
+def _swing_hedef_stop(yon, giris, seviyeler, vol_pct, magnet=None):
+    """
+    v8.1 — Hedef + stop YAPIDAN uretir (sabit %% ASLA). SAF fonksiyon.
+    SHORT: kisa_hedef=bir alt seviye; swing_hedef=magnet (en yogun liq kumesi) ya da
+    en uzak alt seviye; stop=bir UST YAPISAL seviye + SWING_STOP_TAMPON_VOL x vol.
+    LONG simetrik. rr_swing < SWING_MIN_RR -> gecerli=False (kotu R/R -> sinyal yok).
+    Donus: {'kisa_hedef','swing_hedef','stop','rr_kisa','rr_swing','gecerli','sebep'}."""
+    bos = {'kisa_hedef': None, 'swing_hedef': None, 'stop': None, 'rr_kisa': None,
+           'rr_swing': None, 'gecerli': False, 'sebep': 'girdi yetersiz'}
+    if yon not in ('LONG', 'SHORT') or not giris or giris <= 0 or not vol_pct or vol_pct <= 0:
+        return bos
+    gorunur = [s for s in (seviyeler or []) if not s.get('gizli')]
+    tampon = giris * (SWING_STOP_TAMPON_VOL * vol_pct) / 100.0
+    if yon == 'SHORT':
+        altlar = sorted((s for s in gorunur if s['fiyat'] < giris),
+                        key=lambda s: -s['fiyat'])                 # en yakin alt once
+        ustler = sorted((s for s in gorunur if s['fiyat'] > giris and s['kaynak'] in SWING_YAPISAL),
+                        key=lambda s: s['fiyat'])                  # en yakin ust yapisal once
+        kisa = altlar[0]['fiyat'] if altlar else None
+        swing = magnet if (magnet and magnet < giris) else (altlar[-1]['fiyat'] if altlar else None)
+        stop = (ustler[0]['fiyat'] + tampon) if ustler else None
+        if kisa is None or swing is None or stop is None or stop <= giris:
+            return {**bos, 'sebep': 'yapisal seviye eksik (alt hedef / ust stop yok)'}
+        risk = stop - giris
+        rr_kisa = (giris - kisa) / risk
+        rr_swing = (giris - swing) / risk
+    else:  # LONG
+        ustler = sorted((s for s in gorunur if s['fiyat'] > giris),
+                        key=lambda s: s['fiyat'])
+        altlar = sorted((s for s in gorunur if s['fiyat'] < giris and s['kaynak'] in SWING_YAPISAL),
+                        key=lambda s: -s['fiyat'])
+        kisa = ustler[0]['fiyat'] if ustler else None
+        swing = magnet if (magnet and magnet > giris) else (ustler[-1]['fiyat'] if ustler else None)
+        stop = (altlar[0]['fiyat'] - tampon) if altlar else None
+        if kisa is None or swing is None or stop is None or stop >= giris:
+            return {**bos, 'sebep': 'yapisal seviye eksik (ust hedef / alt stop yok)'}
+        risk = giris - stop
+        rr_kisa = (kisa - giris) / risk
+        rr_swing = (swing - giris) / risk
+    gecerli = rr_swing >= SWING_MIN_RR
+    return {'kisa_hedef': round(kisa, 1), 'swing_hedef': round(swing, 1),
+            'stop': round(stop, 1), 'rr_kisa': round(rr_kisa, 2),
+            'rr_swing': round(rr_swing, 2), 'gecerli': gecerli,
+            'sebep': 'ok' if gecerli else f'rr_swing {round(rr_swing, 2)} < {SWING_MIN_RR}'}
+
+
+def _grab_ozeti(dip_durumlari, tepe_durumlari, simdi):
+    """
+    v8.7 — Supurme durum makinelerinden SWING grab ozeti. SAF fonksiyon.
+
+    Denetim (2/2 KESIN) iki kusuru dogruladi, ikisi burada duzeltilir:
+    1) SILAHLI 'baslad' SAYILMAZ: SILAHLI = fiyat seviyeye yakin (salt yakinlik) —
+       yakinlik zaten IZLE kademesinin isi. SILAHLI'yi baslad saymak, pivot
+       yakininda HAZIRLAN'i SUREKLI aciyordu (canli: skor 37 sabit). grab ancak
+       DELINDI (fitil gercekten deldi) ile baslar.
+    2) ONAYLI'ya TAZELIK suzgeci: scalp yolu onay_ts <= SUPURME_GECERLILIK_DK
+       suzer; swing ozeti suzmuyordu -> yetim ONAYLI 60 dk 'tamam' sayilip
+       sahte SINYAL acabilirdi. Ayni suzgec burada da uygulanir.
+    Iki taraf (dip+tepe) ayni anda aktifse yon=None (celiski) -> SINYAL kapanir.
+    """
+    def _taraf(durumlar):
+        tamam = any(d.get('durum') == 'ONAYLI'
+                    and (simdi - (d.get('onay_ts') or 0)) <= SUPURME_GECERLILIK_DK * 60
+                    for d in (durumlar or {}).values())
+        baslad = tamam or any(d.get('durum') == 'DELINDI'
+                              for d in (durumlar or {}).values())
+        return tamam, baslad
+    dip_tamam, dip_baslad = _taraf(dip_durumlari)
+    tepe_tamam, tepe_baslad = _taraf(tepe_durumlari)
+    if dip_baslad and tepe_baslad:
+        return {'yon': None, 'baslad': True, 'tamam': (dip_tamam or tepe_tamam)}
+    if dip_baslad:
+        return {'yon': 'LONG', 'baslad': True, 'tamam': dip_tamam}
+    if tepe_baslad:
+        return {'yon': 'SHORT', 'baslad': True, 'tamam': tepe_tamam}
+    return {'yon': None, 'baslad': False, 'tamam': False}
+
+
+def _swing_backtest(olaylar, fiyat_seri, ufuklar):
+    """
+    v8.2 — SWING kohortu geri-testi. SAF fonksiyon (deterministik; "simdi" fiyat
+    serisinin son ts'i). Her SINYAL olayi icin, sinyal anindan ufuk sonuna kadar
+    FIYAT YOLU: swing_hedef mi STOP mu ONCE vuruldu?
+      win  -> +rr_swing R   |   loss -> -1 R   |   cozulmemis/erken -> ACIK (sayilmaz)
+    Scalp geri-testinden AYRI; swing ufuklari (4s/12s/1g/3g). Skoru ETKILEMEZ.
+
+    olaylar: [{'zaman'(iso),'yon','swing_hedef','stop','rr_swing'}, ...]
+    fiyat_seri: [(epoch, fiyat), ...]  ufuklar: [(etiket, saniye), ...]
+    Donus: {etiket: {'n','win','loss','acik','isabet'(%|None),'ort_r'(R|None)}}.
+    """
+    seri = sorted(((t, f) for t, f in (fiyat_seri or []) if f and f > 0), key=lambda x: x[0])
+    simdi = seri[-1][0] if seri else 0
+    cikti = {et: {'n': 0, 'win': 0, 'loss': 0, 'acik': 0, 'isabet': None, 'ort_r': None,
+                  '_r': 0.0} for et, _ in ufuklar}
+    if not seri:
+        return {et: {k: v for k, v in b.items() if k != '_r'} for et, b in cikti.items()}
+    for o in (olaylar or []):
+        z = o.get('zaman', '')
+        try:
+            # v8.7: naive ISO (motor utcnow().isoformat() yazar, 'Z'siz) yerel saat
+            # DEGIL UTC varsayilir — yoksa .timestamp() istemci TZ'sine gore kayar
+            # (Istanbul'da 3 saat; kabul testi de yerelde cokuyordu — denetim bulgusu).
+            _zd = datetime.datetime.fromisoformat(z.replace('Z', '+00:00')) if z else None
+            if _zd is not None and _zd.tzinfo is None:
+                _zd = _zd.replace(tzinfo=datetime.timezone.utc)
+            ep = _zd.timestamp() if _zd else None
+        except Exception:
+            ep = None
+        yon, hedef, stop, rr = o.get('yon'), o.get('swing_hedef'), o.get('stop'), o.get('rr_swing')
+        if ep is None or yon not in ('LONG', 'SHORT') or not hedef or not stop or rr is None:
+            continue
+        for et, sn in ufuklar:
+            box = cikti[et]
+            ufuk_son = ep + sn
+            pencere = [(t, f) for t, f in seri if ep < t <= ufuk_son]
+            sonuc = None
+            for t, f in pencere:
+                if yon == 'LONG':
+                    if f <= stop:
+                        sonuc = 'loss'; break
+                    if f >= hedef:
+                        sonuc = 'win'; break
+                else:
+                    if f >= stop:
+                        sonuc = 'loss'; break
+                    if f <= hedef:
+                        sonuc = 'win'; break
+            if sonuc == 'win':
+                box['n'] += 1; box['win'] += 1; box['_r'] += rr
+            elif sonuc == 'loss':
+                box['n'] += 1; box['loss'] += 1; box['_r'] += -1.0
+            else:
+                box['acik'] += 1        # ufuk dolmadi ya da ne hedef ne stop -> cozulmemis
+    son = {}
+    for et, box in cikti.items():
+        tot = box['win'] + box['loss']
+        son[et] = {'n': box['n'], 'win': box['win'], 'loss': box['loss'], 'acik': box['acik'],
+                   'isabet': round(box['win'] / tot * 100, 1) if tot > 0 else None,
+                   'ort_r': round(box['_r'] / tot, 2) if tot > 0 else None}
+    return son
+
+
 def likidasyon_yogunlugu(agg_hacim, esik_medyan):
     """v7.3 — yon-bazli likidasyon hacminin kendi adaptif medyanina orani.
     >= TASFIYE_DIKEN_CARPANI ise DIKEN (zorla kapatma oldu). Birimler tutarli:
@@ -1859,6 +2345,76 @@ def adaptif_esik_guncelle():
                 f"SpotCVD-esik: {durum.esik_spot_negatif:,.0f}/{durum.esik_spot_pozitif:,.0f} | "
                 f"Seviye: {len(yeni_dipler)} dip, {len(yeni_tepeler)} tepe"
             )
+
+            # ============ v8.0: SWING SEVIYE HARITASI (scalp'tan AYRI) ============
+            # KURAL: scalp skor yoluna DOKUNMAZ. Ayri anahtar (swing_seviyeler_oto),
+            # ayri kod yolu. Burasi (adaptif_esik 10dk kadans) swing seviyeleri icin
+            # ideal — dakikalik degismezler; 7 gunluk veri + fiyat_seri + likidasyon
+            # ZATEN elde, ek REST yok. Kilit DISINDA (elle okuma + yazma ag I/O).
+            # Elle girilen seviyeler oncelikli (A3). Hata akisi kesmez.
+            if SWING_SEVIYE_AKTIF:
+                try:
+                    _af = float(veriler[0].get('anlik_fiyat') or 0) if veriler else 0.0
+                    _liq = [(float(v['anlik_fiyat']), float(v.get('agg_long_liq') or 0),
+                             float(v.get('agg_short_liq') or 0))
+                            for v in veriler if v.get('anlik_fiyat')]
+                    _elle_kayit = _ayarlar_oku('swing_seviyeler_elle')
+                    _elle = []
+                    if _elle_kayit and _elle_kayit.get('deger'):
+                        _dg = _elle_kayit['deger']
+                        _elle = _dg.get('seviyeler', []) if isinstance(_dg, dict) else _dg
+                    _oto = _swing_seviye_haritasi(
+                        _af, fiyat_seri, vol_seviye, yeni_dipler, yeni_tepeler, _liq, _elle)
+                    durum.swing_seviyeler = _oto      # v8.1: ozet dongusu (dk) bunu okur
+                    _gorunur = [s for s in _oto if not s.get('gizli')]
+                    _ayarlar_yaz('swing_seviyeler_oto', {
+                        'guncelleme': datetime.datetime.utcnow().isoformat(),
+                        'anlik_fiyat': round(_af, 1),
+                        'vol_pct': round(vol_seviye, 4) if vol_seviye else None,
+                        'seviye_sayisi': len(_gorunur),
+                        'seviyeler': _oto})
+                    logging.info(f"SWING SEVIYE HARITASI: {len(_gorunur)} gorunur "
+                                 f"(+{len(_oto) - len(_gorunur)} gizli) seviye yazildi")
+                except Exception as e:
+                    logging.warning(f"swing seviye haritasi hatasi (akis devam eder): {e}")
+
+                # v8.7: motor_sabitleri artik MOTORDAN yazilir. Panel (v3+v4) bu
+                # anahtari okuyor ama HICBIR yerde yazilmiyordu (denetim bulgusu) —
+                # DB'deki deger eski bir surumden kalma TOHUM; adaptif medyanlar
+                # degistikce panelin flush/diken carpanlari sessizce bayatlıyordu.
+                try:
+                    _ayarlar_yaz('motor_sabitleri', {
+                        'guncelleme': datetime.datetime.utcnow().isoformat(),
+                        'TASFIYE_DIKEN_CARPANI': TASFIYE_DIKEN_CARPANI,
+                        'TASFIYE_OI_MIN_PCT': TASFIYE_OI_MIN_PCT,
+                        'esik_lik_long_medyan': round(durum.esik_lik_long_medyan, 1),
+                        'esik_lik_short_medyan': round(durum.esik_lik_short_medyan, 1),
+                        'esik_volatilite': round(durum.esik_volatilite, 4),
+                        'esik_cvd_negatif': round(durum.esik_cvd_negatif, 1),
+                        'esik_cvd_pozitif': round(durum.esik_cvd_pozitif, 1),
+                    })
+                except Exception as e:
+                    logging.warning(f"motor_sabitleri yazma hatasi: {e}")
+
+                # v8.2 FAZ C: SWING KOHORTU GERI-TESTI (scalp geri-testinden AYRI).
+                # fiyat_seri (7g) burada ZATEN elde -> ek REST yok. Swing ufuklariyla
+                # (4s/12s/1g/3g) SINYAL olaylarini degerlendir; istatistik ayarlara yazilir.
+                try:
+                    _kk = _ayarlar_oku('swing_kohortu')
+                    _olylar = []
+                    if _kk and _kk.get('deger'):
+                        _olylar = (_kk['deger'].get('olaylar', [])
+                                   if isinstance(_kk['deger'], dict) else [])
+                    if _olylar:
+                        _ist = _swing_backtest(_olylar, fiyat_seri, SWING_UFUKLAR)
+                        _ayarlar_yaz('swing_kohort_istatistik', {
+                            'guncelleme': datetime.datetime.utcnow().isoformat(),
+                            'olay_sayisi': len(_olylar), 'ufuklar': _ist})
+                        logging.info(f"SWING GERI-TEST: {len(_olylar)} olay -> "
+                                     + " | ".join(f"{et}:{b['isabet']}%/{b['ort_r']}R"
+                                                  for et, b in _ist.items() if b['n']))
+                except Exception as e:
+                    logging.warning(f"swing geri-test hatasi (akis devam eder): {e}")
         except Exception as e:
             logging.warning(f"Adaptif esik hesaplama hatasi: {e}")
         time.sleep(ESIK_GUNCELLEME_ARALIGI)
@@ -2705,7 +3261,12 @@ def _tasfiye_kohortuna_ekle(yeni_olaylar):
     """Basari bool'u dondurur; cagiran (tampon) yalnizca True'da temizler."""
     try:
         with _kohort_lock:
-            kayit = _ayarlar_oku("tasfiye_kohortu")
+            # v8.7 RMW korumasi: okuma HATASI 'bos kohort' sanilirsa sonraki
+            # upsert TUM olay gecmisini ezer (denetim bulgusu). Hatada bu tur atlanir.
+            _ok_k, kayit = _ayarlar_oku_katilim("tasfiye_kohortu")
+            if not _ok_k:
+                logging.warning("tasfiye_kohortu okunamadi — yazim atlandi (gecmis korunur)")
+                return False
             veri = (kayit or {}).get('deger') or {}
             if isinstance(veri, str):
                 try:
@@ -2758,7 +3319,12 @@ def _kohort_ileri_olc(zamanli, simdi, ufuklar, maliyet_pct):
     """
     try:
         with _kohort_lock:
-            kayit = _ayarlar_oku("tasfiye_kohortu")
+            # v8.7 RMW korumasi: okuma HATASI 'bos kohort' sanilirsa sonraki
+            # upsert TUM olay gecmisini ezer (denetim bulgusu). Hatada bu tur atlanir.
+            _ok_k, kayit = _ayarlar_oku_katilim("tasfiye_kohortu")
+            if not _ok_k:
+                logging.warning("tasfiye_kohortu okunamadi — yazim atlandi (gecmis korunur)")
+                return False
             veri = (kayit or {}).get('deger') or {}
             if isinstance(veri, str):
                 try:
@@ -3137,6 +3703,12 @@ def ozet_ve_analiz_dongusu():
                 agg_oi = durum.agg_open_interest
                 agg_funding = durum.agg_funding
                 agg_ls_ratio = durum.agg_ls_ratio
+                # v8.6: Coinalyze L/S bos/0 ise Binance global hesap-orani fallback'i
+                # (yalniz TAZE ise, <10dk). Ikisi de yoksa 0 kalir -> panel durustce
+                # 'veri yok' der (sifir tuzagi: uydurma deger yazilmaz).
+                if (not agg_ls_ratio or agg_ls_ratio <= 0) and durum.binance_ls_ratio > 0 \
+                        and (time.time() - durum.binance_ls_zaman) < 600:
+                    agg_ls_ratio = durum.binance_ls_ratio
                 coinalyze_ok = durum.coinalyze_saglikli
 
                 esik_d = durum.esik_derinlik
@@ -3164,6 +3736,12 @@ def ozet_ve_analiz_dongusu():
 
             if agg_oi > 0:
                 open_interest = agg_oi
+            elif open_interest and open_interest > 0 and anlik_fiyat > 0:
+                # v8.7 BIRIM (denetim bulgusu): Binance /fapi openInterest BTC ADEDI
+                # doner; Coinalyze agg ise USD. Coinalyze dusunce BTC adedi (~80K)
+                # USD serisiyle (~12e9) KARISIYORDU -> d_oi_pct patlar, sahte
+                # TAZE_ALIM/LONG_TASFIYE rejimleri. USD'ye cevirerek seri tek birim kalir.
+                open_interest = open_interest * anlik_fiyat
             if agg_funding != 0:
                 funding_rate = agg_funding
 
@@ -3465,7 +4043,10 @@ def ozet_ve_analiz_dongusu():
                 "long_skor": long_skor,
                 "short_skor": short_skor,
                 "guven_skoru": guven_skoru,
-                "sinyal_durumu": sinyal,
+                # v8.1: scalp SUSTURULDU -> DB'ye yazilan aktif sinyal BEKLE. balina_skoru_
+                # hesapla ('sinyal') DEGISMEDI (Faz 1 fark=0); long_skor/short_skor + kohort
+                # KAYITTA kalir (scalp referansi korunur). Swing karari ayri anahtarda.
+                "sinyal_durumu": (sinyal if SCALP_SINYAL_AKTIF else "BEKLE"),
                 "yakin_likidite_bid": likidite_bid_json,
                 "yakin_likidite_ask": likidite_ask_json,
                 # v7.10: EMILIM ARSIVI — dakikalik KALICI kayit (balina_avcisi_data).
@@ -3545,6 +4126,109 @@ def ozet_ve_analiz_dongusu():
                 tasfiye_a, tasfiye_yonu = _tasfiye_bayraklari(
                     skor_girdi['tasfiye_long_yogunluk'],
                     skor_girdi['tasfiye_short_yogunluk'], d_oi_k)
+
+                # ========== v8.1 FAZ B: KADEMELI SWING MOTORU (scalp'tan AYRI) ==========
+                # Uc sensor (grab=supurme durumu, tasfiye, emici) + swing seviye haritasi
+                # -> kademeli karar. Skoru ETKILEMEZ; balina_ayarlar['swing_karar']'a
+                # yazilir. Hata akisi kesmez. (durum.swing_seviyeler 10dk'da yenilenir.)
+                if SWING_MOTOR_AKTIF:
+                    try:
+                        _sw = durum.swing_seviyeler or []
+                        # v8.7: grab ozeti artik SAF _grab_ozeti'den (denetim 2/2 KESIN:
+                        # SILAHLI baslad sayilmaz + ONAYLI'ya tazelik suzgeci).
+                        _grab = _grab_ozeti(durum.supurme_dip_durumlari,
+                                            durum.supurme_tepe_durumlari, time.time())
+                        _kademe = _swing_kademe(anlik_fiyat, _sw, esik_vol, _grab,
+                                                bool(tasfiye_a), emilim, funding_rate, d_oi_k)
+                        _hedef = None
+                        if _kademe['kademe'] == 'SINYAL' and _kademe['yon']:
+                            # v8.7: 'gizli' filtresi KALDIRILDI — gizleme yalniz panel
+                            # gosterimi icindir (A3 birlestirme); en yogun likidasyon
+                            # kumesi bir HL/VP ile cakisti diye MIKNATIS olmaktan cikmaz.
+                            _mag = max((s for s in _sw if s.get('kaynak') == 'LIQ'),
+                                       key=lambda s: s.get('hacim', 0), default=None)
+                            _hedef = _swing_hedef_stop(_kademe['yon'], anlik_fiyat, _sw,
+                                                       esik_vol, _mag['fiyat'] if _mag else None)
+                            if not _hedef['gecerli']:      # R/R vetosu -> SINYAL degil, HAZIRLAN
+                                _kademe['kademe'] = 'HAZIRLAN'
+                                _kademe['sebepler'].append(f"R/R yetersiz ({_hedef['sebep']})")
+                        durum.swing_karar = {**_kademe, 'hedef_stop': _hedef}
+                        # swing_tetik: hangi sensorler aktif (SEVIYE hep var — buraya
+                        # geldiyse seviyeye yakin). GRAB/TASFIYE/EMILIM eklenir.
+                        _st = ['SEVIYE']
+                        if _grab.get('baslad'): _st.append('GRAB')
+                        if tasfiye_a: _st.append('TASFIYE')
+                        if _kademe['sartlar'].get('emici_yon'): _st.append('EMILIM')
+                        _tetik = '+'.join(_st)
+                        _ys = _kademe.get('yakin_seviye') or {}
+                        _hs = _hedef or {}
+                        _ayarlar_yaz('swing_karar', {
+                            'guncelleme': datetime.datetime.utcnow().isoformat(),
+                            'anlik_fiyat': round(anlik_fiyat, 1),
+                            'vol_pct': round(esik_vol, 4) if esik_vol else None,
+                            'tetik': _tetik, **_kademe, 'hedef_stop': _hedef})
+                        # ---- C1: DAKIKALIK ARSIV -> balina_avcisi_data (UPDATE, best-effort) ----
+                        # Payload'a EKLEMIYORUZ: SQL kolonlari yoksa ANA insert olmesin diye
+                        # ayri UPDATE. Kolon yoksa gracefully atlar; core veri her halukarda yazildi.
+                        if SWING_ARSIV_AKTIF and yeni_satir_id:
+                            try:
+                                supabase.table("balina_avcisi_data").update({
+                                    "swing_kademe": _kademe['kademe'],
+                                    "swing_yon": _kademe['yon'],
+                                    "swing_skor": _kademe['kademe_skoru'],
+                                    "swing_seviye": _ys.get('fiyat'),
+                                    "swing_kisa_hedef": _hs.get('kisa_hedef'),
+                                    "swing_uzun_hedef": _hs.get('swing_hedef'),
+                                    "swing_stop": _hs.get('stop'),
+                                    "swing_rr": _hs.get('rr_swing'),
+                                    "swing_tetik": _tetik,
+                                }).eq("id", yeni_satir_id).execute()
+                            except Exception as e:
+                                logging.warning(f"swing arsiv UPDATE hatasi (kolonlar ALTER edildi mi?): {e}")
+                        # ---- C2: SWING KOHORTU (rising-edge: SINYAL'e GECISTE bir kez) ----
+                        # v8.7: rising-edge'e YON-BAZLI 600sn cooldown eklendi (tasfiye
+                        # kohortundaki korumanin aynisi): SINYAL bir dakikalik sensor
+                        # titremesiyle dusup geri gelirse ayni kurulum COKLU yazilmasin
+                        # (geri-test n'ini sisiriyordu — denetim bulgusu).
+                        if (_kademe['kademe'] == 'SINYAL' and _hedef and _hedef.get('gecerli')
+                                and durum.swing_son_kademe != 'SINYAL'
+                                and (time.time() - durum.son_swing_kohort_ts.get(_kademe['yon'], 0)) >= 600):
+                            try:
+                                # v8.7 RMW korumasi: okuma HATASI 'bos kohort' DEGILDIR —
+                                # eski kod gecici 503'te tum olay gecmisini bos listeyle
+                                # ezebilirdi (kullanici zaten bir veri kaybi yasadi).
+                                _ok_kk, _kk = _ayarlar_oku_katilim('swing_kohortu')
+                                if not _ok_kk:
+                                    raise RuntimeError('kohort okunamadi — bu tur yazim atlandi (veri korunur)')
+                                _olylar = []
+                                if _kk and _kk.get('deger'):
+                                    _olylar = (_kk['deger'].get('olaylar', [])
+                                               if isinstance(_kk['deger'], dict) else [])
+                                _olylar.append({
+                                    'zaman': datetime.datetime.utcnow().isoformat(),
+                                    'yon': _kademe['yon'], 'giris': round(anlik_fiyat, 1),
+                                    'kisa_hedef': _hs.get('kisa_hedef'), 'swing_hedef': _hs.get('swing_hedef'),
+                                    'stop': _hs.get('stop'), 'rr_swing': _hs.get('rr_swing'),
+                                    'skor': _kademe['kademe_skoru'], 'seviye': _ys.get('fiyat'),
+                                    'tetik': _tetik})
+                                if len(_olylar) > KOHORT_AZAMI_KAYIT:
+                                    _olylar = _olylar[-KOHORT_AZAMI_KAYIT:]
+                                _ayarlar_yaz('swing_kohortu', {
+                                    'guncelleme': datetime.datetime.utcnow().isoformat(),
+                                    'olaylar': _olylar})
+                                durum.son_swing_kohort_ts[_kademe['yon']] = time.time()
+                                logging.info(f"SWING KOHORT: yeni SINYAL olayi ({_kademe['yon']}) "
+                                             f"-> toplam {len(_olylar)}")
+                            except Exception as e:
+                                logging.warning(f"swing kohort yazma hatasi: {e}")
+                        durum.swing_son_kademe = _kademe['kademe']
+                        if _kademe['kademe'] in ('HAZIRLAN', 'SINYAL'):
+                            logging.info(f"SWING {_kademe['kademe']} {_kademe['yon'] or ''} "
+                                         f"skor={_kademe['kademe_skoru']} "
+                                         f"{'RR_swing=' + str(_hedef['rr_swing']) if _hedef else ''}")
+                    except Exception as e:
+                        logging.warning(f"swing motor hatasi (akis devam eder): {e}")
+
                 if kalite['cvd_guvenilir'] and (tasfiye_a or supurme_yeni_onaylar):
                     olaylar = []
                     ham = {
