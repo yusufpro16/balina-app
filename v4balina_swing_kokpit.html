@@ -3,191 +3,175 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Balina Avcısı · Swing Kokpiti</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<title>Balina Avcısı · Komuta Merkezi</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
-/* ============ SWING KOKPİTİ — derin okyanus teması ============
-   Tasarım ilkesi: mikro gürültü (fiyata yapışık duvarlar, tick oyunu) YOK.
-   Swing avcısının 4 sorusu ekranda:
-   1) Balina ne yapıyor? (süreç: toplama/dağıtım/kapitülasyon)
-   2) Av kurulumu ne kadar oluştu? (şart listesi)
-   3) Hangi ufukta kenarım var? (çoklu-ufuk geri test)
-   4) Kalabalık nerede? (funding/OI/likidasyon — karşı taraf) */
+/* ============ KOMUTA MERKEZI — v5 duzen (v8.8) ============
+   Ayni motor, ayni veri, YENI YERLESIM: yatay komuta-merkezi, minimal scroll.
+   ust serit -> KARAR sirasi (hukum/av/emici) -> harita+sinyal -> baglam
+   panelleri -> centikli "son 60 dk" cekmecesi. Veri/mantik degismedi;
+   yukle()/elleEkle()/elleSil() v4'ten AYNEN tasindi. */
 :root{
   --abyss:#020d16; --deep:#06192a; --panel:#0b2739; --panel2:#081e2e;
   --line:#164257; --foam:#e9f5fb; --mist:#6d97ad; --dim:#3d6478;
   --sonar:#2ff5c8; --alarm:#ff5470; --amber:#ffc24b; --whale:#4a90d9;
-  --violet:#8b6ef2; /* dataviz dogrulayicidan gecen adim (eski #9d7bff yerine) */
-  --veto:#ff8a3d; --radius:14px;
+  --violet:#8b6ef2; --veto:#ff8a3d; --radius:12px;
   --mono:ui-monospace,'Cascadia Code','JetBrains Mono',Menlo,Consolas,monospace;
 }
 *{margin:0;padding:0;box-sizing:border-box}
 body{
   background:
-    radial-gradient(1200px 500px at 80% -10%, rgba(74,144,217,.10), transparent 60%),
-    radial-gradient(900px 420px at 10% 110%, rgba(47,245,200,.06), transparent 55%),
+    radial-gradient(1100px 460px at 82% -8%, rgba(74,144,217,.10), transparent 60%),
+    radial-gradient(900px 400px at 8% 108%, rgba(47,245,200,.05), transparent 55%),
     var(--abyss);
-  color:var(--foam); font-family:var(--mono); font-size:13px; min-height:100vh;
+  color:var(--foam); font-family:var(--mono); font-size:12.5px; min-height:100vh;
 }
 ::selection{background:rgba(47,245,200,.25)}
 
-/* ---------- header ---------- */
+/* ---------- ust serit ---------- */
 header{
-  display:flex;align-items:center;gap:22px;flex-wrap:wrap;
-  padding:16px 26px;border-bottom:1px solid var(--line);
-  background:linear-gradient(180deg, rgba(11,39,57,.9), rgba(6,25,42,.65));
-  backdrop-filter:blur(6px);position:sticky;top:0;z-index:50;
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  padding:10px 20px;border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg, rgba(11,39,57,.92), rgba(6,25,42,.7));
+  position:sticky;top:0;z-index:50;backdrop-filter:blur(6px);
 }
-.brand{display:flex;align-items:center;gap:12px}
-.sonar-ping{position:relative;width:26px;height:26px;flex:none}
-.sonar-ping::before,.sonar-ping::after{
-  content:'';position:absolute;inset:0;border-radius:50%;
-  border:2px solid var(--sonar);opacity:0;animation:ping 2.6s ease-out infinite;
-}
+.brand{display:flex;align-items:center;gap:10px}
+.sonar-ping{position:relative;width:22px;height:22px;flex:none}
+.sonar-ping::before,.sonar-ping::after{content:'';position:absolute;inset:0;border-radius:50%;
+  border:2px solid var(--sonar);opacity:0;animation:ping 2.6s ease-out infinite}
 .sonar-ping::after{animation-delay:1.3s}
-.sonar-core{position:absolute;inset:9px;border-radius:50%;background:var(--sonar);
-  box-shadow:0 0 12px var(--sonar)}
+.sonar-core{position:absolute;inset:7px;border-radius:50%;background:var(--sonar);box-shadow:0 0 10px var(--sonar)}
 @keyframes ping{0%{transform:scale(.35);opacity:.9}80%{transform:scale(1.6);opacity:0}100%{opacity:0}}
-.brand h1{font-size:16px;letter-spacing:3px;font-weight:700;
+.brand h1{font-size:14px;letter-spacing:2.5px;font-weight:700;
   background:linear-gradient(90deg,var(--sonar),var(--whale));
   -webkit-background-clip:text;background-clip:text;color:transparent}
-.brand .rol{font-size:9px;color:var(--amber);border:1px solid rgba(255,194,75,.5);
-  border-radius:20px;padding:3px 10px;letter-spacing:2px}
-.fiyat-blok{display:flex;align-items:baseline;gap:12px}
-.fiyat{font-size:34px;font-weight:800;letter-spacing:-1px;
-  text-shadow:0 0 24px rgba(233,245,251,.25)}
-.fiyat-dgs{font-size:13px;font-weight:700}
 .hspacer{flex:1}
-.hctl{display:flex;align-items:center;gap:10px}
-select,button{
-  background:var(--panel);color:var(--foam);border:1px solid var(--line);
-  border-radius:8px;padding:7px 12px;font-family:var(--mono);font-size:12px;cursor:pointer;
-}
+.mini-metrikler{display:flex;gap:10px;flex-wrap:wrap}
+.mm{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+  padding:6px 12px;min-width:118px}
+.mm .l{font-size:8.5px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase}
+.mm .v{font-size:15px;font-weight:800;display:flex;align-items:baseline;gap:6px}
+.mm .v .ok-yon{font-size:12px}
+.hctl{display:flex;align-items:center;gap:8px}
+select,button{background:var(--panel);color:var(--foam);border:1px solid var(--line);
+  border-radius:8px;padding:5px 10px;font-family:var(--mono);font-size:11px;cursor:pointer}
 select:hover,button:hover{border-color:var(--sonar);color:var(--sonar)}
-.upd{font-size:10.5px;color:var(--mist)}
-.pulse{width:8px;height:8px;border-radius:50%;background:var(--sonar);
-  display:inline-block;margin-right:6px;box-shadow:0 0 8px var(--sonar);
-  animation:nabiz 2s ease-in-out infinite}
+.upd{font-size:10px;color:var(--mist)}
+.pulse{width:7px;height:7px;border-radius:50%;background:var(--sonar);display:inline-block;
+  margin-right:5px;box-shadow:0 0 7px var(--sonar);animation:nabiz 2s ease-in-out infinite}
 @keyframes nabiz{50%{opacity:.35}}
 
-/* ---------- layout ---------- */
-main{max-width:1460px;margin:0 auto;padding:20px 22px 60px;display:grid;gap:16px}
-.grid2{display:grid;grid-template-columns:1.25fr 1fr;gap:16px}
-.grid2e{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-@media(max-width:1080px){.grid2,.grid2e{grid-template-columns:1fr}}
-.kart{
-  background:linear-gradient(168deg,var(--panel) 0%,var(--panel2) 100%);
-  border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;
-  box-shadow:0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(233,245,251,.04);
-}
-.kbaslik{font-size:10px;color:var(--mist);text-transform:uppercase;
-  letter-spacing:2.5px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+/* ---------- yerlesim ---------- */
+main{max-width:1560px;margin:0 auto;padding:14px 18px 30px;display:grid;gap:12px}
+.sira1{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:12px}
+.sira2{display:grid;grid-template-columns:1.3fr 1fr;gap:12px}
+.sira3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+@media(max-width:1150px){.sira1,.sira2,.sira3{grid-template-columns:1fr}}
+.kart{background:linear-gradient(168deg,var(--panel) 0%,var(--panel2) 100%);
+  border:1px solid var(--line);border-radius:var(--radius);padding:13px 15px;
+  box-shadow:0 6px 22px rgba(0,0,0,.32), inset 0 1px 0 rgba(233,245,251,.04)}
+.kbaslik{font-size:9.5px;color:var(--mist);text-transform:uppercase;letter-spacing:2px;
+  margin-bottom:9px;display:flex;align-items:center;gap:7px}
 .kbaslik .cizgi{flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
-.expl{font-size:10.5px;color:var(--dim);line-height:1.55;margin-top:10px}
+.kbaslik .sag{font-size:11px;font-weight:800;letter-spacing:0}
+.expl{font-size:9.5px;color:var(--dim);line-height:1.5;margin-top:7px}
+.pos{color:var(--sonar)}.neg{color:var(--alarm)}.warn{color:var(--amber)}.neu{color:var(--mist)}
 
-/* ---------- hüküm ---------- */
-#hukum{position:relative;overflow:hidden}
-#hukum.avlan{border-color:rgba(47,245,200,.6);box-shadow:0 0 0 1px rgba(47,245,200,.25),0 0 42px rgba(47,245,200,.12),0 8px 30px rgba(0,0,0,.35)}
-#hukum.pusu{border-color:rgba(255,194,75,.55);box-shadow:0 0 0 1px rgba(255,194,75,.2),0 0 36px rgba(255,194,75,.08),0 8px 30px rgba(0,0,0,.35)}
-#hukum.kac{border-color:rgba(255,84,112,.55);box-shadow:0 0 0 1px rgba(255,84,112,.2),0 0 36px rgba(255,84,112,.08),0 8px 30px rgba(0,0,0,.35)}
-.talimat{font-size:30px;font-weight:800;letter-spacing:4px;margin:2px 0 6px}
-.talimat.avlan{color:var(--sonar);text-shadow:0 0 26px rgba(47,245,200,.5)}
-.talimat.pusu{color:var(--amber);text-shadow:0 0 22px rgba(255,194,75,.4)}
-.talimat.bekle{color:var(--mist)}
-.talimat.kac{color:var(--alarm);text-shadow:0 0 22px rgba(255,84,112,.4)}
-.rejim-satir{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
-.rejim-roz{font-size:11px;font-weight:700;letter-spacing:1.5px;border-radius:6px;padding:4px 10px}
-.hikaye{font-size:12px;color:var(--mist);line-height:1.7}
-.sebep{display:flex;gap:9px;align-items:baseline;font-size:11.5px;line-height:1.6;margin-top:7px}
-.sebep .ok{color:var(--sonar);flex:none}
-.sebep .no{color:var(--alarm);flex:none}
-.sebep .ntr{color:var(--dim);flex:none}
-.faz-not{margin-top:12px;font-size:9.5px;color:var(--dim);border-top:1px dashed var(--line);padding-top:9px}
+/* ---------- HUKUM ---------- */
+#hukumKart{position:relative;border-left:4px solid var(--dim)}
+.kademe-roz{display:inline-block;font-size:11px;font-weight:800;letter-spacing:2px;
+  border-radius:7px;padding:4px 12px;margin-bottom:7px}
+.hukum-cumle{font-size:12px;color:var(--foam);line-height:1.6}
+.hukum-alt{font-size:11px;color:var(--mist);line-height:1.55;margin-top:5px}
+.mesafe-satir{margin-top:8px;font-size:11.5px}
+.mesafe-satir b{font-size:15px}
 
-/* ---------- av kurulumu (şart listesi) ---------- */
-.av-taraf{margin-bottom:6px}
-.av-taraf h3{font-size:10.5px;letter-spacing:2px;margin:8px 0 8px;display:flex;align-items:center;gap:8px}
-.av-taraf h3 .say{margin-left:auto;font-size:13px;font-weight:800}
-.sart{display:flex;align-items:center;gap:10px;padding:6px 9px;border-radius:8px;
-  margin-bottom:4px;background:rgba(233,245,251,.02);border-left:2px solid transparent}
-.sart.ok{border-left-color:var(--sonar);background:rgba(47,245,200,.05)}
-.sart.yari{border-left-color:var(--amber);background:rgba(255,194,75,.05)}
-.sart.hayir{border-left-color:rgba(255,84,112,.5)}
-.sart .isaret{width:18px;text-align:center;font-weight:800;flex:none}
-.sart.ok .isaret{color:var(--sonar)}
-.sart.yari .isaret{color:var(--amber)}
-.sart.hayir .isaret{color:var(--alarm)}
-.sart.yok .isaret{color:var(--dim)}
-.sart .ad{font-size:11.5px;min-width:132px}
-.sart .deger{font-size:10.5px;color:var(--mist);margin-left:auto;text-align:right}
+/* ---------- AV / EMICI ---------- */
+.sart{display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:7px;
+  margin-bottom:3px;background:rgba(233,245,251,.02)}
+.sart .im{width:16px;text-align:center;font-weight:800;flex:none}
+.sart.dolu .im{color:var(--sonar)} .sart.bos .im{color:var(--dim)}
+.sart .ad{font-size:11px}
+.sart.bos .ad{color:var(--dim)}
+.emici-buyuk{font-size:24px;font-weight:800;letter-spacing:2px;margin:2px 0 9px}
+.piller{display:flex;gap:6px;flex-wrap:wrap}
+.pill{font-size:10px;border:1px solid var(--line);border-radius:20px;padding:3px 10px;color:var(--mist)}
+.pill b{color:var(--foam)}
 
-/* ---------- ufuk / kalabalık / emici / süreç ---------- */
-.ufuk-ozet{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:8px}
-.ufuk-buyuk{font-size:30px;font-weight:800}
-.mini-tab{width:100%;border-collapse:collapse;font-size:11px;margin-top:10px}
-.mini-tab th{color:var(--dim);text-align:left;font-weight:400;padding:4px 8px;border-bottom:1px solid var(--line);font-size:9.5px;letter-spacing:1px;text-transform:uppercase}
-.mini-tab td{padding:5px 8px;border-bottom:1px solid rgba(22,66,87,.4)}
-.hukum-cumle{margin-top:11px;font-size:11px;line-height:1.6;padding:9px 12px;border-radius:8px}
-.hukum-cumle.pos{background:rgba(47,245,200,.07);border:1px solid rgba(47,245,200,.3)}
-.hukum-cumle.warn{background:rgba(255,194,75,.07);border:1px solid rgba(255,194,75,.3)}
-.hukum-cumle.neg{background:rgba(255,84,112,.07);border:1px solid rgba(255,84,112,.3)}
-.kv{display:flex;justify-content:space-between;align-items:baseline;padding:7px 2px;border-bottom:1px solid rgba(22,66,87,.4);font-size:12px}
-.kv:last-child{border-bottom:none}
-.kv .l{color:var(--mist);font-size:11px}
-.kv .v{font-weight:700}
-.roz{display:inline-block;font-size:10px;font-weight:700;letter-spacing:1px;border-radius:6px;padding:3px 9px}
-.bar-dis{height:8px;background:rgba(233,245,251,.06);border-radius:5px;overflow:hidden;flex:1}
-.bar-ic{height:100%;border-radius:5px;transition:width .6s ease}
-.mutabakat{display:flex;align-items:center;gap:9px;margin:7px 0;font-size:11px}
-.mutabakat .etiket{min-width:88px;color:var(--mist);font-size:10.5px}
-.mutabakat .oran{min-width:34px;text-align:right;font-weight:700}
-.tuk-liste{margin-top:9px}
-.tuk-liste .ti{display:flex;gap:8px;align-items:baseline;font-size:11px;padding:3px 0;color:var(--dim)}
-.tuk-liste .ti.aktif{color:var(--foam)}
-.tuk-liste .ti .n{color:var(--sonar);flex:none}
-
-/* ---------- grafikler ---------- */
-.gkart canvas{max-height:280px}
-.gstat{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:8px}
-.gstat .gs .l{font-size:9.5px;color:var(--dim);letter-spacing:1px;text-transform:uppercase}
-.gstat .gs .v{font-size:16px;font-weight:800}
-
-/* ---------- otopsi + tablo ---------- */
-details{margin-top:4px}
-summary{cursor:pointer;color:var(--mist);font-size:11px;letter-spacing:1px}
-summary:hover{color:var(--sonar)}
-.err{background:rgba(255,84,112,.1);border:1px solid var(--alarm);color:#ffd0d8;
-  padding:12px 16px;border-radius:10px;display:none;margin:14px 22px 0}
-.pos{color:var(--sonar)}.neg{color:var(--alarm)}.warn{color:var(--amber)}.neu{color:var(--mist)}.violet{color:var(--violet)}
-
-/* v8.3 FAZ D — seviye haritasi + elle giris + swing sinyal karti */
-.elle-giris{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+/* ---------- SEVIYE HARITASI ---------- */
+.elle-giris{display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap}
 .elle-giris input{background:var(--panel2);color:var(--foam);border:1px solid var(--line);
-  border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:12px}
-.elle-giris input#elleFiyat{width:150px}.elle-giris input#elleNot{flex:1;min-width:120px}
+  border-radius:7px;padding:6px 9px;font-family:var(--mono);font-size:11px}
+.elle-giris input#elleFiyat{width:130px}.elle-giris input#elleNot{flex:1;min-width:100px}
 .elle-giris button{background:rgba(47,245,200,.14);border:1px solid var(--sonar);color:var(--sonar);
-  border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer;font-family:var(--mono)}
-.elle-giris button:hover{background:rgba(47,245,200,.25)}
-.elle-durum{font-size:11px;min-height:16px;margin-bottom:8px}
-.sev-satir{display:flex;align-items:center;gap:9px;padding:6px 4px;border-bottom:1px solid rgba(22,66,87,.35);font-size:12px}
-.sev-satir:last-child{border-bottom:none}
-.sev-serit{width:4px;align-self:stretch;border-radius:3px;flex:none;min-height:20px}
-.sev-fiyat{font-weight:700;min-width:78px}
-.sev-kaynak{font-size:9.5px;letter-spacing:.5px;padding:2px 7px;border-radius:5px;flex:none}
-.sev-not{font-size:10.5px;color:var(--mist);flex:1}
-.sev-mesafe{font-size:10px;color:var(--dim);min-width:56px;text-align:right}
-.sev-rozet{font-size:9px;font-weight:800;letter-spacing:1px;padding:2px 7px;border-radius:5px;flex:none}
-.sev-sil{cursor:pointer;color:var(--dim);font-size:14px;flex:none;padding:0 4px}
+  border-radius:7px;padding:6px 12px;font-weight:700}
+.elle-durum{font-size:10px;min-height:14px;margin-bottom:4px}
+#seviyeHarita{max-height:330px;overflow-y:auto;padding-right:4px}
+#seviyeHarita::-webkit-scrollbar{width:6px}
+#seviyeHarita::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.sev-satir{display:flex;align-items:center;gap:8px;padding:4px 6px;
+  border-bottom:1px solid rgba(22,66,87,.3);font-size:11.5px}
+.sev-satir.oto{opacity:.72}
+.sev-satir.elle{background:rgba(255,84,112,.07);border-left:3px solid var(--alarm);opacity:1}
+.sev-satir.miknatis{background:rgba(47,245,200,.06);border-left:3px solid var(--sonar);opacity:1}
+.sev-fiyat{font-weight:700;min-width:72px}
+.sev-kaynak{font-size:8.5px;letter-spacing:.5px;padding:2px 6px;border-radius:5px;flex:none}
+.sev-not{font-size:9.5px;color:var(--mist);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sev-rozet{font-size:8.5px;font-weight:800;letter-spacing:1px;padding:2px 6px;border-radius:5px;flex:none}
+.sev-mesafe{font-size:9px;color:var(--dim);min-width:46px;text-align:right}
+.sev-sil{cursor:pointer;color:var(--dim);font-size:13px;padding:0 3px}
 .sev-sil:hover{color:var(--alarm)}
 .sev-simdi{border-top:1px dashed var(--whale);border-bottom:1px dashed var(--whale);
-  background:rgba(74,144,217,.07);font-size:10px;color:var(--whale);text-align:center;padding:3px}
-.swing-talimat{font-size:26px;font-weight:800;letter-spacing:3px;margin:4px 0 8px}
-.hedef-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
-.hedef-kutu{background:rgba(233,245,251,.03);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
-.hedef-kutu .l{font-size:9.5px;color:var(--dim);letter-spacing:1px;text-transform:uppercase}
-.hedef-kutu .v{font-size:17px;font-weight:800}
-.rr-rozet{display:inline-block;font-size:12px;font-weight:800;padding:4px 11px;border-radius:7px}
+  background:rgba(74,144,217,.10);font-size:10px;color:var(--whale);text-align:center;padding:3px;font-weight:700}
+
+/* ---------- AKTIF SINYAL ---------- */
+.sinyal-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.sk{background:rgba(233,245,251,.03);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.sk .l{font-size:8.5px;color:var(--dim);letter-spacing:1px;text-transform:uppercase}
+.sk .v{font-size:16px;font-weight:800}
+.swing-hedef-satir{margin-top:9px;font-size:12px;display:flex;justify-content:space-between;align-items:baseline}
+
+/* ---------- BAGLAM: CVD / LIK / SUREC ---------- */
+.cvd-ikili{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.mini-graf{height:64px;display:flex;align-items:flex-end;gap:1px;background:rgba(0,0,0,.18);
+  border-radius:6px;padding:3px;overflow:hidden}
+.mini-graf .b{flex:1;min-width:2px;border-radius:1px 1px 0 0}
+.mg-alt{display:flex;justify-content:space-between;font-size:10px;margin-top:4px}
+.lik-ust{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.lik-kutu{background:rgba(233,245,251,.03);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.lik-kutu .l{font-size:8.5px;letter-spacing:1px;text-transform:uppercase}
+.lik-kutu .v{font-size:14px;font-weight:800}
+.patlama-graf{height:46px;display:flex;align-items:flex-end;gap:4px;justify-content:center;padding:2px}
+.patlama-graf .b{width:26px;border-radius:2px 2px 0 0;position:relative}
+.surec-etiket{display:inline-block;font-size:12px;font-weight:800;letter-spacing:1.5px;
+  border-radius:7px;padding:4px 11px;margin-bottom:8px}
+.oi-trend{height:40px;display:flex;align-items:flex-end;gap:1px;background:rgba(0,0,0,.18);
+  border-radius:6px;padding:3px;margin:6px 0}
+.oi-trend .b{flex:1;min-width:2px;background:rgba(139,110,242,.6);border-radius:1px 1px 0 0}
+
+/* ---------- CEKMECE ---------- */
+#cekmece{border:1px solid var(--line);border-radius:var(--radius);
+  background:linear-gradient(168deg,var(--panel) 0%,var(--panel2) 100%)}
+#cekmeceTut{display:flex;align-items:center;justify-content:center;gap:10px;
+  padding:9px;cursor:pointer;user-select:none;color:var(--mist);font-size:10.5px;letter-spacing:1.5px}
+#cekmeceTut:hover{color:var(--sonar)}
+#cekmeceTut .tutamak{width:44px;height:4px;border-radius:3px;background:var(--line)}
+#cekmeceTut .chev{transition:transform .25s}
+#cekmece.acik #cekmeceTut .chev{transform:rotate(180deg)}
+#cekmeceIc{display:none;padding:4px 15px 15px}
+#cekmece.acik #cekmeceIc{display:block}
+.ozet4{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:11px}
+@media(max-width:900px){.ozet4{grid-template-columns:1fr 1fr}}
+.oz{background:rgba(233,245,251,.03);border:1px solid var(--line);border-radius:8px;padding:8px 11px}
+.oz .l{font-size:8.5px;color:var(--dim);letter-spacing:1px;text-transform:uppercase}
+.oz .v{font-size:15px;font-weight:800}
+.oz .s{font-size:9.5px;color:var(--mist)}
+.emici-graf{height:78px;display:flex;align-items:center;gap:1px;background:rgba(0,0,0,.18);
+  border-radius:6px;padding:3px}
+.emici-graf .b{flex:1;min-width:2px;border-radius:1px}
+.eksen{display:flex;justify-content:space-between;font-size:9px;color:var(--dim);margin-top:3px}
+.err{background:rgba(255,84,112,.1);border:1px solid var(--alarm);color:#ffd0d8;
+  padding:10px 14px;border-radius:10px;display:none;margin:10px 18px 0}
 </style>
 </head>
 <body>
@@ -196,22 +180,16 @@ summary:hover{color:var(--sonar)}
   <div class="brand">
     <div class="sonar-ping"><div class="sonar-core"></div></div>
     <div>
-      <h1>BALİNA AVCISI</h1>
-      <div style="font-size:9px;color:var(--dim);letter-spacing:2px;margin-top:2px">SWING KOKPİTİ · v4</div>
+      <h1>🐋 BALİNA AVCISI</h1>
+      <div style="font-size:8.5px;color:var(--dim);letter-spacing:2px">KOMUTA MERKEZİ · v5</div>
     </div>
-    <span class="rol">SWING</span>
-  </div>
-  <div class="fiyat-blok">
-    <div class="fiyat" id="hFiyat">—</div>
-    <div class="fiyat-dgs" id="hDgs"></div>
   </div>
   <div class="hspacer"></div>
+  <div class="mini-metrikler" id="miniMetrik"></div>
   <div class="hctl">
     <select id="ufuk" title="Bakış penceresi">
-      <option value="24s">Son 24 saat</option>
-      <option value="48s">Son 48 saat</option>
-      <option value="72s">Son 72 saat</option>
-      <option value="7g">Son 7 gün</option>
+      <option value="24s">24s</option><option value="48s">48s</option>
+      <option value="72s">72s</option><option value="7g">7g</option>
     </select>
     <button id="yenile">YENİLE</button>
     <div class="upd" id="durum"><span class="pulse"></span>bağlanıyor…</div>
@@ -221,25 +199,26 @@ summary:hover{color:var(--sonar)}
 <div class="err" id="err"></div>
 
 <main>
-
-  <!-- SATIR 1: HÜKÜM + AV KURULUMU -->
-  <section class="grid2">
-    <div class="kart" id="hukum">
-      <div class="kbaslik">⚓ HÜKÜM — BALİNA NE YAPIYOR, SEN NE YAPMALISIN<span class="cizgi"></span></div>
+  <!-- SIRA 1: KARAR -->
+  <section class="sira1">
+    <div class="kart" id="hukumKart">
+      <div class="kbaslik">⚓ HÜKÜM<span class="cizgi"></span></div>
       <div id="hukumIc">yükleniyor…</div>
     </div>
     <div class="kart">
-      <div class="kbaslik">🎯 AV KURULUMU — ŞART LİSTESİ<span class="cizgi"></span></div>
-      <div id="avkur">yükleniyor…</div>
-      <div class="expl">Bu liste motorun kendi mantığıdır (DIP_TOPLAMA_SPOT / TEPE_DAGITIM_SPOT reçetesi).
-        ✓ sağlandı · ◐ kısmen · ✗ sağlanmadı · — ölçülemedi (uydurmayız).</div>
+      <div class="kbaslik">🎯 AV KURULUMU<span class="cizgi"></span><span class="sag" id="avSayi"></span></div>
+      <div id="avIc">yükleniyor…</div>
+    </div>
+    <div class="kart">
+      <div class="kbaslik">🐋 EMİCİ<span class="cizgi"></span></div>
+      <div id="emiciIc">yükleniyor…</div>
     </div>
   </section>
 
-  <!-- SATIR 1.5: SEVİYE HARİTASI + AKTİF SWING SİNYALİ (v8.3 FAZ D) -->
-  <section class="grid2">
+  <!-- SIRA 2: HARITA + SINYAL -->
+  <section class="sira2">
     <div class="kart">
-      <div class="kbaslik">🗺️ SEVİYE HARİTASI — swing zemini (elle + oto)<span class="cizgi"></span></div>
+      <div class="kbaslik">🗺️ SEVİYE HARİTASI<span class="cizgi"></span></div>
       <div class="elle-giris">
         <input id="elleFiyat" type="number" placeholder="fiyat (örn 63500)" step="1" inputmode="decimal">
         <input id="elleNot" type="text" placeholder="not (ops.)" maxlength="24">
@@ -247,89 +226,39 @@ summary:hover{color:var(--sonar)}
       </div>
       <div id="elleDurum" class="elle-durum"></div>
       <div id="seviyeHarita">yükleniyor…</div>
-      <div class="expl">Elle girdiğin seviye <b>önceliklidir</b> — 1×vol içindeki oto seviyeyi gizler.
-        Motor elle seviyeyi ~10dk'da işler. Renkli şerit = kaynak önceliği (ELLE&gt;VP&gt;HL&gt;LIQ&gt;PIVOT&gt;ROUND).</div>
     </div>
-    <div class="kart" id="swingSinyalKart">
-      <div class="kbaslik">🎯 AKTİF SWING SİNYALİ — kademeli motor<span class="cizgi"></span></div>
-      <div id="swingSinyal">yükleniyor…</div>
+    <div class="kart" id="sinyalKart">
+      <div class="kbaslik">💥 AKTİF SİNYAL<span class="cizgi"></span></div>
+      <div id="sinyalIc">yükleniyor…</div>
     </div>
   </section>
 
-  <!-- SATIR 2: SWING UFKU + KALABALIK -->
-  <section class="grid2">
+  <!-- SIRA 3: BAGLAM -->
+  <section class="sira3">
     <div class="kart">
-      <div class="kbaslik">📐 SWING UFKU — HANGİ VADEDE KENAR VAR? (motorun kendi geri testi)<span class="cizgi"></span></div>
-      <div class="ufuk-ozet" id="ufukOzet"></div>
-      <canvas id="cUfuk" height="120"></canvas>
-      <div id="ufukTab"></div>
-      <div id="ufukHukum"></div>
+      <div class="kbaslik">🌊 CVD AKIŞI — spot vs vadeli<span class="cizgi"></span></div>
+      <div id="cvdIc">yükleniyor…</div>
     </div>
     <div class="kart">
-      <div class="kbaslik">🌊 KALABALIK — KARŞI TARAF NEREDE? (bağlam, sinyal değil)<span class="cizgi"></span></div>
-      <div id="kalabalik">yükleniyor…</div>
-      <div class="expl">Swing avcısı kalabalığın TERSİNE yüzer: aşırı long kalabalığı = squeeze/crush yakıtı,
-        aşırı short = yukarı fitil yakıtı. Funding + L/S + OI birlikte okunur.</div>
+      <div class="kbaslik">💥 LİKİDASYON — dolar bazlı (1s)<span class="cizgi"></span></div>
+      <div id="likIc">yükleniyor…</div>
+    </div>
+    <div class="kart">
+      <div class="kbaslik">📡 SÜREÇ + OI<span class="cizgi"></span></div>
+      <div id="surecIc">yükleniyor…</div>
     </div>
   </section>
 
-  <!-- SATIR 3: EMİCİ + SÜREÇ -->
-  <section class="grid2e">
-    <div class="kart">
-      <div class="kbaslik">🐋 EMİCİ — ŞU AN SATIŞI/ALIŞI KİM YUTUYOR?<span class="cizgi"></span></div>
-      <div id="emici">yükleniyor…</div>
+  <!-- ALT: CENTIKLI CEKMECE -->
+  <section id="cekmece">
+    <div id="cekmeceTut">
+      <div class="tutamak"></div> son 60 dk detayı <span class="chev">▾</span>
     </div>
-    <div class="kart">
-      <div class="kbaslik">📡 SÜREÇ — TOPLAMA / DAĞITIM / KAPİTÜLASYON<span class="cizgi"></span></div>
-      <div id="surec">yükleniyor…</div>
-    </div>
+    <div id="cekmeceIc"></div>
   </section>
 
-  <!-- SATIR 4: FİYAT + CVD -->
-  <section class="grid2e">
-    <div class="kart gkart">
-      <div class="kbaslik">FİYAT &amp; SİNYAL İZİ<span class="cizgi"></span></div>
-      <canvas id="cFiyat" height="130"></canvas>
-    </div>
-    <div class="kart gkart">
-      <div class="kbaslik">CVD AKIŞI — VADELİ vs SPOT<span class="cizgi"></span></div>
-      <canvas id="cCvd" height="130"></canvas>
-      <div class="expl">Spot CVD balinanın gerçek envanter iştahı; vadeli CVD kaldıraçlı akış.
-        İkisi aynı yöne = teyit, ayrışma = kırılganlık.</div>
-    </div>
-  </section>
-
-  <!-- SATIR 5: LİKİDASYON + OI -->
-  <section class="grid2e">
-    <div class="kart gkart">
-      <div class="kbaslik">LİKİDASYON PATLAMALARI — YAKIT DEPOSU<span class="cizgi"></span></div>
-      <div class="gstat" id="likStat"></div>
-      <canvas id="cLik" height="120"></canvas>
-      <div class="expl">Kırmızı = long'lar patlıyor (kapitülasyon adayı → dip avı yakıtı).
-        Turkuaz = short'lar patlıyor (squeeze). Swing girişleri patlama SONRASI tükenme ile gelir.</div>
-    </div>
-    <div class="kart gkart">
-      <div class="kbaslik">AÇIK POZİSYON (OI) — PARA GİRİYOR MU ÇIKIYOR MU?<span class="cizgi"></span></div>
-      <div class="gstat" id="oiStat"></div>
-      <canvas id="cOi" height="120"></canvas>
-    </div>
-  </section>
-
-  <!-- SATIR 6: OTOPSİ + ham kayıt -->
-  <section class="grid2e">
-    <div class="kart">
-      <div class="kbaslik">🔬 SİNYAL OTOPSİSİ — MOTOR NEDEN SUSTU?<span class="cizgi"></span></div>
-      <div id="otopsi">yükleniyor…</div>
-    </div>
-    <div class="kart">
-      <div class="kbaslik">HAM VERİ — SON KAYITLAR<span class="cizgi"></span></div>
-      <details><summary>tabloyu aç/kapat</summary><div id="hamTab"></div></details>
-      <div class="expl">Grafiklerin tablo karşılığı (erişilebilirlik + şüpheci kontrol için).</div>
-    </div>
-  </section>
-
-  <div style="text-align:center;font-size:9.5px;color:var(--dim);letter-spacing:1.5px">
-    FAZ 1 — ÖLÇÜM MODU · panel motorun kendi kayıtlarını okur, kendi sinyal üretmez · yatırım tavsiyesi değildir
+  <div style="text-align:center;font-size:9px;color:var(--dim);letter-spacing:1.5px">
+    FAZ 1 — ÖLÇÜM MODU · panel motorun kendi kayıtlarını okur · yatırım tavsiyesi değildir
   </div>
 </main>
 
@@ -338,7 +267,7 @@ const SUPABASE_URL = "https://aojhyiiiwllgvgglzokz.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFvamh5aWlpd2xsZ3ZnZ2x6b2t6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0NDI0NzYsImV4cCI6MjA5OTAxODQ3Nn0.bMbWJr8uIwbuumLIWMphgs5gWUb_nlrGUDRK8_TM5N8";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-/* ---------- yardımcılar ---------- */
+/* ---------- yardimcilar (v4'ten aynen) ---------- */
 const $=id=>document.getElementById(id);
 const big=n=>{n=+n||0;const a=Math.abs(n);
   if(a>=1e9)return (n/1e9).toFixed(2)+'B';
@@ -347,58 +276,18 @@ const big=n=>{n=+n||0;const a=Math.abs(n);
   return n.toFixed(0)};
 const bigS=n=>(n>0?'+':'')+big(n);
 const usd=n=>'$'+big(n);
-/* v8.7 GUVENLIK: kullanici metni (elle 'not') innerHTML'e ESCAPE'siz gidiyordu —
-   kalici HTML enjeksiyonu (balina_ayarlar anon-yazilabilir). Tum 'not' alanlari esc()'ten gecer. */
+/* v8.7 GUVENLIK: kullanici metni innerHTML'e escape'siz gitmez. */
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const kat=x=>x==null?'—':(x>=10?Math.round(x):+x.toFixed(1))+'×'; // diken çarpanı: 7180.0× değil 7180×
-const fold=s=>String(s||'').toLowerCase()
-  .replace(/ı/g,'i').replace(/ş/g,'s').replace(/ç/g,'c')
-  .replace(/ö/g,'o').replace(/ü/g,'u').replace(/ğ/g,'g'); // motor ASCII yazar, panel Türkçe gösterir
-const REN={sonar:'#2ff5c8',alarm:'#ff5470',amber:'#ffc24b',whale:'#4a90d9',
-  violet:'#8b6ef2',foam:'#e9f5fb',mist:'#6d97ad',dim:'#3d6478'};
+const tl=n=>(+n||0).toLocaleString('tr-TR',{maximumFractionDigits:0});
 const UFUK_LIM={'24s':1440,'48s':2880,'72s':4320,'7g':10080};
-
-/* Süreç tarafı — motorla aynı aileler + kapitülasyon akışı AYRI anlatılır.
-   (Eski panelde LONG_TASFIYE "toplama süreci" görünüyordu — kafa karıştırıcıydı;
-   burada kendi adıyla "kapitülasyon akışı / dönüş adayı" denir.) */
 const TOPLAMA=['DIP_TOPLAMA','DIP_TOPLAMA_SPOT','DIP_TOPLAMA_TEYITSIZ','DIP_TOPLAMA_PERP','TAZE_ALIM'];
 const DAGITIM=['TEPE_DAGITIM','TEPE_DAGITIM_SPOT','TEPE_DAGITIM_TEYITSIZ','TEPE_DAGITIM_PERP',
                'SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS','TAZE_SATIS'];
 const KAPITULASYON=['LONG_TASFIYE','LONG_KAPITULASYON'];
+const KAYNAK_RENK={ELLE:'var(--alarm)',VP:'var(--violet)',HL:'var(--amber)',
+  LIQ:'var(--sonar)',SWING_PIVOT:'var(--whale)',ROUND:'var(--dim)'};
 
-const REJIM_AD={
-  DIP_TOPLAMA:'DİP TOPLAMA',DIP_TOPLAMA_SPOT:'DİP TOPLAMA · SPOT TEYİTLİ',
-  DIP_TOPLAMA_TEYITSIZ:'DİP TOPLAMA · TEYİTSİZ',DIP_TOPLAMA_PERP:'DİP TOPLAMA · PERP (kırılgan)',
-  TEPE_DAGITIM:'TEPE DAĞITIM',TEPE_DAGITIM_SPOT:'TEPE DAĞITIM · SPOT TEYİTLİ',
-  TEPE_DAGITIM_TEYITSIZ:'TEPE DAĞITIM · TEYİTSİZ',TEPE_DAGITIM_PERP:'TEPE DAĞITIM · PERP',
-  SHORT_SQUEEZE:'SHORT SQUEEZE',SHORT_TASFIYE:'SHORT TASFİYE',TAZE_ALIM:'TAZE ALIM',
-  TAZE_SATIS:'TAZE SATIŞ',LONG_TASFIYE:'LONG TASFİYE',LONG_KAPITULASYON:'LONG KAPİTÜLASYON',
-  TASFIYE_SONRASI_DONUS:'TASFİYE SONRASI DÖNÜŞ',NOTR:'NÖTR',
-  VERI_GUVENSIZ:'VERİ GÜVENSİZ',VERI_BEKLENIYOR:'ISINMA'};
-
-/* ---------- Chart.js genel ayar ---------- */
-Chart.defaults.color=REN.mist;
-Chart.defaults.font.family=getComputedStyle(document.documentElement).getPropertyValue('--mono');
-Chart.defaults.font.size=10;
-Chart.defaults.plugins.tooltip.backgroundColor='#0a2130';
-Chart.defaults.plugins.tooltip.borderColor='#164257';
-Chart.defaults.plugins.tooltip.borderWidth=1;
-Chart.defaults.plugins.tooltip.titleColor=REN.foam;
-Chart.defaults.plugins.tooltip.bodyColor=REN.mist;
-Chart.defaults.plugins.legend.labels.boxWidth=10;
-Chart.defaults.plugins.legend.labels.boxHeight=10;
-const GRID={color:'rgba(22,66,87,.35)'};
-let charts={};
-function ciz(id,cfg){ if(charts[id]) charts[id].destroy(); charts[id]=new Chart($(id),cfg); }
-
-/* Çok nokta -> seyrelt (7g penceresi grafikte şişmesin) */
-function seyrelt(arr,hedef=650){
-  if(arr.length<=hedef) return arr;
-  const adim=Math.ceil(arr.length/hedef);
-  return arr.filter((_,i)=>i%adim===0);
-}
-
-/* ---------- ANA YÜKLEME ---------- */
+/* ---------- ANA YUKLEME (fetch kismi v4'ten AYNEN; render cagrilari yeni) ---------- */
 async function yukle(){
   try{
     const lim=UFUK_LIM[$('ufuk').value]||1440;
@@ -406,11 +295,11 @@ async function yukle(){
       .order('kayit_zamani',{ascending:false}).limit(lim);
     if(error) throw error;
     if(!data||!data.length){ hata('Veri yok — motor çalışıyor mu?'); return; }
-    const L=data[0];                       // en güncel kayıt
-    const rows=[...data].reverse();        // kronolojik
+    const L=data[0];
+    const rows=[...data].reverse();
 
     let surec=null,veRed=null,geriTest=null,motorSbt=null,canli=null;
-    let swingSev=null,swingElle=null,swingKarar=null,swingIst=null;   // v8.3 FAZ D
+    let swingSev=null,swingElle=null,swingKarar=null,swingIst=null;
     try{
       const {data:ay}=await sb.from('balina_ayarlar').select('*')
         .in('anahtar',['surec_durumu','ve_kapisi_redleri','geri_test_istatistik',
@@ -430,297 +319,184 @@ async function yukle(){
       });
     }catch(e){}
 
-    /* canlı emilim bayatsa null say (sıfır tuzağı: bayat veri taze gibi okunmaz) */
-    let canliYas=null;
+    /* canli emilim bayatsa isaretle (sifir tuzagi) */
     if(canli&&canli.guncelleme){
       const g=canli.guncelleme.endsWith('Z')?canli.guncelleme:canli.guncelleme+'Z';
-      canliYas=(Date.now()-new Date(g).getTime())/1000;
-      if(canliYas>180) canli={..._sadeceYas(canli),_bayat:true,_yas:canliYas};
-      else canli={...canli,_bayat:false,_yas:canliYas};
+      const yas=(Date.now()-new Date(g).getTime())/1000;
+      canli={...canli,_bayat:yas>180,_yas:yas};
     }
-    function _sadeceYas(c){return c}
 
-    baslik(L,rows);
-    const av=avKurulumu(L,rows,surec,canli,motorSbt);   // şart listesi (hüküm de kullanır)
-    hukum(L,rows,surec,canli,av);
-    seviyeHaritasi(swingSev,swingElle,swingKarar,+L.anlik_fiyat||0);   // v8.3 FAZ D
-    swingSinyal(swingKarar);
-    swingUfku(geriTest,swingIst);                       // v8.3: swing kohortu one cikar
-    kalabalik(L,rows);
-    emici(canli);
-    surecKart(surec);
-    grafikFiyat(rows);
-    grafikCvd(rows);
-    grafikLik(rows,motorSbt);
-    grafikOi(rows);
-    otopsi(veRed,geriTest);
-    hamTablo(rows);
+    /* ---- YENI DUZEN render'lari ---- */
+    ustSerit(L,rows,surec);
+    hukumKart(L,swingKarar);
+    avKart(swingKarar);
+    emiciKart(canli);
+    seviyeHaritasi(swingSev,swingElle,swingKarar,+L.anlik_fiyat||0);
+    sinyalKart(swingKarar,swingIst);
+    cvdPanel(rows);
+    likPanel(rows,motorSbt,+L.anlik_fiyat||0);
+    surecOi(surec,rows,L);
+    cekmeceIc(rows,L);
 
     $('err').style.display='none';
-    /* v8.7: son kaydin YASI denetlenir — motor oldugunde panel 'bagli' nabziyla
-       bayat veriyi taze gibi gosteriyordu (sifir tuzaginin panel hali). */
+    /* v8.7: son kaydin YASI denetlenir (bayat veri taze gibi gorunmesin) */
     const sonYas=(Date.now()-new Date(L.kayit_zamani).getTime())/1000;
     $('durum').innerHTML = sonYas>180
-      ? `<span style="color:var(--amber)">⚠ VERİ BAYAT — son kayıt ${(sonYas/60).toFixed(0)} dk önce (motor duraklamış olabilir)</span>`
+      ? `<span style="color:var(--amber)">⚠ VERİ BAYAT — son kayıt ${(sonYas/60).toFixed(0)} dk önce</span>`
       : `<span class="pulse"></span>bağlı · ${rows.length} kayıt · ${new Date().toLocaleTimeString('tr-TR')}`;
   }catch(e){ hata('Bağlantı hatası: '+(e.message||e)); }
 }
 function hata(m){ $('err').textContent=m; $('err').style.display='block';
   $('durum').innerHTML='bağlantı yok'; }
 
-/* ---------- başlık ---------- */
-function baslik(L,rows){
+/* ---------- UST SERIT: 4 mini metrik ---------- */
+function ustSerit(L,rows,surec){
   const f=+L.anlik_fiyat||0;
-  $('hFiyat').textContent='$'+f.toLocaleString('tr-TR',{maximumFractionDigits:0});
-  const eski=rows[0], d=eski&&eski.anlik_fiyat>0?(f/eski.anlik_fiyat-1)*100:0;
-  $('hDgs').innerHTML=`<span class="${d>=0?'pos':'neg'}">${d>=0?'▲':'▼'} %${Math.abs(d).toFixed(2)}</span>
-    <span style="color:var(--dim);font-size:10px"> / ${$('ufuk').value}</span>`;
-}
-
-/* ---------- AV KURULUMU — motorun kendi reçetesi, şart şart ---------- */
-function sartYap(durum,ad,deger){ // durum: ok|yari|hayir|yok
-  const im={ok:'✓',yari:'◐',hayir:'✗',yok:'—'}[durum];
-  return {durum,html:`<div class="sart ${durum}"><span class="isaret">${im}</span>
-    <span class="ad">${ad}</span><span class="deger">${deger}</span></div>`};
-}
-function avKurulumu(L,rows,surec,canli,ms){
-  const TDC=(ms&&ms.TASFIYE_DIKEN_CARPANI)||2.5;
-  const medL=(ms&&ms.esik_lik_long_medyan)||0;
-  const medS=(ms&&ms.esik_lik_short_medyan)||0;
-  const taze=canli&&!canli._bayat;
+  const geri=rows.length>30?rows[rows.length-31]:rows[0];   // ~30 dk once
+  const ok=(simdiV,eskiV,tersRenk)=>{ // ok yonu + renk (funding'de yukari=riskli kirmizi)
+    if(eskiV==null||simdiV==null||eskiV===simdiV) return ['·','var(--mist)'];
+    const yukari=simdiV>eskiV;
+    const renk = tersRenk ? (yukari?'var(--alarm)':'var(--sonar)')
+                          : (yukari?'var(--sonar)':'var(--alarm)');
+    return [yukari?'↑':'↓', renk];
+  };
+  const [fOk,fRenk]=ok(+L.funding_rate, geri?+geri.funding_rate:null, true);
+  const [oOk,oRenk]=ok(+L.open_interest, geri?+geri.open_interest:null, false);
   const rejim=surec&&surec.rejim||'NOTR';
-  const tuk=surec&&surec.tukenme||0;
-
-  /* pencere içindeki en büyük likidasyon dikeni (kaç × medyan) */
-  let maxL=0,maxS=0;
-  rows.forEach(r=>{maxL=Math.max(maxL,+r.agg_long_liq||0);maxS=Math.max(maxS,+r.agg_short_liq||0);});
-  const flushL=medL>0?maxL/medL:null, flushS=medS>0?maxS/medS:null;
-
-  /* ---- LONG (dip avı): kapitülasyon + satıcı tükenmesi + SPOT emici + süreç + motor ---- */
-  const sL=[];
-  sL.push(flushL==null ? sartYap('yok','Kapitülasyon flushu','medyan hazır değil')
-    : flushL>=TDC ? sartYap('ok','Kapitülasyon flushu',`${kat(flushL)} diken (eşik ${TDC}×)`)
-    : sartYap('hayir','Kapitülasyon flushu',`${kat(flushL)} — eşik ${TDC}× altı`));
-  sL.push(!taze||canli.sonme_orani==null ? sartYap('yok','Satıcı tükenmesi','ölçülemedi')
-    : canli.satici_tukenmesi ? sartYap('ok','Satıcı tükenmesi',`sönme ${(canli.sonme_orani*100).toFixed(0)}% — satış yarıdan az`)
-    : sartYap('hayir','Satıcı tükenmesi',`sönme ${(canli.sonme_orani*100).toFixed(0)}% — hâlâ akıyor`));
-  const eb=taze?canli.emilim_borsasi:null;
-  sL.push(!taze||eb==null||String(eb).endsWith('_AKIS')||eb==='KARISIK' ? sartYap('yok','Emici SPOT defterde','ölçülemedi / vekil')
-    : (eb==='SPOT'||eb==='HER_IKISI') ? sartYap('ok','Emici SPOT defterde',`${eb} · spot ${canli.spot_bid_agir_sayi||0}/${canli.spot_borsa_sayisi||0} bid-ağır`)
-    : eb==='PERP' ? sartYap('yari','Emici SPOT defterde','yalnız PERP — kaldıraçlı, kırılgan')
-    : sartYap('hayir','Emici SPOT defterde','emici yok — iki defter ask-ağır'));
-  const dagAktif=DAGITIM.includes(rejim), topAktif=TOPLAMA.includes(rejim), kapAktif=KAPITULASYON.includes(rejim);
-  sL.push(dagAktif&&tuk<3 ? sartYap('hayir','Süreç engeli yok',`dağıtım sürüyor (tükenme ${tuk}/4)`)
-    : (topAktif||kapAktif) ? sartYap('ok','Süreç engeli yok',kapAktif?'kapitülasyon akışı — dönüş adayı':'toplama aktif')
-    : dagAktif ? sartYap('yari','Süreç engeli yok',`dağıtım olgun (${tuk}/4) — engel kalkmak üzere`)
-    : sartYap('ok','Süreç engeli yok','aktif dağıtım yok'));
-  const lS=+L.long_skor||0;
-  sL.push(L.sinyal_durumu==='LONG' ? sartYap('ok','Motor onayı',`SİNYAL: LONG (skor ${lS.toFixed(0)})`)
-    : lS>=60 ? sartYap('yari','Motor onayı',`skor ${lS.toFixed(0)}/90 — kapılar bekliyor`)
-    : sartYap('hayir','Motor onayı',`skor ${lS.toFixed(0)}/90`));
-
-  /* ---- SHORT (tepe avı): squeeze-flush + alıcı tükenmesi + spot ASK + süreç + motor ---- */
-  const sS=[];
-  sS.push(flushS==null ? sartYap('yok','Squeeze flushu','medyan hazır değil')
-    : flushS>=TDC ? sartYap('ok','Squeeze flushu',`${kat(flushS)} short dikeni`)
-    : sartYap('hayir','Squeeze flushu',`${kat(flushS)} — eşik ${TDC}× altı`));
-  sS.push(!taze||canli.alici_sonme_orani==null ? sartYap('yok','Alıcı tükenmesi','ölçülemedi')
-    : canli.alici_tukenmesi ? sartYap('ok','Alıcı tükenmesi',`sönme ${(canli.alici_sonme_orani*100).toFixed(0)}% — alış kuruyor`)
-    : sartYap('hayir','Alıcı tükenmesi',`sönme ${(canli.alici_sonme_orani*100).toFixed(0)}% — alış sürüyor`));
-  const askAgir=taze&&(canli.spot_ask_agir_sayi||0)>=2;
-  sS.push(!taze ? sartYap('yok','Spot defter ASK-ağır','ölçülemedi')
-    : askAgir ? sartYap('ok','Spot defter ASK-ağır',`${canli.spot_ask_agir_sayi}/${canli.spot_borsa_sayisi} borsa — envanter satılıyor`)
-    : sartYap('hayir','Spot defter ASK-ağır',`${canli.spot_ask_agir_sayi||0}/${canli.spot_borsa_sayisi||0} borsa`));
-  sS.push(topAktif&&tuk<3 ? sartYap('hayir','Süreç engeli yok',`toplama sürüyor (tükenme ${tuk}/4)`)
-    : dagAktif ? sartYap('ok','Süreç engeli yok','dağıtım aktif')
-    : topAktif ? sartYap('yari','Süreç engeli yok',`toplama olgun (${tuk}/4)`)
-    : sartYap('ok','Süreç engeli yok','aktif toplama yok'));
-  const sSk=+L.short_skor||0;
-  sS.push(L.sinyal_durumu==='SHORT' ? sartYap('ok','Motor onayı',`SİNYAL: SHORT (skor ${sSk.toFixed(0)})`)
-    : sSk>=60 ? sartYap('yari','Motor onayı',`skor ${sSk.toFixed(0)}/90`)
-    : sartYap('hayir','Motor onayı',`skor ${sSk.toFixed(0)}/90`));
-
-  const say=a=>a.filter(x=>x.durum==='ok').length + a.filter(x=>x.durum==='yari').length*0.5;
-  const nL=say(sL), nS=say(sS);
-  $('avkur').innerHTML=`
-    <div class="av-taraf"><h3 class="pos">▲ LONG AVI — dip toplama reçetesi
-      <span class="say pos">${nL}/5</span></h3>${sL.map(x=>x.html).join('')}</div>
-    <div class="av-taraf"><h3 class="neg">▼ SHORT AVI — tepe dağıtım reçetesi
-      <span class="say neg">${nS}/5</span></h3>${sS.map(x=>x.html).join('')}</div>`;
-  return {nL,nS,flushL,flushS};
+  const sTaraf = TOPLAMA.includes(rejim)?['TOPLAMA','var(--sonar)']
+    : DAGITIM.includes(rejim)?['DAĞITIM','var(--alarm)']
+    : KAPITULASYON.includes(rejim)?['KAPİTÜLASYON','var(--amber)']
+    : ['SIKIŞMA','var(--mist)'];
+  $('miniMetrik').innerHTML=`
+    <div class="mm"><div class="l">BTC</div>
+      <div class="v">$${tl(f)}</div></div>
+    <div class="mm"><div class="l">Funding</div>
+      <div class="v">${((+L.funding_rate||0)*100).toFixed(4)}%
+        <span class="ok-yon" style="color:${fRenk}">${fOk}</span></div></div>
+    <div class="mm"><div class="l">Açık Pozisyon</div>
+      <div class="v">${usd(+L.open_interest||0)}
+        <span class="ok-yon" style="color:${oRenk}">${oOk}</span></div></div>
+    <div class="mm"><div class="l">Süreç</div>
+      <div class="v" style="color:${sTaraf[1]};font-size:13px">${sTaraf[0]}</div></div>`;
 }
 
-/* ---------- HÜKÜM ---------- */
-function hukum(L,rows,surec,canli,av){
-  const rejim=surec&&surec.rejim||'NOTR';
-  const sinyal=(L.sinyal_durumu||'BEKLE').toUpperCase();
-  const kart=$('hukum');
-  let cls='bekle',talimat='BEKLE',alt='';
-  if(sinyal==='LONG'){cls='avlan';talimat='AVLAN — LONG';alt='Motor tüm kapılardan geçti: kurulum TAM.';}
-  else if(sinyal==='SHORT'){cls='avlan';talimat='AVLAN — SHORT';alt='Motor tüm kapılardan geçti: kurulum TAM.';}
-  else if(av.nL>=3.5){cls='pusu';talimat='PUSU — LONG OLUŞUYOR';alt=`Dip avı şartları ${av.nL}/5 — motor sinyali DEĞİL, şart sayacı. Tetiği motor çeker.`;}
-  else if(av.nS>=3.5){cls='pusu';talimat='PUSU — SHORT OLUŞUYOR';alt=`Tepe avı şartları ${av.nS}/5 — motor sinyali DEĞİL, şart sayacı.`;}
-  else if(DAGITIM.includes(rejim)&&(surec.tukenme||0)<3){cls='kac';talimat='UZAK DUR';alt='Dağıtım süreci taze — düşen bıçak tutulmaz, tükenme beklenir.';}
-  else {cls='bekle';talimat='BEKLE';alt='Kurulum yok — balina izleniyor, sermaye korunuyor.';}
-  kart.className='kart '+cls;
-
-  const hikayeler={
-    LONG_TASFIYE:'Fiyat düşüyor + OI düşüyor: long\'lar zorla kapanıyor. Bu akış BİTİNCE (satıcı tükenmesi + spot emici) dip avı kurulumu doğar — swing avcısının ekmeği. Erken girme: bıçak hâlâ düşüyor.',
-    LONG_KAPITULASYON:'Long\'lar ZORLA tasfiye ediliyor — kapitülasyon. "Kırılgan düşüş" değil, "satıcı stoku boşalıyor" olabilir. Tükenme + SPOT emici teyidi gelirse en iyi dip kurulumlarındandır.',
-    DIP_TOPLAMA:'Satış akışı olgun alım duvarınca emiliyor — birileri sessizce topluyor.',
-    DIP_TOPLAMA_SPOT:'Emilim güçlü + satıcı tükeniyor + emici SPOT defterde: gerçek envanter toplama. En güçlü LONG bağlamı.',
-    DIP_TOPLAMA_TEYITSIZ:'Emilim var ama yön teyitsiz — toplama MI dağıtım MI henüz belli değil. Sistem dürüstçe "belirsiz" diyor.',
-    DIP_TOPLAMA_PERP:'Destek yalnız PERP defterinde — kaldıraçlı, envanter yok, kırılgan. Zayıf bağlam.',
-    TEPE_DAGITIM:'Alım akışı satım duvarınca karşılanıyor — sessiz dağıtım olabilir.',
-    TEPE_DAGITIM_SPOT:'Alıcı tükeniyor + spot ASK-ağır: gerçek envanter dağıtımı. En güçlü SHORT bağlamı.',
-    TEPE_DAGITIM_TEYITSIZ:'Emilim var ama yön teyitsiz.',
-    TEPE_DAGITIM_PERP:'Baskı yalnız vadeli defterde — kaldıraçlı satış.',
-    SHORT_SQUEEZE:'Fiyat çıkıyor ama OI düşüyor: gönüllü short kapanışı — yakıtı bitince söner. Kovalanmaz.',
-    SHORT_TASFIYE:'Short\'lar ZORLA kapatılıyor — zorunlu alım motoru. Squeeze\'den farkı: mecburiyet.',
-    TASFIYE_SONRASI_DONUS:'Long flush\'ı AZ ÖNCE bitti ve fiyat geri alıyor — tasfiye sonrası dönüş penceresi.',
-    TAZE_ALIM:'Fiyat çıkıyor + OI artıyor: yeni gerçek para giriyor. Sağlıklı yükseliş.',
-    TAZE_SATIS:'Fiyat düşüyor + OI artıyor: yeni short\'lar geliyor, gerçek satış baskısı.',
-    NOTR:'Belirgin order-flow paterni yok. Piyasa kararsız — en pahalı hata sıkılıp işlem uydurmaktır.',
-    VERI_GUVENSIZ:'Veri kalitesi düşük — bu dakika hüküm verilmez.',
-    VERI_BEKLENIYOR:'Sistem ısınıyor — pencere dolmadı.'};
-
-  const rozRenk = TOPLAMA.includes(rejim)?'background:rgba(47,245,200,.15);color:var(--sonar)'
-    : DAGITIM.includes(rejim)?'background:rgba(255,84,112,.15);color:var(--alarm)'
-    : KAPITULASYON.includes(rejim)?'background:rgba(255,194,75,.15);color:var(--amber)'
-    : 'background:rgba(109,151,173,.12);color:var(--mist)';
-
-  const sebepler=[];
-  if(canli&&!canli._bayat){
-    const eb=canli.emilim_borsasi;
-    if(eb==='SPOT'||eb==='HER_IKISI') sebepler.push(['ok',`Emici ${eb} — gerçek envanter alımı görülüyor`]);
-    else if(eb==='YOK') sebepler.push(['no','Emici yok — iki defter de satış-ağır']);
-    else if(eb==='PERP') sebepler.push(['no','Destek yalnız kaldıraçlı (PERP) — kırılgan']);
-    if(canli.satici_tukenmesi) sebepler.push(['ok','Satıcı tükeniyor — satış hızı yarıdan fazla söndü']);
-    if(canli.alici_tukenmesi) sebepler.push(['no','Alıcı tükeniyor — tepe riski']);
-  }
-  if(av.flushL!=null&&av.flushL>=2.5) sebepler.push(['ok',`Pencerede ${kat(av.flushL)} long-likidasyon dikeni — kapitülasyon yakıtı yandı`]);
-  if(av.flushS!=null&&av.flushS>=2.5) sebepler.push(['ok',`Pencerede ${kat(av.flushS)} short dikeni — squeeze yaşandı`]);
-  if(!sebepler.length) sebepler.push(['ntr','Öne çıkan kanıt yok — akış sakin']);
-
+/* ---------- SIRA 1a: HUKUM ---------- */
+function hukumKart(L,k){
+  const kart=$('hukumKart');
+  if(!k||!k.kademe){ $('hukumIc').innerHTML='<span class="neu">motor henüz swing kararı yazmadı</span>';
+    kart.style.borderLeftColor='var(--dim)'; return; }
+  const f=+L.anlik_fiyat||0;
+  const kd=k.kademe, yon=k.yon;
+  const R = kd==='SINYAL'?(yon==='SHORT'?'var(--alarm)':'var(--sonar)')
+    : kd==='HAZIRLAN'?'var(--veto)': kd==='IZLE'?'var(--amber)':'var(--dim)';
+  kart.style.borderLeftColor=R;
+  const rozBg = kd==='SINYAL'?(yon==='SHORT'?'rgba(255,84,112,.18)':'rgba(47,245,200,.18)')
+    : kd==='HAZIRLAN'?'rgba(255,138,61,.16)': kd==='IZLE'?'rgba(255,194,75,.14)':'rgba(109,151,173,.12)';
+  const ys=k.yakin_seviye;
+  const uzak = (ys&&ys.fiyat&&f>0)?Math.abs(ys.fiyat-f):null;
+  const cumleler={
+    SINYAL:`4/4 koşul sağlandı — motor ${yon||''} kurulumu onayladı. Hedef/stop yapıdan üretildi.`,
+    HAZIRLAN:'Kurulum oluşuyor: seviye yakın + en az bir sensör (grab/funding/emici) tetikte. Henüz işlem sinyali DEĞİL.',
+    IZLE:'Fiyat bir seviyeye yaklaştı; sensörler sakin. İzlemedeyiz.',
+    YOK:'Yakın seviye yok — piyasa haritanın ortasında. Sermaye korunuyor.'};
+  const seb=(k.sebepler&&k.sebepler.length)?esc(k.sebepler.slice(0,2).join(' · ')):'';
   $('hukumIc').innerHTML=`
-    <div class="rejim-satir">
-      <span class="rejim-roz" style="${rozRenk}">${REJIM_AD[rejim]||rejim}</span>
-      <span style="font-size:10px;color:var(--dim)">${surec&&surec.sure_dk?`${(+surec.sure_dk).toFixed(0)} dk'dır sürüyor · tükenme ${surec.tukenme||0}/4`:''}</span>
+    <span class="kademe-roz" style="background:${rozBg};color:${R}">${kd==='SINYAL'?('SİNYAL — '+(yon||'')):kd==='HAZIRLAN'?'HAZIRLAN':kd==='IZLE'?'İZLE':'İZLEME YOK'}</span>
+    <div class="hukum-cumle">${cumleler[kd]||''}</div>
+    ${seb?`<div class="hukum-alt">${seb}</div>`:''}
+    ${uzak!=null?`<div class="mesafe-satir neu">en yakın kutu: <b style="color:${R}">$${tl(ys.fiyat)}</b>
+      <span style="color:var(--dim)">(${ys.kaynak||''})</span> — fiyata <b>$${tl(uzak)}</b> uzakta
+      ${k.mesafe_vol!=null?`<span style="color:var(--dim)">· ${k.mesafe_vol}×vol</span>`:''}</div>`:''}`;
+}
+
+/* ---------- SIRA 1b: AV KURULUMU (motorun kendi 4 sarti) ---------- */
+function avKart(k){
+  const s=(k&&k.sartlar)||{};
+  const liste=[['seviye','Seviyeye yakın'],['grab_tamam','Grab tamam (süpürme onaylı)'],
+               ['tasfiye','Tasfiye teyidi (OI çöktü)'],['emici_yon','Emici yön verdi']];
+  const n=liste.filter(([kk])=>s[kk]).length;
+  $('avSayi').textContent = (k&&k.kademe)?`${n}/4`:'—';
+  $('avSayi').style.color = n>=4?'var(--sonar)':n>=2?'var(--amber)':'var(--mist)';
+  $('avIc').innerHTML = (k&&k.kademe)
+    ? liste.map(([kk,ad])=>`<div class="sart ${s[kk]?'dolu':'bos'}">
+        <span class="im">${s[kk]?'✓':'—'}</span><span class="ad">${ad}</span></div>`).join('')
+      +`<div class="expl">Motorun kendi 4/4 kapısı (swing_karar.sartlar) — panel hesabı değil.</div>`
+    : '<span class="neu">veri yok</span>';
+}
+
+/* ---------- SIRA 1c: EMICI ---------- */
+function emiciKart(c){
+  if(!c){ $('emiciIc').innerHTML='<span class="neu">canlı emilim yok</span>'; return; }
+  if(c._bayat){ $('emiciIc').innerHTML=`<span class="warn">BAYAT — son yazım ${(c._yas/60).toFixed(0)} dk önce</span>`; return; }
+  const b=c.emilim_borsasi;
+  const [etiket,renk] = b==null?['ÖLÇÜLEMEDİ','var(--mist)']
+    : b==='SPOT'?['SPOT','var(--sonar)'] : b==='HER_IKISI'?['HER İKİSİ','var(--sonar)']
+    : b==='PERP'?['PERP','var(--amber)'] : b==='YOK'?['YOK','var(--alarm)']
+    : [String(b).replace(/_/g,' '),'var(--mist)'];
+  const eg=c.spot_egilim;
+  const egTxt = eg==null?'—':(eg>0?'+':'')+eg.toFixed(2);
+  $('emiciIc').innerHTML=`
+    <div class="emici-buyuk" style="color:${renk}">${etiket}</div>
+    <div class="piller">
+      <span class="pill">spot <b>${c.spot_bid_agir_sayi??0}/${c.spot_borsa_sayisi??0}</b> bid</span>
+      <span class="pill">perp <b>${c.perp_bid_agir_sayi??0}/${c.perp_borsa_sayisi??0}</b> bid</span>
+      <span class="pill">eğilim <b class="${eg>0?'pos':eg<0?'neg':'neu'}">${egTxt}</b></span>
     </div>
-    <div class="talimat ${cls}">${talimat}</div>
-    <div class="hikaye">${alt}</div>
-    <div class="hikaye" style="margin-top:8px">${hikayeler[rejim]||''}</div>
-    <div style="margin-top:10px">${sebepler.map(([t,m])=>
-      `<div class="sebep"><span class="${t==='ok'?'ok':t==='no'?'no':'ntr'}">${t==='ok'?'▸':t==='no'?'▸':'·'}</span><span>${m}</span></div>`).join('')}</div>
-    <div class="faz-not">FAZ 1: motor ölçüm modunda — PUSU/şart sayacı yalnız bağlam anlatır, işlem tetiği DEĞİLDİR.</div>`;
+    <div class="expl">${b==='SPOT'||b==='HER_IKISI'?'Gerçek envanter alımı — toplama teyidi.'
+      : b==='PERP'?'Yalnız kaldıraçlı destek — kırılgan.'
+      : b==='YOK'?'İki defter de satış-ağır — emici yok.'
+      : 'Akış eşiğin altında — uydurmuyoruz.'}
+      Tükenme: satıcı ${c.sonme_orani==null?'—':(c.satici_tukenmesi?'✓':'✗')} ·
+      alıcı ${c.alici_sonme_orani==null?'—':(c.alici_tukenmesi?'✓':'✗')}</div>`;
 }
 
-/* ---------- SWING UFKU — swing kohortu geri testi (4s/12s/1g/3g) ---------- */
-function swingUfku(gt,swingIst){
-  const sira=['4s','12s','1g','3g'];
-  const uf=swingIst&&swingIst.ufuklar;
-  if(!uf||!(swingIst.olay_sayisi>0)){
-    $('ufukOzet').innerHTML='<span class="warn">swing SİNYAL örneği birikiyor — henüz olay yok</span>';
-    $('ufukTab').innerHTML='';
-    $('ufukHukum').innerHTML='<div class="hukum-cumle warn">Motor SİNYAL ürettikçe bu tablo dolar. '
-      +'Kenar kanıtlanana kadar gerçek parayla işlem DÜŞÜNME.</div>';
-    if(charts['cUfuk'])charts['cUfuk'].destroy();
-    return;
-  }
-  const et=[],isb=[],rr=[];
-  sira.forEach(u=>{const b=uf[u]||{};et.push(u);isb.push(b.n?+b.isabet||0:null);rr.push(b.n?+b.ort_r:null);});
-  let enIyi=null;
-  sira.forEach((u,i)=>{const b=uf[u]||{};if((b.n||0)>=5&&(enIyi==null||(rr[i]||-9)>(rr[enIyi]||-9)))enIyi=i;});
-  $('ufukOzet').innerHTML= enIyi==null
-    ? `<span class="warn">örnek birikiyor (${swingIst.olay_sayisi} sinyal, ufuk n&lt;5)</span>`
-    : `<div><div style="font-size:9.5px;color:var(--dim);letter-spacing:1px">EN İYİ UFUK</div>
-       <span class="ufuk-buyuk pos">${et[enIyi]}</span></div>
-       <div><div style="font-size:9.5px;color:var(--dim)">İSABET</div>
-       <span style="font-size:22px;font-weight:800" class="${isb[enIyi]>=50?'pos':'neg'}">%${isb[enIyi].toFixed(1)}</span></div>
-       <div><div style="font-size:9.5px;color:var(--dim)">ORT. R (maliyet hariç)</div>
-       <span style="font-size:22px;font-weight:800" class="${rr[enIyi]>0?'pos':'neg'}">${(rr[enIyi]>0?'+':'')+rr[enIyi].toFixed(2)}R</span></div>`;
-  ciz('cUfuk',{type:'bar',data:{labels:et,datasets:[{label:'İsabet (%)',data:isb,
-      backgroundColor:et.map((_,i)=>i===enIyi?REN.sonar:'rgba(74,144,217,.75)'),
-      borderRadius:4,borderSkipped:false,maxBarThickness:56}]},
-    options:{responsive:true,plugins:{legend:{display:false},
-      tooltip:{callbacks:{label:c=>` isabet %${(c.raw??0).toFixed(1)} · ort ${rr[c.dataIndex]==null?'—':(rr[c.dataIndex]>0?'+':'')+rr[c.dataIndex].toFixed(2)+'R'}`}}},
-      scales:{y:{min:0,max:100,grid:GRID,ticks:{callback:v=>v+'%'}},x:{grid:{display:false}}}}});
-  charts['cUfuk'].data.datasets.push({type:'line',label:'yazı-tura',data:et.map(()=>50),
-    borderColor:'rgba(233,245,251,.35)',borderDash:[5,4],borderWidth:1.5,pointRadius:0});
-  charts['cUfuk'].update();
-  let t=`<table class="mini-tab"><thead><tr><th>ufuk</th><th>n</th><th>isabet</th><th>ort R</th><th>açık</th></tr></thead><tbody>`;
-  sira.forEach(u=>{const b=uf[u];if(!b)return;
-    t+=`<tr><td>${u}</td><td>${b.n||0}</td><td>${b.n?'%'+(b.isabet??0).toFixed(1):'—'}</td>
-      <td class="${(b.ort_r||0)>0?'pos':'neg'}">${b.n?((b.ort_r>0?'+':'')+(b.ort_r??0).toFixed(2)+'R'):'—'}</td>
-      <td class="neu">${b.acik||0}</td></tr>`;});
-  $('ufukTab').innerHTML=t+'</tbody></table>';
-  const cozulen=sira.reduce((a,u)=>a+((uf[u]||{}).n||0),0);
-  const pozR=sira.some(u=>((uf[u]||{}).n||0)>=5&&((uf[u]||{}).ort_r||0)>0);
-  let h,c;
-  if(pozR){h='Bir+ ufukta ort R POZİTİF (n≥5) — kenar belirginleşiyor, örnek büyüdükçe güven artar.';c='pos';}
-  else if(cozulen>0){h='Sinyaller çözülüyor ama pozitif R henüz kanıtlanmadı — erken.';c='warn';}
-  else{h='Sinyaller açık (henüz hedef/stop vurmadı). Uzun ufuk (1g/3g) swing için asıl ölçü.';c='warn';}
-  $('ufukHukum').innerHTML=`<div class="hukum-cumle ${c}">${h}</div>`;
-}
-
-/* ---------- SEVİYE HARİTASI + ELLE GİRİŞ (v8.3 FAZ D) ---------- */
-const KAYNAK_RENK={ELLE:'var(--sonar)',VP:'var(--violet)',HL:'var(--amber)',
-  LIQ:'var(--alarm)',SWING_PIVOT:'var(--whale)',ROUND:'var(--dim)'};
+/* ---------- SIRA 2a: SEVIYE HARITASI (elle mantigi AYNEN) ---------- */
 function seviyeHaritasi(oto,elle,karar,anlik){
   const list=((oto&&oto.seviyeler)||[]).filter(s=>!s.gizli).sort((a,b)=>b.fiyat-a.fiyat);
   const vol=(oto&&oto.vol_pct)||0;
   const yakinFiyat=(karar&&karar.yakin_seviye&&karar.yakin_seviye.fiyat);
-  let html='';
-  let simdiBasildi=false;
-  const satirlar=list.length?list:[];
-  if(!satirlar.length){
-    html='<span class="neu">motor henüz seviye üretmedi (~10dk) veya veri yetersiz</span>';
-  }else{
-    satirlar.forEach(s=>{
-      // "şu an" çizgisini doğru yere koy (fiyatlar büyükten küçüğe)
+  /* miknatis: en yogun LIQ kumesi (motorla ayni: hacim max) */
+  const liqler=((oto&&oto.seviyeler)||[]).filter(s=>s.kaynak==='LIQ');
+  const mag=liqler.length?liqler.reduce((a,b)=>((a.hacim||0)>=(b.hacim||0)?a:b)):null;
+  let html=''; let simdiBasildi=false;
+  if(!list.length){ html='<span class="neu">motor henüz seviye üretmedi (~10dk)</span>'; }
+  else{
+    list.forEach(s=>{
       if(!simdiBasildi && anlik>0 && s.fiyat<anlik){
-        html+=`<div class="sev-simdi">▸ ŞU AN $${anlik.toLocaleString('tr-TR',{maximumFractionDigits:0})} ◂</div>`;
-        simdiBasildi=true;
+        html+=`<div class="sev-simdi">▸ ŞU AN $${tl(anlik)} ◂</div>`; simdiBasildi=true;
       }
       const renk=KAYNAK_RENK[s.kaynak]||'var(--mist)';
-      const mesafe = (anlik>0&&vol>0)?Math.abs(s.fiyat-anlik)/anlik*100/vol:null;
-      // KADEMELI RADAR: motorun izledigi (en yakin) seviye -> gercek kademe;
-      // 2xvol menzilindeki diger seviyeler -> "IZLE" (izleme menzilinde).
-      const izlenen = yakinFiyat && Math.abs(s.fiyat-yakinFiyat)<0.5 && karar && karar.kademe && karar.kademe!=='YOK';
-      let rk = izlenen ? karar.kademe : ((mesafe!=null && mesafe<=2.0) ? 'IZLE' : '');
-      const rBg = rk==='SINYAL'?'rgba(47,245,200,.2)':rk==='HAZIRLAN'?'rgba(255,194,75,.2)':rk==='IZLE'?'rgba(74,144,217,.15)':'';
-      const rFg = rk==='SINYAL'?'var(--sonar)':rk==='HAZIRLAN'?'var(--amber)':rk==='IZLE'?'var(--whale)':'';
-      const rozet = rk ? `<span class="sev-rozet" style="background:${rBg};color:${rFg}">${rk}</span>` : '';
-      const sil = s.kaynak==='ELLE' ? `<span class="sev-sil" data-fiyat="${s.fiyat}" title="sil">✕</span>` : '';
-      html+=`<div class="sev-satir">
-        <div class="sev-serit" style="background:${renk}"></div>
-        <span class="sev-fiyat">$${s.fiyat.toLocaleString('tr-TR',{maximumFractionDigits:0})}</span>
+      const mesafe=(anlik>0&&vol>0)?Math.abs(s.fiyat-anlik)/anlik*100/vol:null;
+      const izlenen=yakinFiyat&&Math.abs(s.fiyat-yakinFiyat)<0.5&&karar&&karar.kademe&&karar.kademe!=='YOK';
+      let rk=izlenen?karar.kademe:((mesafe!=null&&mesafe<=2.0)?'IZLE':'');
+      const rBg=rk==='SINYAL'?'rgba(47,245,200,.2)':rk==='HAZIRLAN'?'rgba(255,138,61,.2)':rk==='IZLE'?'rgba(255,194,75,.15)':'';
+      const rFg=rk==='SINYAL'?'var(--sonar)':rk==='HAZIRLAN'?'var(--veto)':rk==='IZLE'?'var(--amber)':'';
+      const rozet=rk?`<span class="sev-rozet" style="background:${rBg};color:${rFg}">${rk}</span>`:'';
+      const miknatis = mag && !mag.gizli && Math.abs(s.fiyat-mag.fiyat)<0.5;
+      const sinif = s.kaynak==='ELLE'?'elle':(miknatis?'miknatis':'oto');
+      const sil = s.kaynak==='ELLE'?`<span class="sev-sil" data-fiyat="${s.fiyat}" title="sil">✕</span>`:'';
+      html+=`<div class="sev-satir ${sinif}">
+        <span class="sev-fiyat">$${tl(s.fiyat)}</span>
         <span class="sev-kaynak" style="background:${renk}22;color:${renk}">${s.kaynak}</span>
+        ${miknatis?'<span class="sev-rozet" style="background:rgba(47,245,200,.16);color:var(--sonar)">🧲 MIKNATIS</span>':''}
         <span class="sev-not">${esc(s.not||'')}</span>
         ${rozet}
-        <span class="sev-mesafe">${mesafe==null?'':mesafe.toFixed(1)+'×vol'}</span>
+        <span class="sev-mesafe">${mesafe==null?'':mesafe.toFixed(1)+'×v'}</span>
         ${sil}</div>`;
     });
-    if(!simdiBasildi && anlik>0){
-      html+=`<div class="sev-simdi">▸ ŞU AN $${anlik.toLocaleString('tr-TR',{maximumFractionDigits:0})} ◂</div>`;
-    }
+    if(!simdiBasildi && anlik>0) html+=`<div class="sev-simdi">▸ ŞU AN $${tl(anlik)} ◂</div>`;
   }
-  // BEKLEYEN elle seviyeler: swing_seviyeler_elle'de var ama oto haritada (kaynak=ELLE)
-  // henuz yok -> motor daha islemedi. Kaybolmasin diye "beklemede" gosterilir.
+  /* bekleyen elle seviyeler (motor ~10dk'da isler) — v4'ten aynen */
   const elleList=(elle&&elle.seviyeler)||[];
   const otoElle=list.filter(s=>s.kaynak==='ELLE').map(s=>s.fiyat);
   const bekleyen=elleList.filter(e=>!otoElle.some(f=>Math.abs(f-(e.fiyat||0))<0.5));
   if(bekleyen.length){
-    const renk='var(--sonar)';
-    html+=`<div style="font-size:9.5px;color:var(--dim);letter-spacing:1px;margin-top:8px;padding-top:6px;border-top:1px solid var(--line)">SENİN — MOTOR İŞLİYOR (~10dk)</div>`;
+    html+=`<div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin-top:7px;padding-top:5px;border-top:1px solid var(--line)">SENİN — MOTOR İŞLİYOR (~10dk)</div>`;
     bekleyen.sort((a,b)=>(b.fiyat||0)-(a.fiyat||0)).forEach(e=>{
-      const mesafe=(anlik>0&&vol>0)?Math.abs((e.fiyat||0)-anlik)/anlik*100/vol:null;
-      html+=`<div class="sev-satir" style="opacity:.7">
-        <div class="sev-serit" style="background:${renk};opacity:.5"></div>
-        <span class="sev-fiyat">$${(e.fiyat||0).toLocaleString('tr-TR',{maximumFractionDigits:0})}</span>
-        <span class="sev-kaynak" style="background:${renk}22;color:${renk}">ELLE</span>
+      html+=`<div class="sev-satir elle" style="opacity:.7">
+        <span class="sev-fiyat">$${tl(e.fiyat)}</span>
+        <span class="sev-kaynak" style="background:rgba(255,84,112,.13);color:var(--alarm)">ELLE</span>
         <span class="sev-not">${esc(e.not||'elle')} · <span class="warn">beklemede</span></span>
-        <span class="sev-mesafe">${mesafe==null?'':mesafe.toFixed(1)+'×vol'}</span>
         <span class="sev-sil" data-fiyat="${e.fiyat}" title="sil">✕</span></div>`;
     });
   }
@@ -729,6 +505,179 @@ function seviyeHaritasi(oto,elle,karar,anlik){
     el.addEventListener('click',()=>elleSil(parseFloat(el.dataset.fiyat))));
 }
 
+/* ---------- SIRA 2b: AKTIF SINYAL ---------- */
+function sinyalKart(k,ist){
+  const kart=$('sinyalKart');
+  const hs=k&&k.hedef_stop;
+  const kohortN=(ist&&ist.olay_sayisi)||0;
+  if(!k||k.kademe!=='SINYAL'||!hs||!hs.gecerli){
+    kart.style.boxShadow='';
+    $('sinyalIc').innerHTML=`<div class="neu" style="font-size:12px;line-height:1.6">
+      Aktif sinyal yok — motor 4/4 kurulumu bekliyor.<br>
+      <span style="font-size:10.5px;color:var(--dim)">şimdiye kadar kaydedilen SİNYAL: <b>${kohortN}</b></span></div>`;
+    return;
+  }
+  const R=k.yon==='SHORT'?'var(--alarm)':'var(--sonar)';
+  kart.style.boxShadow=`0 0 0 1px ${k.yon==='SHORT'?'rgba(255,84,112,.4)':'rgba(47,245,200,.4)'},0 0 30px rgba(0,0,0,.3)`;
+  const rrRenk=hs.rr_swing>=3?'var(--sonar)':hs.rr_swing>=1.5?'var(--amber)':'var(--alarm)';
+  $('sinyalIc').innerHTML=`
+    <div class="sinyal-grid">
+      <div class="sk"><div class="l">Yön</div><div class="v" style="color:${R}">${k.yon}</div></div>
+      <div class="sk"><div class="l">Stop (yapısal)</div><div class="v neg">$${tl(hs.stop)}</div></div>
+      <div class="sk"><div class="l">Kısa Hedef</div><div class="v">$${tl(hs.kisa_hedef)}</div></div>
+      <div class="sk"><div class="l">R / R</div><div class="v" style="color:${rrRenk}">${(hs.rr_swing||0).toFixed(1)}R</div></div>
+    </div>
+    <div class="swing-hedef-satir">
+      <span class="neu">🧲 swing hedef (mıknatıs)</span>
+      <b class="pos" style="font-size:16px">$${tl(hs.swing_hedef)}</b>
+    </div>
+    <div class="expl">skor ${k.kademe_skoru||0}/100 · kohort n=${kohortN} · stop hep yapıdan, R/R&lt;1.5 sinyal vermez</div>`;
+}
+
+/* ---------- SIRA 3a: CVD — spot & vadeli ayri mini bar ---------- */
+function cvdPanel(rows){
+  const N=36;
+  const dilim=rows.slice(-N-1);
+  const del=(alan)=>{const out=[];for(let i=1;i<dilim.length;i++)
+    out.push((+dilim[i][alan]||0)-(+dilim[i-1][alan]||0));return out;};
+  const dSpot=del('spot_cvd'), dVad=del('vadeli_cvd');
+  const graf=(dizi,tip)=>{
+    const mx=Math.max(...dizi.map(Math.abs),1);
+    return `<div class="mini-graf">`+dizi.map(v=>{
+      const h=Math.max(6,Math.abs(v)/mx*100);
+      const renk = tip==='spot' ? (v>=0?'rgba(47,245,200,.85)':'rgba(255,84,112,.85)')
+                                : 'rgba(160,180,195,.55)';
+      return `<div class="b" style="height:${h}%;background:${renk};align-self:${v>=0?'flex-end':'flex-end'}"></div>`;
+    }).join('')+`</div>`;
+  };
+  const son=(dizi)=>{const s=dizi[dizi.length-1]||0;
+    return `<span class="${s>=0?'pos':'neg'}">${bigS(s)} ${s>=0?'▲':'▼'}</span>`;};
+  $('cvdIc').innerHTML=`
+    <div class="cvd-ikili">
+      <div>
+        <div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin-bottom:3px">SPOT (gerçek envanter)</div>
+        ${graf(dSpot,'spot')}
+        <div class="mg-alt"><span class="neu">son dk</span>${son(dSpot)}</div>
+      </div>
+      <div>
+        <div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin-bottom:3px">VADELİ (kaldıraçlı)</div>
+        ${graf(dVad,'vadeli')}
+        <div class="mg-alt"><span class="neu">son dk</span>${son(dVad)}</div>
+      </div>
+    </div>
+    <div class="expl">dakikalık CVD değişimi, son ${N} dk. Spot yeşil/kırmızı; vadeli nötr gri (bağlam).</div>`;
+}
+
+/* ---------- SIRA 3b: LIKIDASYON — dolar bazli ----------
+   NOT: agg_long/short_liq Coinalyze'dan convert_to_usd=true ile gelir — ZATEN
+   USD'dir (motor loglari da $ formatlar). coin×fiyat carpimi YANLIS olurdu
+   (60.000x sisirirdi). 5dk KAYAN pencere dakikada orneklenir -> toplamlar /5. */
+function likPanel(rows,ms,fiyat){
+  const saat=rows.slice(-60);
+  const medL=(ms&&ms.esik_lik_long_medyan)||0, medS=(ms&&ms.esik_lik_short_medyan)||0;
+  const TDC=(ms&&ms.TASFIYE_DIKEN_CARPANI)||2.5;
+  const esikL=medL>0?medL*TDC:Infinity, esikS=medS>0?medS*TDC:Infinity;
+  let topL=0,topS=0,patL=0,patS=0,oncekiL=false,oncekiS=false;
+  const patlamalar=[];
+  saat.forEach(r=>{
+    const l=+r.agg_long_liq||0, s=+r.agg_short_liq||0;
+    topL+=l/5; topS+=s/5;
+    const spkL=l>=esikL, spkS=s>=esikS;
+    if(spkL&&!oncekiL){patL++;patlamalar.push({tip:'L',usd:l,t:r.kayit_zamani});}
+    if(spkS&&!oncekiS){patS++;patlamalar.push({tip:'S',usd:s,t:r.kayit_zamani});}
+    oncekiL=spkL; oncekiS=spkS;
+  });
+  const son6=patlamalar.slice(-6);
+  const mx=Math.max(...son6.map(p=>p.usd),1);
+  const barlar=son6.length?son6.map(p=>
+    `<div class="b" title="${p.tip==='L'?'long':'short'} ${usd(p.usd)}"
+       style="height:${Math.max(14,p.usd/mx*100)}%;background:${p.tip==='L'?'rgba(255,84,112,.8)':'rgba(47,245,200,.8)'}"></div>`).join('')
+    :'<span class="neu" style="font-size:10px;align-self:center">son 1 saatte patlama yok (eşik: medyan×'+TDC+')</span>';
+  $('likIc').innerHTML=`
+    <div class="lik-ust">
+      <div class="lik-kutu"><div class="l pos">SHORT patlama (1s)</div>
+        <div class="v pos">${patS} patlama · ${usd(topS)}</div></div>
+      <div class="lik-kutu"><div class="l neg">LONG patlama (1s)</div>
+        <div class="v neg">${patL} patlama · ${usd(topL)}</div></div>
+    </div>
+    <div class="patlama-graf">${barlar}</div>
+    <div class="expl">yeşil=short yandı (squeeze), kırmızı=long yandı (kapitülasyon yakıtı).
+      Tutarlar USD (motor convert_to_usd ile çeker) · 5dk pencere düzeltmesi uygulandı.</div>`;
+}
+
+/* ---------- SIRA 3c: SUREC + OI ---------- */
+function surecOi(surec,rows,L){
+  const rejim=surec&&surec.rejim||'NOTR';
+  const [ad,renk,aciklama] = TOPLAMA.includes(rejim)?['TOPLAMA','var(--sonar)','balina mal topluyor']
+    : DAGITIM.includes(rejim)?['DAĞITIM','var(--alarm)','dağıtım/satış modu']
+    : KAPITULASYON.includes(rejim)?['KAPİTÜLASYON','var(--amber)','zorla boşalma — dönüş adayı']
+    : ['SIKIŞMA','var(--mist)','belirgin süreç yok'];
+  const N=40; const dilim=rows.slice(-N);
+  const oiler=dilim.map(r=>+r.open_interest||0).filter(v=>v>0);
+  const mn=Math.min(...oiler,Infinity), mxo=Math.max(...oiler,1);
+  const bars=dilim.map(r=>{const v=+r.open_interest||0;
+    const h=mxo>mn?Math.max(8,(v-mn)/(mxo-mn)*100):50;
+    return `<div class="b" style="height:${h}%"></div>`;}).join('');
+  const ilk=oiler[0]||0, sonO=oiler[oiler.length-1]||0;
+  const dOi=ilk>0?(sonO/ilk-1)*100:0;
+  const ilkF=+dilim[0]?.anlik_fiyat||0, sonF=+L.anlik_fiyat||0;
+  const dF=ilkF>0?(sonF/ilkF-1)*100:0;
+  let yorum,yRenk;
+  if(dOi>0.15&&dF>0){yorum='taze long — yeni para girişiyle yükseliş';yRenk='var(--sonar)';}
+  else if(dOi<-0.15&&dF>0){yorum='yakıtsız yükseliş — short kapanışı, kırılgan';yRenk='var(--amber)';}
+  else if(dOi>0.15&&dF<0){yorum='taze short — satış baskısı gerçek';yRenk='var(--alarm)';}
+  else if(dOi<-0.15&&dF<0){yorum='pozisyon boşalması — tasfiye/temizlik';yRenk='var(--amber)';}
+  else {yorum='OI yatay — belirgin akım yok';yRenk='var(--mist)';}
+  $('surecIc').innerHTML=`
+    <span class="surec-etiket" style="background:${renk}22;color:${renk}">${ad}</span>
+    <span style="font-size:10px;color:var(--dim)"> ${esc(aciklama)}${surec&&surec.sure_dk?` · ${(+surec.sure_dk).toFixed(0)} dk`:''}
+      ${surec&&surec.tukenme!=null?` · tükenme ${surec.tukenme}/4`:''}</span>
+    <div class="oi-trend">${bars}</div>
+    <div class="mg-alt"><span class="neu">OI ${N}dk</span>
+      <span class="${dOi>=0?'pos':'neg'}">${dOi>=0?'+':''}${dOi.toFixed(2)}%</span></div>
+    <div style="margin-top:6px;font-size:11px;color:${yRenk}">◆ ${yorum}</div>`;
+}
+
+/* ---------- CEKMECE: son 60 dk detayi ---------- */
+function cekmeceIc(rows,L){
+  const son60=rows.slice(-60);
+  const egilimler=son60.map(r=>r.spot_egilim==null?null:+r.spot_egilim);
+  const olculen=egilimler.filter(e=>e!=null);
+  const bidDk=olculen.filter(e=>e>=0.15).length;
+  const ortEg=olculen.length?olculen.reduce((a,b)=>a+b,0)/olculen.length:null;
+  const fiyatlar=son60.map(r=>+r.anlik_fiyat||0).filter(v=>v>0);
+  const fMin=Math.min(...fiyatlar,Infinity), fMax=Math.max(...fiyatlar,0);
+  const aralikPct=fMin<Infinity&&fMin>0?((fMax-fMin)/fMin*100):null;
+  let likTop=0,likSay=0;
+  son60.forEach(r=>{const t=(+r.agg_long_liq||0)+(+r.agg_short_liq||0);
+    likTop+=t/5; if(t>0)likSay++;});
+  const barlar=egilimler.map(e=>{
+    if(e==null) return `<div class="b" style="height:8%;background:rgba(109,151,173,.25)"></div>`;
+    const h=Math.max(8,Math.min(100,Math.abs(e)*100));
+    const renk=e>=0?'rgba(47,245,200,.8)':'rgba(255,84,112,.8)';
+    return `<div class="b" style="height:${h}%;background:${renk}"></div>`;
+  }).join('');
+  $('cekmeceIc').innerHTML=`
+    <div class="ozet4">
+      <div class="oz"><div class="l">SPOT emici</div>
+        <div class="v ${bidDk>30?'pos':'neu'}">${olculen.length?Math.round(bidDk/Math.max(olculen.length,1)*100)+'%':'—'}</div>
+        <div class="s">${bidDk}/${olculen.length||0} dk bid-ağır</div></div>
+      <div class="oz"><div class="l">Ort. eğilim</div>
+        <div class="v ${ortEg>0?'pos':ortEg<0?'neg':'neu'}">${ortEg==null?'—':(ortEg>0?'+':'')+ortEg.toFixed(2)}</div>
+        <div class="s">(bid−ask)/(bid+ask)</div></div>
+      <div class="oz"><div class="l">Fiyat aralığı</div>
+        <div class="v">${fMin<Infinity?('$'+tl(fMin)+'–'+tl(fMax)):'—'}</div>
+        <div class="s">${aralikPct!=null?'%'+aralikPct.toFixed(1)+' bant':''}</div></div>
+      <div class="oz"><div class="l">Likidasyon (60dk)</div>
+        <div class="v">${usd(likTop)}</div>
+        <div class="s">${likSay} dk aktif · USD</div></div>
+    </div>
+    <div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin-bottom:4px">DAKİKA DAKİKA SPOT EMİCİ — yeşil bid-ağır · kırmızı ask-ağır · yükseklik=|eğilim|</div>
+    <div class="emici-graf">${barlar}</div>
+    <div class="eksen"><span>−60dk</span><span>şimdi</span></div>`;
+}
+
+/* ---------- ELLE SEVIYE (v4'ten AYNEN — dokunulmadi) ---------- */
 async function elleEkle(){
   const f=parseFloat($('elleFiyat').value);
   if(!f||f<=0){ elleDurumYaz('geçersiz fiyat','neg'); return; }
@@ -742,7 +691,7 @@ async function elleEkle(){
   mevcut.push({fiyat:f,not:notu||'elle'});
   const {error}=await sb.from('balina_ayarlar')
     .upsert({anahtar:'swing_seviyeler_elle',deger:{seviyeler:mevcut,guncelleme:new Date().toISOString()}},{onConflict:'anahtar'});
-  if(error){ elleDurumYaz('yazılamadı — Supabase RLS anon-write izni gerekli: '+error.message,'neg'); }
+  if(error){ elleDurumYaz('yazılamadı — Supabase RLS anon-write izni gerekli: '+esc(error.message),'neg'); }
   else{ elleDurumYaz(`$${f.toLocaleString('tr-TR')} eklendi ✓ (motor ~10dk içinde işler)`,'pos');
         $('elleFiyat').value='';$('elleNot').value=''; setTimeout(yukle,600); }
 }
@@ -755,255 +704,17 @@ async function elleSil(f){
   mevcut=mevcut.filter(s=>Math.abs((s.fiyat||0)-f)>=0.5);
   const {error}=await sb.from('balina_ayarlar')
     .upsert({anahtar:'swing_seviyeler_elle',deger:{seviyeler:mevcut,guncelleme:new Date().toISOString()}},{onConflict:'anahtar'});
-  if(error){ elleDurumYaz('silinemedi: '+error.message,'neg'); }
+  if(error){ elleDurumYaz('silinemedi: '+esc(error.message),'neg'); }
   else{ elleDurumYaz('silindi (motor ~10dk içinde günceller)','neu'); setTimeout(yukle,600); }
 }
 function elleDurumYaz(m,c){ $('elleDurum').innerHTML=`<span class="${c}">${m}</span>`; }
 
-/* ---------- AKTİF SWING SİNYALİ (swing_karar) ---------- */
-function swingSinyal(k){
-  const kart=$('swingSinyalKart');
-  if(!k||!k.kademe){ $('swingSinyal').innerHTML='<span class="neu">motor henüz swing kararı yazmadı</span>';
-    kart.style.borderColor='var(--line)'; return; }
-  // bayat mı?
-  let yas=null; if(k.guncelleme){const g=k.guncelleme.endsWith('Z')?k.guncelleme:k.guncelleme+'Z'; yas=(Date.now()-new Date(g).getTime())/1000;}
-  const kademe=k.kademe, yon=k.yon;
-  const renk = kademe==='SINYAL'?(yon==='LONG'?'var(--sonar)':'var(--alarm)')
-    : kademe==='HAZIRLAN'?'var(--amber)':kademe==='IZLE'?'var(--whale)':'var(--mist)';
-  kart.style.borderColor=(kademe==='SINYAL')?renk:'var(--line)';
-  kart.style.boxShadow=(kademe==='SINYAL')?`0 0 0 1px ${renk}44,0 0 34px ${renk}22`:'';
-  const talimat = kademe==='SINYAL'?`SİNYAL — ${yon}`:kademe==='HAZIRLAN'?'HAZIRLAN':kademe==='IZLE'?'İZLE':'İZLEME YOK';
-  const hs=k.hedef_stop;
-  let hedefHtml='';
-  if(kademe==='SINYAL' && hs && hs.gecerli){
-    const rrRenk=hs.rr_swing>=3?'var(--sonar)':hs.rr_swing>=1.5?'var(--amber)':'var(--alarm)';
-    hedefHtml=`
-      <div class="hedef-grid">
-        <div class="hedef-kutu"><div class="l">Kısa Hedef</div><div class="v">$${(hs.kisa_hedef||0).toLocaleString('tr-TR',{maximumFractionDigits:0})}</div></div>
-        <div class="hedef-kutu"><div class="l">Swing Hedef (mıknatıs)</div><div class="v pos">$${(hs.swing_hedef||0).toLocaleString('tr-TR',{maximumFractionDigits:0})}</div></div>
-        <div class="hedef-kutu"><div class="l">Stop (yapısal)</div><div class="v neg">$${(hs.stop||0).toLocaleString('tr-TR',{maximumFractionDigits:0})}</div></div>
-        <div class="hedef-kutu"><div class="l">R/R (swing)</div><div class="v"><span class="rr-rozet" style="background:${rrRenk}22;color:${rrRenk}">${(hs.rr_swing||0).toFixed(1)}R</span></div></div>
-      </div>`;
-  }
-  const sebepler=(k.sebepler||[]).map(s=>`<div class="sebep"><span class="ntr">·</span><span>${s}</span></div>`).join('');
-  const yakin=k.yakin_seviye;
-  $('swingSinyal').innerHTML=`
-    <div class="swing-talimat" style="color:${renk}">${talimat}</div>
-    <div style="display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px">
-      <div><span style="font-size:9.5px;color:var(--dim)">SKOR </span><span style="font-size:20px;font-weight:800" style="color:${renk}">${k.kademe_skoru||0}/100</span></div>
-      ${yakin?`<div><span style="font-size:9.5px;color:var(--dim)">YAKIN SEVİYE </span><span style="font-weight:700">$${(yakin.fiyat||0).toLocaleString('tr-TR',{maximumFractionDigits:0})} <span style="color:var(--dim);font-size:10px">${yakin.kaynak||''}</span></span></div>`:''}
-      ${k.mesafe_vol!=null?`<div><span style="font-size:9.5px;color:var(--dim)">MESAFE </span><span>${k.mesafe_vol}×vol</span></div>`:''}
-    </div>
-    ${hedefHtml}
-    <div style="margin-top:8px">${sebepler||'<span class="neu" style="font-size:11px">koşul yok</span>'}</div>
-    <div class="expl">4/4 koşul (seviye + grab tamam + tasfiye + emici, yön uzlaşılı) → SİNYAL.
-    Stop hep yapıdan; R/R&lt;1.5 ise sinyal verilmez. ${yas!=null&&yas>180?'<b class="warn">⚠ kayıt bayat ('+(yas/60).toFixed(0)+'dk)</b>':''}</div>`;
-}
-
-/* ---------- KALABALIK ---------- */
-function kalabalik(L,rows){
-  const f=+L.funding_rate||0, fp=f*100;
-  const ls=+L.long_short_ratio||0;
-  const ilk=rows[0],son=rows[rows.length-1];
-  const dOi=ilk&&ilk.open_interest>0?((son.open_interest/ilk.open_interest)-1)*100:null;
-  let netLik=0; rows.forEach(r=>{netLik+=((+r.agg_long_liq||0)-(+r.agg_short_liq||0))/5;}); // v8.7: 5dk pencere /5
-
-  const fDurum=f>0.0005?['KALABALIK LONG','neg','— squeeze/crush yakıtı birikiyor; long tarafta sıkışıklık']
-    : f<-0.0002?['KALABALIK SHORT','pos','— yukarı fitil yakıtı; short tarafta sıkışıklık']
-    : ['DENGELİ','neu','— funding baskısı yok'];
-  const lsDurum=ls>1.4?['long ağır','neg']:ls<0.7?['short ağır','pos']:['dengeli','neu'];
-
-  $('kalabalik').innerHTML=`
-    <div class="kv"><span class="l">Funding</span>
-      <span class="v ${fDurum[1]}">${fp.toFixed(4)}% · ${fDurum[0]}</span></div>
-    <div style="font-size:10px;color:var(--dim);margin:2px 0 6px">${fDurum[2]}</div>
-    <div class="kv"><span class="l">Long/Short oranı (5 borsa)</span>
-      <span class="v ${lsDurum[1]}">${ls?ls.toFixed(2):'—'} · ${ls?lsDurum[0]:'veri yok'}</span></div>
-    <div class="kv"><span class="l">Açık pozisyon Δ (${$('ufuk').value})</span>
-      <span class="v ${dOi==null?'neu':dOi>=0?'pos':'neg'}">${dOi==null?'—':(dOi>=0?'+':'')+dOi.toFixed(2)+'%'}</span></div>
-    <div class="kv"><span class="l">Net likidasyon (${$('ufuk').value})</span>
-      <span class="v ${netLik>0?'neg':'pos'}">${usd(Math.abs(netLik))} ${netLik>0?'long yandı':'short yandı'}</span></div>`;
-}
-
-/* ---------- EMİCİ ---------- */
-function emici(c){
-  if(!c){ $('emici').innerHTML='<span class="neu">motor henüz canlı emilim yazmadı (v7.9+ gerekli)</span>'; return; }
-  if(c._bayat){ $('emici').innerHTML=`<span class="warn">kayıt BAYAT — son yazım ${(c._yas/60).toFixed(0)} dk önce.</span>
-    <div class="expl">Bayat veri taze gibi okunmaz (sıfır tuzağı). Motor loglarına bak.</div>`; return; }
-  const eb=c.emilim_borsasi;
-  const rozet= eb==null?['ÖLÇÜLEMEDİ','background:rgba(109,151,173,.12);color:var(--mist)']
-    : eb==='SPOT'?['SPOT — GERÇEK ENVANTER','background:rgba(47,245,200,.15);color:var(--sonar)']
-    : eb==='HER_IKISI'?['SPOT + PERP — EN GÜÇLÜ','background:rgba(47,245,200,.2);color:var(--sonar)']
-    : eb==='PERP'?['PERP — KALDIRAÇLI, KIRILGAN','background:rgba(255,194,75,.15);color:var(--amber)']
-    : eb==='YOK'?['EMİCİ YOK — İKİSİ DE ASK-AĞIR','background:rgba(255,84,112,.15);color:var(--alarm)']
-    : [String(eb).replace(/_/g,' ')+' (akış vekili)','background:rgba(109,151,173,.12);color:var(--mist)'];
-  const bar=(dolu,toplam,renk)=>{const p=toplam>0?dolu/toplam*100:0;
-    return `<div class="bar-dis"><div class="bar-ic" style="width:${p}%;background:${renk}"></div></div>`;};
-  const esnek=c.emilim_esnekligi;
-  const esnekTxt=esnek==null?'—':esnek.toFixed(2)+(esnek<0.35?' · GÜÇLÜ emilim':esnek>1?' · emilim yok':' · orta');
-  $('emici').innerHTML=`
-    <div style="margin-bottom:12px"><span class="roz" style="${rozet[1]}">${rozet[0]}</span></div>
-    <div class="mutabakat"><span class="etiket">Spot bid-ağır</span>${bar(c.spot_bid_agir_sayi||0,c.spot_borsa_sayisi||3,REN.sonar)}<span class="oran">${c.spot_bid_agir_sayi||0}/${c.spot_borsa_sayisi||0}</span></div>
-    <div class="mutabakat"><span class="etiket">Spot ask-ağır</span>${bar(c.spot_ask_agir_sayi||0,c.spot_borsa_sayisi||3,REN.alarm)}<span class="oran">${c.spot_ask_agir_sayi||0}/${c.spot_borsa_sayisi||0}</span></div>
-    <div class="mutabakat"><span class="etiket">Perp bid-ağır</span>${bar(c.perp_bid_agir_sayi||0,c.perp_borsa_sayisi||3,REN.whale)}<span class="oran">${c.perp_bid_agir_sayi||0}/${c.perp_borsa_sayisi||0}</span></div>
-    <div class="kv" style="margin-top:8px"><span class="l">Emilim esnekliği (0≈güçlü)</span><span class="v">${esnekTxt}</span></div>
-    <div class="kv"><span class="l">Satıcı tükenmesi</span><span class="v ${c.sonme_orani==null?'neu':c.satici_tukenmesi?'pos':'neu'}">${c.sonme_orani==null?'— ölçülemedi':(c.satici_tukenmesi?'✓ tükeniyor':'✗ sürüyor')+' (sönme '+(c.sonme_orani*100).toFixed(0)+'%)'}</span></div>
-    <div class="kv"><span class="l">Alıcı tükenmesi</span><span class="v ${c.alici_sonme_orani==null?'neu':c.alici_tukenmesi?'neg':'neu'}">${c.alici_sonme_orani==null?'— ölçülemedi':(c.alici_tukenmesi?'✓ tükeniyor (tepe riski)':'✗ sürüyor')+' (sönme '+(c.alici_sonme_orani*100).toFixed(0)+'%)'}</span></div>
-    <div class="kv"><span class="l">CVD kaynağı</span><span class="v">${c.cvd_kaynak==='AGG'?'Coinalyze agregat ✓':(c.cvd_kaynak||'—')+' (yedek)'}</span></div>
-    <div class="expl">Mutabakat mantığı: tek borsa spoof'a açık; 2-3 borsa aynı yönde = gerçek niyet.
-    Coin biriktiren balina SPOT alır — perp bid'i envanter değil, kaldıraçlı bahistir.</div>`;
-}
-
-/* ---------- SÜREÇ ---------- */
-function surecKart(s){
-  if(!s||!s.rejim||s.rejim==='NOTR'){
-    $('surec').innerHTML=`<span class="neu">Aktif süreç yok — piyasa NÖTR.</span>
-      <div class="expl">Süreç, motor bir toplama/dağıtım/kapitülasyon paterni yakaladığında başlar
-      ve tükenme sinyalleri (4 adet) birikince olgunlaşır. Swing girişleri olgun süreçlerin
-      SONUNDA doğar — başında değil.</div>`; return; }
-  const taraf=TOPLAMA.includes(s.rejim)?['TOPLAMA SÜRECİ','pos','balina mal topluyor — yükseliş hazırlığı olabilir']
-    : DAGITIM.includes(s.rejim)?['DAĞITIM SÜRECİ','neg','balina dağıtıyor / piyasa satış modunda']
-    : KAPITULASYON.includes(s.rejim)?['KAPİTÜLASYON AKIŞI','warn','long\'lar zorla boşalıyor — DÖNÜŞ ADAYI: tükenmeyi bekle']
-    : ['SÜREÇ','neu',''];
-  const olg=(s.olgunluk||0)*100, tuk=s.tukenme||0;
-  const aktif=s.tukenme_detay||[];
-  /* v8.7: madde listesi MOTORUN kendi bolumlemesiyle birebir — motor 'dagitim_tarafi'
-     maddelerini TEPE_DAGITIM ailesi + SHORT_SQUEEZE + SHORT_TASFIYE +
-     TASFIYE_SONRASI_DONUS + TAZE_ALIM icin uretir (yukari-yon surecler tepede
-     yorulur); gerisi toplama-yonu maddeleri alir. Onceki liste TAZE_ALIM ile
-     TAZE_SATIS'i ters bolmustu (denetim bulgusu). */
-  const USTYON=['TEPE_DAGITIM','TEPE_DAGITIM_SPOT','TEPE_DAGITIM_TEYITSIZ','TEPE_DAGITIM_PERP',
-                'SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS','TAZE_ALIM'];
-  const tumu = USTYON.includes(s.rejim)
-    ? ['Fiyat zirveden geri çekiliyor','Satım duvarı inceliyor','Funding aşırı pozitif (kalabalık long)','Long likidasyonları başladı']
-    : ['Fiyat dipten toparlıyor','Alım duvarı çekiliyor (iş bitti)','Funding negatif (kalabalık short)','Short likidasyonları başladı'];
-  $('surec').innerHTML=`
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-      <span class="roz ${taraf[1]}" style="border:1px solid currentColor">${taraf[0]}</span>
-      <span style="font-size:11px;color:var(--mist)">${REJIM_AD[s.rejim]||s.rejim} · ${(+s.sure_dk||0).toFixed(0)} dk</span>
-    </div>
-    <div style="font-size:11px;color:var(--mist);margin-bottom:10px">${taraf[2]}</div>
-    <div class="mutabakat"><span class="etiket">Olgunluk</span>
-      <div class="bar-dis"><div class="bar-ic" style="width:${olg}%;background:${olg>70?REN.amber:REN.whale}"></div></div>
-      <span class="oran">%${olg.toFixed(0)}</span></div>
-    <div class="mutabakat"><span class="etiket">Tükenme</span>
-      <div class="bar-dis"><div class="bar-ic" style="width:${tuk/4*100}%;background:${tuk>=3?REN.sonar:REN.dim}"></div></div>
-      <span class="oran">${tuk}/4</span></div>
-    <div class="tuk-liste">${tumu.map(ad=>{const a=aktif.some(x=>fold(ad).startsWith(fold(x).slice(0,10)));
-      return `<div class="ti ${a?'aktif':''}"><span class="n">${a?'●':'○'}</span>${ad}</div>`;}).join('')}</div>
-    <div class="expl">Tükenme ≥3 olursa motor ters yön kapısını açar — swing dönüş penceresi orada doğar.
-    ${tuk>=3?'<b class="warn">Süreç olgun: dönüş penceresi AÇIK olabilir.</b>':''}</div>`;
-}
-
-/* ---------- GRAFİKLER ---------- */
-function zamanEt(rows){return rows.map(r=>new Date(r.kayit_zamani).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'}));}
-
-function grafikFiyat(rows){
-  const rs=seyrelt(rows);
-  const et=zamanEt(rs);
-  const fiyat=rs.map(r=>+r.anlik_fiyat||null);
-  const longM=rs.map(r=>r.sinyal_durumu==='LONG'?+r.anlik_fiyat:null);
-  const shortM=rs.map(r=>r.sinyal_durumu==='SHORT'?+r.anlik_fiyat:null);
-  ciz('cFiyat',{type:'line',data:{labels:et,datasets:[
-    {label:'Fiyat',data:fiyat,borderColor:REN.foam,borderWidth:2,pointRadius:0,tension:.25},
-    {label:'LONG sinyali',data:longM,showLine:false,pointStyle:'triangle',pointRadius:7,
-      pointHoverRadius:9,backgroundColor:REN.sonar,borderColor:REN.sonar},
-    {label:'SHORT sinyali',data:shortM,showLine:false,pointStyle:'triangle',pointRotation:180,
-      pointRadius:7,pointHoverRadius:9,backgroundColor:REN.alarm,borderColor:REN.alarm}]},
-    options:{responsive:true,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{position:'top'}},
-      scales:{y:{grid:GRID,ticks:{callback:v=>'$'+Math.round(v).toLocaleString('tr-TR')}},
-              x:{grid:{display:false},ticks:{maxTicksLimit:10}}}}});
-}
-
-function grafikCvd(rows){
-  const rs=seyrelt(rows); const et=zamanEt(rs);
-  ciz('cCvd',{type:'line',data:{labels:et,datasets:[
-    {label:'Vadeli CVD',data:rs.map(r=>+r.vadeli_cvd||0),borderColor:REN.whale,
-      borderWidth:2,pointRadius:0,tension:.25},
-    {label:'Spot CVD',data:rs.map(r=>+r.spot_cvd||0),borderColor:REN.violet,
-      borderWidth:2,pointRadius:0,tension:.25}]},
-    options:{responsive:true,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{position:'top'}},
-      scales:{y:{grid:GRID,ticks:{callback:v=>bigS(v)}},
-              x:{grid:{display:false},ticks:{maxTicksLimit:10}}}}});
-}
-
-function grafikLik(rows,ms){
-  const rs=seyrelt(rows); const et=zamanEt(rs);
-  /* v8.7: agg_long/short_liq 5dk KAYAN pencere toplamidir ve dakikada bir orneklenir;
-     satirlari duz toplamak ayni likidasyonu ~5 kez sayar. /5 ~ gercek toplam. */
-  let topL=0,topS=0; rows.forEach(r=>{topL+=(+r.agg_long_liq||0)/5;topS+=(+r.agg_short_liq||0)/5;});
-  $('likStat').innerHTML=`
-    <div class="gs"><div class="l">Long yandı</div><div class="v neg">${usd(topL)}</div></div>
-    <div class="gs"><div class="l">Short yandı</div><div class="v pos">${usd(topS)}</div></div>
-    <div class="gs"><div class="l">Net</div><div class="v ${topL>topS?'neg':'pos'}">${usd(Math.abs(topL-topS))} ${topL>topS?'long':'short'}</div></div>`;
-  ciz('cLik',{type:'bar',data:{labels:et,datasets:[
-    {label:'Long likidasyon',data:rs.map(r=>+r.agg_long_liq||0),backgroundColor:'rgba(255,84,112,.8)',
-      borderRadius:2,maxBarThickness:8},
-    {label:'Short likidasyon',data:rs.map(r=>-(+r.agg_short_liq||0)),backgroundColor:'rgba(47,245,200,.8)',
-      borderRadius:2,maxBarThickness:8}]},
-    options:{responsive:true,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{position:'top'},
-        tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${usd(Math.abs(c.raw))}`}}},
-      scales:{y:{grid:GRID,ticks:{callback:v=>usd(Math.abs(v))}},
-              x:{grid:{display:false},ticks:{maxTicksLimit:10},stacked:true}}}});
-}
-
-function grafikOi(rows){
-  const rs=seyrelt(rows); const et=zamanEt(rs);
-  const ilk=rows[0],son=rows[rows.length-1];
-  const d=ilk&&ilk.open_interest>0?((son.open_interest/ilk.open_interest)-1)*100:null;
-  $('oiStat').innerHTML=`
-    <div class="gs"><div class="l">Şu an</div><div class="v violet">${usd(+son.open_interest||0)}</div></div>
-    <div class="gs"><div class="l">Pencere Δ</div><div class="v ${d==null?'neu':d>=0?'pos':'neg'}">${d==null?'—':(d>=0?'+':'')+d.toFixed(2)+'%'}</div></div>`;
-  ciz('cOi',{type:'line',data:{labels:et,datasets:[
-    {label:'Açık Pozisyon',data:rs.map(r=>+r.open_interest||null),borderColor:REN.violet,
-      borderWidth:2,pointRadius:0,tension:.25,fill:{target:'origin',above:'rgba(139,110,242,.06)'}}]},
-    options:{responsive:true,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{display:false}},
-      scales:{y:{grid:GRID,ticks:{callback:v=>usd(v)}},
-              x:{grid:{display:false},ticks:{maxTicksLimit:10}}}}});
-}
-
-/* ---------- OTOPSİ ---------- */
-function otopsi(veRed,gt){
-  let sol='<span class="neu">motor henüz kapı reddi yazmadı</span>';
-  if(veRed&&veRed.kapi_sayaclari&&Object.keys(veRed.kapi_sayaclari).length){
-    const top=veRed.toplam_red||0;
-    const ks=Object.entries(veRed.kapi_sayaclari).sort((a,b)=>b[1]-a[1]);
-    const enB=Math.max(...ks.map(([,v])=>v),1);
-    sol=`<div style="font-size:11px;color:var(--mist);margin-bottom:8px">
-      Motor <b class="warn">${top} kez</b> "skor yüksek ama sinyal yok" dedi. Suçlu kapılar:</div>`+
-      ks.slice(0,5).map(([k,v])=>`<div class="mutabakat"><span class="etiket">${k}</span>
-        <div class="bar-dis"><div class="bar-ic" style="width:${v/enB*100}%;background:${REN.veto}"></div></div>
-        <span class="oran">${v}</span></div>`).join('')+
-      `<div class="expl">Bir kapı sürekli blokluyorsa ya piyasa gerçekten uygun değil ya da o kapı
-      fazla sıkı — kararı yukarıdaki geri test tablosuyla birlikte oku. (Hedef kapısı = duvar
-      mesafesi; swing için en sık suçlu buydu, v7.2'de tanımı daraltıldı.)</div>`;
-  }
-  $('otopsi').innerHTML=sol;
-}
-
-/* ---------- HAM TABLO ---------- */
-function hamTablo(rows){
-  const son=rows.slice(-12).reverse();
-  let t=`<table class="mini-tab"><thead><tr><th>zaman</th><th>fiyat</th><th>vadeli cvd</th>
-    <th>spot cvd</th><th>oi</th><th>L skor</th><th>S skor</th><th>sinyal</th></tr></thead><tbody>`;
-  son.forEach(r=>{t+=`<tr><td>${new Date(r.kayit_zamani).toLocaleTimeString('tr-TR')}</td>
-    <td>$${(+r.anlik_fiyat||0).toLocaleString('tr-TR',{maximumFractionDigits:0})}</td>
-    <td>${bigS(+r.vadeli_cvd||0)}</td><td>${bigS(+r.spot_cvd||0)}</td>
-    <td>${usd(+r.open_interest||0)}</td>
-    <td>${(+r.long_skor||0).toFixed(0)}</td><td>${(+r.short_skor||0).toFixed(0)}</td>
-    <td class="${r.sinyal_durumu==='LONG'?'pos':r.sinyal_durumu==='SHORT'?'neg':'neu'}">${r.sinyal_durumu||'—'}</td></tr>`;});
-  $('hamTab').innerHTML=t+'</tbody></table>';
-}
-
-/* ---------- başlat ---------- */
+/* ---------- baslat ---------- */
 $('yenile').addEventListener('click',yukle);
 $('ufuk').addEventListener('change',yukle);
-$('elleEkle').addEventListener('click',elleEkle);                                  // v8.3 FAZ D
+$('elleEkle').addEventListener('click',elleEkle);
 $('elleFiyat').addEventListener('keydown',e=>{if(e.key==='Enter')elleEkle();});
+$('cekmeceTut').addEventListener('click',()=>$('cekmece').classList.toggle('acik'));
 yukle();
 setInterval(yukle,60000);
 </script>
