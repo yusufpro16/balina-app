@@ -107,6 +107,10 @@ main{max-width:1860px;margin:0 auto;padding:20px 28px 30px;display:grid;gap:12px
   border-radius:7px;padding:6px 12px;font-weight:700}
 .elle-durum{font-size:10px;min-height:14px;margin-bottom:4px}
 #seviyeHarita{max-height:330px;overflow-y:auto;padding-right:4px}
+/* v8: seviye guc rozeti — gri kutu; >=40 (grab esigi) hafif parlak */
+.sev-guc{font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;
+  background:rgba(140,150,170,.14);color:var(--mist);letter-spacing:.5px;flex:none}
+.sev-guc.aktif{background:rgba(140,150,170,.26);color:var(--foam)}
 #seviyeHarita::-webkit-scrollbar{width:6px}
 #seviyeHarita::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 .sev-satir{display:flex;align-items:center;gap:8px;padding:4px 6px;
@@ -414,12 +418,13 @@ async function yukle(force){
     const rows=[...data].reverse();
 
     let surec=null,veRed=null,geriTest=null,motorSbt=null,canli=null;
-    let swingSev=null,swingElle=null,swingKarar=null,swingIst=null,swingKohort=null;
+    let swingSev=null,swingElle=null,swingKarar=null,swingIst=null,swingKohort=null,grabSinyal=null;
     try{
       const {data:ay}=await sb.from('balina_ayarlar').select('*')
         .in('anahtar',['surec_durumu','ve_kapisi_redleri','geri_test_istatistik',
                        'motor_sabitleri','canli_emilim',
-                       'swing_seviyeler_oto','swing_seviyeler_elle','swing_karar','swing_kohort_istatistik','swing_kohortu']);
+                       'swing_seviyeler_oto','swing_seviyeler_elle','swing_karar','swing_kohort_istatistik','swing_kohortu',
+                       'grab_aktif_sinyal']);
       (ay||[]).forEach(k=>{
         const v=typeof k.deger==='string'?JSON.parse(k.deger):k.deger;
         if(k.anahtar==='surec_durumu')surec=v;
@@ -432,6 +437,7 @@ async function yukle(force){
         else if(k.anahtar==='swing_karar')swingKarar=v;
         else if(k.anahtar==='swing_kohort_istatistik')swingIst=v;
         else if(k.anahtar==='swing_kohortu')swingKohort=v;
+        else if(k.anahtar==='grab_aktif_sinyal')grabSinyal=v;
       });
     }catch(e){}
 
@@ -448,7 +454,7 @@ async function yukle(force){
     avKart(swingKarar);
     emiciKart(canli);
     seviyeHaritasi(swingSev,swingElle,swingKarar,+L.anlik_fiyat||0);
-    sinyalKart(swingKarar,swingIst,swingKohort,rows);
+    sinyalKart(swingKarar,swingIst,swingKohort,rows,grabSinyal);
     cvdPanel(rows);
     likPanel(rows,motorSbt,+L.anlik_fiyat||0);
     surecOi(surec,rows,L);
@@ -593,9 +599,15 @@ function seviyeHaritasi(oto,elle,karar,anlik){
       const miknatis = mag && !mag.gizli && Math.abs(s.fiyat-mag.fiyat)<0.5;
       const sinif = s.kaynak==='ELLE'?'elle':(miknatis?'miknatis':'oto');
       const sil = s.kaynak==='ELLE'?`<span class="sev-sil" data-fiyat="${s.fiyat}" title="sil">✕</span>`:'';
+      /* v8: guc rozeti — grab motoru bu puanla calisir (>=40 aktif) */
+      const gucAktif=(s.guc!=null&&s.guc>=40);
+      const gucKutu=s.guc!=null
+        ?`<span class="sev-guc${gucAktif?' aktif':''}" title="${esc((s.kaynaklar||[s.kaynak]).join('+'))}">${s.guc}</span>`
+        :'';
       html+=`<div class="sev-satir ${sinif}">
         <span class="sev-fiyat">$${tl(s.fiyat)}</span>
         <span class="sev-kaynak" style="background:${renk}22;color:${renk}">${s.kaynak}</span>
+        ${gucKutu}
         ${miknatis?'<span class="sev-rozet" style="background:rgba(47,245,200,.16);color:var(--sonar)">🧲 MIKNATIS</span>':''}
         <span class="sev-not">${esc(s.not||'')}</span>
         ${rozet}
@@ -637,10 +649,45 @@ function sinyalSonuc(o,rows){
   }
   return 'açık';
 }
-function sinyalKart(k,ist,kohort,rows){
+function sinyalKart(k,ist,kohort,rows,grab){
   const kart=$('sinyalKart');
   const hs=k&&k.hedef_stop;
   const kohortN=(ist&&ist.olay_sayisi)||0;
+  /* v8: GRAB sinyali (15dk mum motoru) oncelikli — taze (<4s) ve cozulmemisse goster */
+  if(grab&&grab.zaman&&grab.tip){
+    const gz=new Date(grab.zaman.endsWith('Z')?grab.zaman:grab.zaman+'Z').getTime();
+    const taze=(Date.now()-gz)<4*3600*1000;
+    const snc=sinyalSonuc({zaman:grab.zaman,stop:grab.stop,swing_hedef:grab.swing_hedef,yon:grab.yon},rows);
+    if(taze&&snc==='açık'){
+      const R=grab.yon==='SHORT'?'var(--alarm)':'var(--sonar)';
+      const tipAd=grab.tip==='GRAB_DONUS'?'DÖNÜŞ (tuzak avı)':'DEVAM (gerçek kırılım)';
+      kart.style.boxShadow=`0 0 0 1px ${grab.yon==='SHORT'?'rgba(255,84,112,.4)':'rgba(47,245,200,.4)'},0 0 30px rgba(0,0,0,.3)`;
+      const rrRenk=grab.rr_kisa>=3?'var(--sonar)':grab.rr_kisa>=2?'var(--amber)':'var(--alarm)';
+      $('sinyalIc').innerHTML=`
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <b style="color:${R};font-size:15px">${grab.yon}</b>
+          <span class="sev-rozet" style="background:rgba(140,150,170,.2);color:var(--foam)">⚡ ${tipAd}</span>
+          <span class="sev-guc aktif" title="seviye gücü">${grab.guc??'—'}</span>
+        </div>
+        <div class="sinyal-grid">
+          <div class="sk"><div class="l">Süpürülen Seviye</div><div class="v">$${tl(grab.seviye)}</div></div>
+          <div class="sk"><div class="l">Fitil Ucu</div><div class="v">$${tl(grab.fitil_ucu)}</div></div>
+          <div class="sk"><div class="l">Giriş (15dk kapanış)</div><div class="v">$${tl(grab.giris)}</div></div>
+          <div class="sk"><div class="l">Stop (fitil+tampon)</div><div class="v neg">$${tl(grab.stop)}</div></div>
+          <div class="sk"><div class="l">Kısa Hedef</div><div class="v">$${tl(grab.kisa_hedef)}</div></div>
+          <div class="sk"><div class="l">R/R (kısa · swing)</div><div class="v" style="color:${rrRenk}">${(grab.rr_kisa||0).toFixed(1)} · ${(grab.rr_swing||0).toFixed(1)}</div></div>
+        </div>
+        <div class="swing-hedef-satir">
+          <span class="neu">🧲 swing hedef (karşı havuz)</span>
+          <b class="pos" style="font-size:16px">$${tl(grab.swing_hedef)}</b>
+        </div>
+        <div class="expl">teyit: OI ${grab.teyit&&grab.teyit.oi===true?'✓':grab.teyit&&grab.teyit.oi===false?'✗':'—'} ·
+          delta ${grab.teyit&&grab.teyit.delta===true?'✓':grab.teyit&&grab.teyit.delta===false?'✗':'—'} ·
+          emici ${grab.teyit&&grab.teyit.emici===true?'✓':grab.teyit&&grab.teyit.emici===false?'✗':'—'}
+          · kağıt üstü — gerçek emir yok · R/R&lt;2 sinyal vermez</div>`;
+      return;
+    }
+  }
   if(!k||k.kademe!=='SINYAL'||!hs||!hs.gecerli){
     kart.style.boxShadow='';
     const olaylar=((kohort&&kohort.olaylar)||[]).slice(-5).reverse();

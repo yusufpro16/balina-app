@@ -50,7 +50,12 @@ SABITLER = {'SINYAL_ESIGI','SINYAL_MARJI','MALIYET_CITASI_PCT','VE_ISLEM_MIN',
             'SWING_MOTOR_AKTIF','SCALP_SINYAL_AKTIF','SWING_YAKINLIK_VOL','SWING_MIN_RR',
             'SWING_STOP_TAMPON_VOL','SWING_FUNDING_ASIRI','SWING_YAPISAL',
             # v8.2 FAZ C kayit:
-            'SWING_ARSIV_AKTIF','SWING_UFUKLAR'}
+            'SWING_ARSIV_AKTIF','SWING_UFUKLAR',
+            # v8 LIQ GRAB motoru:
+            'SWING_SEVIYE_MIN_GUC','SWING_COKZAMAN_BANT','SWEEP_MIN_DELME_PCT',
+            'SWEEP_ESLIK_HACIM_KAT','SWEEP_COOLDOWN_DK','SWEEP_GOVDE_ORAN',
+            'SWEEP_STOP_TAMPON_PCT','SWING_EQ_BANT','SWING_GUC_PUAN',
+            'DAGITIM_AILESI','TOPLAMA_AILESI'}
 FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et',
                 '_tasfiye_bayraklari',
@@ -58,7 +63,10 @@ FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 '_akis_tukenmesi','_cvd_kaynagi_tutarli',
                 '_swing_seviye_haritasi',
                 '_emici_yon','_swing_kademe','_swing_hedef_stop',
-                '_swing_backtest','_grab_ozeti'}  # v7.4/v7.6/v7.8/v8.0/v8.1/v8.2
+                '_swing_backtest','_grab_ozeti',
+                # v8 LIQ GRAB motoru:
+                '_kline_kapali','_kline_pivotlar','_atr15','_sweep_adayi',
+                '_grab_pencere_ozeti','_sweep_teyit','_grab_stop'}  # v7.4-v8
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -634,6 +642,118 @@ check("W8: LIQ kumesi gorunur uretildi (pozitif kanit)",
 import os as _os
 check("SC7: backtest naive zamani UTC varsayar (fixtur utcfromtimestamp ile uyumlu)",
       bt(_o_win,_win_seri,UF)['4s']['win']==1)
+
+# ---------- 12) v8: LIQ GRAB SWING MOTORU (ADIM 1-5) ----------
+# ADIM 1 — seviye GUC puani + 1s/4s cok-zaman cakismasi
+_a1 = ssh(62000.0, _seri, 0.15, [], [], [], [60000.0],
+          pivotlar_1s=[{'fiyat':60050.0,'tur':'H','ts':1.0}])
+_a1e = [s for s in _a1 if s['kaynak']=='ELLE']
+check("A1-1: ELLE + 1s pivot cakisan seviye -> guc >= 65 (40+25)",
+      _a1e and _a1e[0]['guc'] >= 65 and 'COKZAMAN' in _a1e[0]['kaynaklar'],
+      f"guc={_a1e[0]['guc'] if _a1e else None}")
+_a2m = ssh(62000.0, _seri, 0.15, [{'fiyat':55555.0,'test':2,'yas_dk':300}], [], [], [],
+           pivotlar_1s=None, pivotlar_4s=None)
+_a2p = [s for s in _a2m if s['kaynak']=='SWING_PIVOT' and abs(s['fiyat']-55555)<100]
+check("A1-2: tek 15dk pivot -> guc=5 -> grab motoru disi (< SWING_SEVIYE_MIN_GUC)",
+      _a2p and _a2p[0]['guc']==5 and _a2p[0]['guc'] < YENI['SWING_SEVIYE_MIN_GUC'],
+      f"guc={_a2p[0]['guc'] if _a2p else None}")
+check("A1-3: kline cekilemedi (None) -> cokzaman puani eklenmez, hata firlatilmaz",
+      all('COKZAMAN' not in (s.get('kaynaklar') or []) for s in _a2m))
+_kp = YENI['_kline_pivotlar']([{'t':0,'o':1,'h':100.0,'l':90.0,'c':95,'v':1},
+                               {'t':900,'o':1,'h':110.0,'l':85.0,'c':95,'v':1},
+                               {'t':1800,'o':1,'h':105.0,'l':92.0,'c':95,'v':1}])
+check("A1-4: 3-mum pivot kurali (H=110, L=85 ayni mumda)",
+      {(p['fiyat'],p['tur']) for p in _kp} == {(110.0,'H'),(85.0,'L')})
+
+# ADIM 2+3 — sweep adayi + kapanis karari (ayni KAPALI mumda)
+sad = YENI['_sweep_adayi']
+_M = lambda h,l,c,v=100.0: {'t':900000.0,'o':(h+l)/2.0,'h':h,'l':l,'c':c,'v':v}
+_SEV = 60000.0; _ATRV = 60.0   # delme_min = max(0.0008*c ~48, 0.2*60=12) ~= 48
+check("A2-0: _kline_kapali acik (son) mumu dislar (GK-8: karar [-2]'ye kadar)",
+      [m['t'] for m in YENI['_kline_kapali']([{'t':900,'h':1,'l':1,'c':1,'o':1,'v':1},
+                                              {'t':1800,'h':1,'l':1,'c':1,'o':1,'v':1}],
+                                             2400, 900)] == [900.0])
+check("A2-1: delme_min alti fitil (iki yonde de) -> aday DEGIL",
+      sad(_M(60030,59980,60010), _SEV, 80, _ATRV, 50.0, 1e6, None, 1e6) is None)
+check("A2-2: delme yeterli ama eslik yok (lik=0, hacim<1.5x) -> aday DEGIL",
+      sad(_M(60100,59700,59880,v=60.0), _SEV, 80, _ATRV, 50.0, 0.0, None, 1e6) is None)
+check("A2-3: cooldown icinde (10dk once ayni seviyede aday) -> aday DEGIL",
+      sad(_M(60100,59700,59880), _SEV, 80, _ATRV, 50.0, 1e6, 1e6-600, 1e6) is None
+      and sad(_M(60100,59700,59880), _SEV, 80, _ATRV, 50.0, 1e6, 1e6-91*60, 1e6) is not None)
+check("A2-4: ATR15=None -> aday uretilmez, cokme yok",
+      sad(_M(60100,59700,59880), _SEV, 80, None, 50.0, 1e6, None, 1e6) is None)
+_d1 = sad(_M(60100,59700,59880), _SEV, 80, _ATRV, 50.0, 1e6, None, 1e6)
+check("A3-1: yukari fitil + seviye alti NET kapanis (govde ok) -> DONUS (yon SHORT)",
+      _d1 is not None and _d1['kapanis_tipi']=='DONUS' and _d1['yon']=='SHORT'
+      and _d1['fitil_ucu']==60100.0, f"={_d1 and (_d1['kapanis_tipi'],_d1['yon'])}")
+_d2 = sad(_M(60100,59700,60060), _SEV, 80, _ATRV, 50.0, 1e6, None, 1e6)
+check("A3-2: yukari fitil + seviye ustu kapanis -> DEVAM (gercek kirilim)",
+      _d2 is not None and _d2['kapanis_tipi']=='DEVAM')
+_d3 = sad(_M(60100,59700,59990), _SEV, 80, _ATRV, 50.0, 1e6, None, 1e6)
+check("A3-3: kil payi kapanis (govde sarti alti) -> tip None, sinyal yolu kapali",
+      _d3 is not None and _d3['kapanis_tipi'] is None
+      and YENI['_sweep_teyit'](_d3['yon'], _d3['kapanis_tipi'], {'eksik':False})['sonuc'] is None)
+_d4 = sad(_M(60045,59880,60044), _SEV, 80, _ATRV, 50.0, 1e6, None, 1e6)
+check("A3-4: asagi fitil (LONG sweep) + seviye ustu kapanis -> DONUS LONG (simetri)",
+      _d4 is not None and _d4['yon']=='LONG' and _d4['kapanis_tipi']=='DONUS')
+
+# ADIM 4 — order flow teyidi (sinyal kapisi)
+st_ = YENI['_sweep_teyit']
+_P = lambda **kw: {'eksik':False,'kayit_sayisi':15,'d_oi_pct':None,'d_vadeli_cvd':None,
+                   'lik_toplam':1e6,'lik_long_yog_max':0.0,'lik_short_yog_max':0.0,
+                   'emici_yonler':[],'rejimler':[],'alici_tuk':None,'satici_tuk':None,**kw}
+_r41 = st_('SHORT','DONUS',_P(d_oi_pct=+0.2, d_vadeli_cvd=-500.0, alici_tuk=True))
+check("A4-1: DONUS adayi + OI dusmedi -> sinyal YOK (OI ZORUNLU; G1c tutarli)",
+      _r41['sonuc'] is None and _r41['oi'] is False)
+_r42 = st_('SHORT','DONUS',_P(d_oi_pct=-0.5, lik_long_yog_max=3.0, d_vadeli_cvd=-500.0))
+check("A4-2: DONUS + OI coktu (diken+dusus) + delta ters -> GRAB_DONUS",
+      _r42['sonuc']=='GRAB_DONUS' and _r42['oi'] is True and _r42['delta'] is True,
+      f"={_r42}")
+_r43 = st_('SHORT','DEVAM',_P(d_oi_pct=+0.4, d_vadeli_cvd=+800.0, emici_yonler=['SHORT']))
+_r43b = st_('SHORT','DEVAM',_P(d_oi_pct=+0.4, d_vadeli_cvd=+800.0))
+check("A4-3: DEVAM + OI artti + delta ayni + emici TERS -> iptal (tersi yoksa GRAB_DEVAM)",
+      _r43['sonuc'] is None and _r43['emici'] is False and _r43b['sonuc']=='GRAB_DEVAM',
+      f"ters={_r43['sonuc']} temiz={_r43b['sonuc']}")
+_r44 = st_('SHORT','DONUS',_P(eksik=True, d_oi_pct=-0.5, lik_long_yog_max=3.0))
+check("A4-4: pencere verisi eksik -> teyit None, cokme yok",
+      _r44=={'oi':None,'delta':None,'emici':None,'sonuc':None})
+_r45 = st_('LONG','DONUS',_P(d_oi_pct=-0.5, lik_short_yog_max=3.0, satici_tuk=True))
+check("A4-5: LONG-sweep DONUS simetrik (OI + satici tukenmesi 2/3) -> GRAB_DONUS",
+      _r45['sonuc']=='GRAB_DONUS' and _r45['emici'] is True)
+
+# ADIM 5 — giris/stop/hedef + R/R kapisi
+gstop = YENI['_grab_stop']
+_stp1 = gstop('GRAB_DONUS','SHORT', 60150.0, 60000.0, 59880.0, 60.0)
+# tampon = max(0.0005*59880=29.94, 0.1*60=6) = 29.94
+check("A5-2: stop = fitil ucu + TAM tampon (birebir uc DEGIL)",
+      _stp1 is not None and abs(_stp1-(60150.0+29.94))<0.1 and _stp1>60150.0, f"={_stp1}")
+_stp2 = gstop('GRAB_DEVAM','SHORT', 60150.0, 60000.0, 60060.0, 60.0)
+check("A5-2b: DEVAM stop = kirilan seviyenin DIGER tarafi (seviye - tampon)",
+      _stp2 is not None and _stp2 < 60000.0 and abs(_stp2-(60000.0-30.03))<0.1, f"={_stp2}")
+_sevA5 = [{'fiyat':59800.0,'kaynak':'ROUND','gizli':False,'guc':10},
+          {'fiyat':59700.0,'kaynak':'LIQ','gizli':False,'guc':60},
+          {'fiyat':59000.0,'kaynak':'ELLE','gizli':False,'guc':80}]
+_h51 = hst('SHORT', 59880.0, _sevA5, 0.15, stop_zorla=60000.0, min_guc=40)
+check("A5-1: rr_kisa=1.5 < SWING_MIN_RR(2.0) -> sinyal YOK (gecerli False)",
+      _h51['gecerli'] is False and abs(_h51['rr_kisa']-1.5)<0.01
+      and 'rr_kisa' in _h51['sebep'] and YENI['SWING_MIN_RR']==2.0, f"={_h51}")
+_h52 = hst('SHORT', 59880.0, _sevA5, 0.15, stop_zorla=59940.0, min_guc=40)
+check("A5-1b: rr_kisa=3.0 >= 2.0 -> gecerli True (pozitif kontrol)",
+      _h52['gecerli'] is True and abs(_h52['rr_kisa']-3.0)<0.01)
+check("A5-3: swing_hedef = karsi yonde EN YUKSEK guc'lu havuz (ELLE 80 @59000); "
+      "kisa_hedef guc<40 (59800) ATLANIR -> 59700",
+      _h51['swing_hedef']==59000.0 and _h51['kisa_hedef']==59700.0, f"={_h51}")
+_h53 = hst('LONG', 60120.0, [{'fiyat':60300.0,'kaynak':'LIQ','gizli':False,'guc':60},
+                             {'fiyat':61000.0,'kaynak':'ELLE','gizli':False,'guc':80}],
+           0.15, stop_zorla=60060.0, min_guc=40)
+check("A5-4: LONG grab modu simetrik (kisa=60300, swing=61000, rr_kisa=3)",
+      _h53['kisa_hedef']==60300.0 and _h53['swing_hedef']==61000.0
+      and abs(_h53['rr_kisa']-3.0)<0.01 and _h53['gecerli'] is True)
+# grab modu ESKI yolu bozmadi: SB8 fixturu ayni sonucu vermeli (regresyon kapisi)
+_hs_reg = hst('SHORT',63450,_sev,_vol,magnet=60480.0)
+check("A5-5: eski (kademe) yol REGRESYONSUZ — SB8 fixturu ayni",
+      _hs_reg['kisa_hedef']==62000.0 and _hs_reg['swing_hedef']==60480.0
+      and _hs_reg['gecerli'] is True)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")

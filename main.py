@@ -225,6 +225,12 @@ class CanliDurum:
         self.swing_karar = {}
         self.swing_son_kademe = 'YOK'   # v8.2: rising-edge (SINYAL kohort kaydi bir kez)
         self.son_swing_kohort_ts = {}   # v8.7: yon-bazli cooldown (SINYAL titremesi coklu kayit acmasin)
+        # v8: LIQ GRAB motoru — 15dk kapali mum tabani
+        self.mumlar_15dk = []           # Coinalyze 15min KAPALI mumlar (coinalyze thread yazar)
+        self.pivotlar_1s = []           # 1saat pivotlar [{'fiyat','tur','ts'}] (saatte bir yenilenir)
+        self.pivotlar_4s = []           # 4saat pivotlar (ayni kadans)
+        self.son_islenen_15dk_ts = 0.0  # ayni 15dk mumu iki kez ISLEME (GK-8)
+        self.grab_cooldown = {}         # {round(seviye): son_aday_epoch} — SWEEP_COOLDOWN_DK
         # Kohort tekrar-yazim korumasi (rising-edge):
         self.son_tasfiye_kohort_ts = {"LONG": 0.0, "SHORT": 0.0}
         # Kohort bekleyen-olay tamponu: Supabase gecici hatasi (503/timeout)
@@ -365,7 +371,8 @@ SWING_MOTOR_AKTIF    = True         # swing motoru uretir + yazar (ayri anahtar)
 SCALP_SINYAL_AKTIF   = False        # scalp sinyali SUSTURULDU (kohort/skorlar KAYITTA KALIR;
                                     # yalniz DB'ye yazilan aktif sinyal_durumu susar)
 SWING_YAKINLIK_VOL   = 2.0          # fiyat seviyeye bu x vol yaklasinca IZLE kademesi
-SWING_MIN_RR         = 1.5          # rr_swing < bu -> SINYAL VERILMEZ (kotu R/R)
+SWING_MIN_RR         = 2.0          # v8: 1.5 -> 2.0. Grab motoru rr_kisa'yi, eski kademe
+                                    # yolu rr_swing'i bu esikle kapilar (tek tanim — GK-4)
 SWING_STOP_TAMPON_VOL = 0.2         # stop = yapisal seviye +/- bu x vol (tampon)
 SWING_FUNDING_ASIRI  = 0.0005       # |funding| > bu -> kalabalik asiri (HAZIRLAN tetigi)
 SWING_YAPISAL = ('ELLE', 'VP', 'HL', 'SWING_PIVOT', 'LIQ')  # stop bunlardan (ROUND zayif, stop olmaz)
@@ -373,6 +380,38 @@ SWING_YAPISAL = ('ELLE', 'VP', 'HL', 'SWING_PIVOT', 'LIQ')  # stop bunlardan (RO
 SWING_ARSIV_AKTIF = True            # dakikalik swing kolonlarini balina_avcisi_data'ya YAZ
                                    # (UPDATE ile; SQL kolonlari yoksa gracefully atlar).
 SWING_UFUKLAR = (('4s', 4*3600), ('12s', 12*3600), ('1g', 86400), ('3g', 3*86400))  # swing geri-test ufuklari
+
+# ================== v8: LIQ GRAB SWING MOTORU (15dk KAPALI mum tabani) ==================
+# "likidite avi -> DONUS veya DEVAM" kurulumu; order flow teyidi; 15dk mum kapanisi
+# disiplini (karar ASLA mum icinde). Baslangic degerleri "makul"dur, "dogru" degil —
+# n>=20 kohort olayi birikince SQL ile kalibre edilecek; o zamana kadar DEGISTIRILMEZ
+# (her degisiklik kohortu kirletir). Tum sinyaller KAGIT USTU (gercek emir yok).
+SWING_SEVIYE_MIN_GUC   = 40      # v8: bu gucun altindaki seviyede grab motoru CALISMAZ
+SWING_COKZAMAN_BANT    = 0.0015  # v8: 1s/4s pivot cakisma bandi (fiyatin ORANI, vol degil)
+SWEEP_MIN_DELME_PCT    = 0.0008  # v8: min delme derinligi (fiyat orani) — max(bu, 0.2xATR15)
+SWEEP_ESLIK_HACIM_KAT  = 1.5     # v8: sweep mumunun hacmi son 20 mum ort. bu kati olmali
+                                 #     (veya 15dk penceresinde likidasyon > 0)
+SWEEP_COOLDOWN_DK      = 90      # v8: ayni seviyede ikinci aday uretmeme suresi
+SWEEP_GOVDE_ORAN       = 0.25    # v8: DONUS icin |close-seviye| >= bu x mum araligi
+                                 #     (kil payi geri kapanis DONUS sayilmaz -> tip None)
+SWEEP_STOP_TAMPON_PCT  = 0.0005  # v8: stop = fitil ucu +/- max(bu x fiyat, 0.1xATR15)
+SWING_EQ_BANT          = 0.001   # v8: equal highs/lows bandi — GUCLENDIRICI-3 (EQ) gelince
+                                 #     kullanilir; su an yalniz SWING_GUC_PUAN['EQ'] ile birlikte
+                                 #     rezerve (aktif kod yolu YOK — bilincli, salter degil)
+# v8 ADIM 1 — seviye GUC puani (0-100): cakisan kaynaklarin puanlari TOPLANIR (tavan 100).
+# NOT: HL spec tablosunda YOK -> 0 puan (bilinçli; kalibrasyonda tekrar bakilacak).
+SWING_GUC_PUAN = {'ELLE': 40, 'COKZAMAN': 25, 'LIQ': 20, 'VP': 15, 'ROUND': 10,
+                  'SWING_PIVOT': 5, 'EQ': 20}
+GRAB_MUM_SEMBOL = "BTCUSDT_PERP.A"   # v8: 15dk/1s/4s kline kaynagi (Binance perp — anlik
+                                     # fiyatla ayni borsa; coklu-borsa high/low karisimi olmaz)
+# v8: rejim AILE kumeleri — TEK tanim (GK-4). surec_takip_et'in yerel kopyalari buraya
+# tasindi; grab teyidi (_sweep_teyit) de AYNI kumeleri okur. Degerler birebir ayni —
+# davranis degismez (Faz 1).
+DAGITIM_AILESI = frozenset({"TEPE_DAGITIM", "SHORT_SQUEEZE", "SHORT_TASFIYE",
+                            "TASFIYE_SONRASI_DONUS",
+                            "TEPE_DAGITIM_SPOT", "TEPE_DAGITIM_TEYITSIZ", "TEPE_DAGITIM_PERP"})
+TOPLAMA_AILESI = frozenset({"DIP_TOPLAMA", "LONG_TASFIYE", "LONG_KAPITULASYON",
+                            "DIP_TOPLAMA_SPOT", "DIP_TOPLAMA_TEYITSIZ", "DIP_TOPLAMA_PERP"})
 
 SUPURME_YAKINLIK_VOL = 2.0        # fiyat seviyeye 2 x vol yaklasinca "silahlan"
 SUPURME_MIN_DELME_VOL = 0.3       # fitil en az 0.3 x vol kadar otesine gecmeli
@@ -1209,6 +1248,64 @@ def coinalyze_guncelle():
                 f"SpotCVD: {agg_spot_cvd_log:,.0f}{'(yeni)' if spot_cvd_hesaplandi else '(korunan)'}"
             )
 
+            # ============ v8: GRAB KLINE BESLEMESI (15dk + 1s/4s pivot) ============
+            # 15dk: her yeni 15dk sinirinda BIR kez (Coinalyze gecikirse sonraki turda
+            # yeniden dener — kova ancak kapanan mum GERCEKTEN gelince isaretlenir).
+            # 1s/4s: saatte bir (her dakika cekmek rate-limit israfi — spec ADIM 1).
+            # Tek sembol (GRAB_MUM_SEMBOL): high/low GEOMETRISI coklu borsadan
+            # karistirilmaz; anlik fiyatla ayni borsa (Binance perp).
+            try:
+                _kova15 = simdi // 900
+                if _kova15 != getattr(coinalyze_guncelle, '_son_15dk_kova', 0):
+                    time.sleep(0.4)
+                    k_res = session.get(
+                        f"{COINALYZE_BASE}/ohlcv-history?symbols={GRAB_MUM_SEMBOL}"
+                        f"&interval=15min&from={simdi - 900 * 45}&to={simdi}",
+                        headers=headers, timeout=15)
+                    if k_res.status_code == 200:
+                        _veri = k_res.json()
+                        _hist = _veri[0].get('history', []) \
+                            if (isinstance(_veri, list) and _veri) else []
+                        _kapali = _kline_kapali(_hist, simdi, 900)
+                        if _kapali:
+                            with durum.lock:
+                                durum.mumlar_15dk = _kapali
+                            if _kapali[-1]['t'] >= (_kova15 - 1) * 900:
+                                coinalyze_guncelle._son_15dk_kova = _kova15
+                    else:
+                        logging.warning(f"GRAB 15dk kline hatasi: {k_res.status_code} "
+                                        f"| {k_res.text[:120]}")
+                _kova_s = simdi // 3600
+                if _kova_s != getattr(coinalyze_guncelle, '_son_saat_kova', 0):
+                    _pv = {}
+                    for _iv, _per, _ad in (('1hour', 3600, 'pivotlar_1s'),
+                                           ('4hour', 14400, 'pivotlar_4s')):
+                        time.sleep(0.4)
+                        p_res = session.get(
+                            f"{COINALYZE_BASE}/ohlcv-history?symbols={GRAB_MUM_SEMBOL}"
+                            f"&interval={_iv}&from={simdi - _per * 210}&to={simdi}",
+                            headers=headers, timeout=15)
+                        if p_res.status_code == 200:
+                            _veri = p_res.json()
+                            _hist = _veri[0].get('history', []) \
+                                if (isinstance(_veri, list) and _veri) else []
+                            _pv[_ad] = _kline_pivotlar(_kline_kapali(_hist, simdi, _per))
+                    if _pv:
+                        with durum.lock:
+                            if 'pivotlar_1s' in _pv:
+                                durum.pivotlar_1s = _pv['pivotlar_1s']
+                            if 'pivotlar_4s' in _pv:
+                                durum.pivotlar_4s = _pv['pivotlar_4s']
+                        # iki interval de gelmisse kovayi isaretle; kismi geldiyse
+                        # sonraki turda tamamlanir
+                        if len(_pv) == 2:
+                            coinalyze_guncelle._son_saat_kova = _kova_s
+                        logging.info(f"GRAB KLINE: 1s pivot {len(durum.pivotlar_1s)} | "
+                                     f"4s pivot {len(durum.pivotlar_4s)} | "
+                                     f"15dk mum {len(durum.mumlar_15dk)}")
+            except Exception as e:
+                logging.warning(f"v8 kline cekme hatasi (akis devam eder): {e}")
+
         except Exception as e:
             logging.warning(f"Coinalyze guncelleme hatasi: {e}")
 
@@ -1746,7 +1843,8 @@ def _likidite_seviyeleri_bul(zaman_fiyat, vol_pct, tepe_mi=False):
 
 
 def _swing_seviye_haritasi(anlik_fiyat, fiyat_seri, vol_pct, dipler, tepeler,
-                           liq_kayitlari, elle_seviyeler=None):
+                           liq_kayitlari, elle_seviyeler=None,
+                           pivotlar_1s=None, pivotlar_4s=None):
     """
     v8.0 — COKLU KAYNAKTAN tek SWING seviye listesi. SAF fonksiyon (yan etkisiz;
     "simdi" fiyat_seri'nin son zaman damgasindan turetilir -> deterministik, test
@@ -1772,7 +1870,16 @@ def _swing_seviye_haritasi(anlik_fiyat, fiyat_seri, vol_pct, dipler, tepeler,
     A3 BIRLESTIRME: iki seviye SEVIYE_KUMELEME_VOL x vol_pct (%) bandi icindeyse
     YUKSEK oncelikli KAZANIR; digeri gizli=True (silinmez — panel gizli olmayani gosterir).
 
-    Donus: [{'fiyat','kaynak','oncelik','not','gizli', ...}, ...] fiyata gore sirali.
+    v8 ADIM 1: her seviyeye 'guc' (0-100) + 'kaynaklar' (liste) eklenir. Gorunur
+    seviye, kendisine birlesen (gizli) seviyelerin kaynaklarini da devralir; puanlar
+    TOPLANIR (SWING_GUC_PUAN, tavan 100). 1s/4s pivot cakismasi (+/-SWING_COKZAMAN_BANT,
+    fiyat ORANI) 'COKZAMAN' kaynagi olarak +25 ekler. pivotlar_1s/4s None ise (kline
+    cekilemedi) cokzaman puani eklenmez, hata firlatilmaz (A1-3). guc <
+    SWING_SEVIYE_MIN_GUC seviyeler haritada KALIR (panel gosterir) ama grab motoru
+    (ADIM 2+) onlari YOK SAYAR. Mevcut cikti formati BOZULMAZ — yalniz alan eklenir.
+
+    Donus: [{'fiyat','kaynak','oncelik','not','gizli','guc','kaynaklar', ...}, ...]
+    fiyata gore sirali.
     """
     ham = []
 
@@ -1890,8 +1997,23 @@ def _swing_seviye_haritasi(anlik_fiyat, fiyat_seri, vol_pct, dipler, tepeler,
                 break
         if cakisti:
             d['gizli'] = True          # yuksek oncelikliye yakin -> gizle (silme)
+            # v8: gizlenen kaynagi kazanana DEVRET — cakisan kaynaklarin puanlari toplanacak
+            kv.setdefault('kaynaklar', [kv['kaynak']]).append(d['kaynak'])
         else:
             korunan.append(d)
+
+    # ---- v8 ADIM 1: GUC PUANI (0-100) ----
+    cok_zaman = [p for p in (list(pivotlar_1s or []) + list(pivotlar_4s or []))
+                 if p and p.get('fiyat') and p['fiyat'] > 0]
+    for d in ham:
+        kaynaklar = d.get('kaynaklar') or [d['kaynak']]
+        # 1s/4s pivot cakismasi: fiyat ORANI bandi (vol degil — spec boyle)
+        if any(abs(d['fiyat'] - p['fiyat']) / d['fiyat'] <= SWING_COKZAMAN_BANT
+               for p in cok_zaman):
+            kaynaklar = kaynaklar + ['COKZAMAN']
+        d['kaynaklar'] = kaynaklar
+        d['guc'] = min(100, sum(SWING_GUC_PUAN.get(k, 0) for k in kaynaklar))
+
     ham.sort(key=lambda d: d['fiyat'])
     return ham
 
@@ -1992,50 +2114,81 @@ def _swing_kademe(anlik_fiyat, seviyeler, vol_pct, grab, tasfiye_var, emilim,
             'mesafe_vol': round(mesafe_vol, 2), 'sartlar': sartlar, 'sebepler': sebepler}
 
 
-def _swing_hedef_stop(yon, giris, seviyeler, vol_pct, magnet=None):
+def _swing_hedef_stop(yon, giris, seviyeler, vol_pct, magnet=None,
+                      stop_zorla=None, min_guc=None):
     """
     v8.1 — Hedef + stop YAPIDAN uretir (sabit %% ASLA). SAF fonksiyon.
     SHORT: kisa_hedef=bir alt seviye; swing_hedef=magnet (en yogun liq kumesi) ya da
     en uzak alt seviye; stop=bir UST YAPISAL seviye + SWING_STOP_TAMPON_VOL x vol.
     LONG simetrik. rr_swing < SWING_MIN_RR -> gecerli=False (kotu R/R -> sinyal yok).
+
+    v8 GRAB MODU (ADIM 5; stop_zorla verilirse — mevcut fonksiyon GENISLETILDI,
+    ikiz yazilmadi):
+      * stop  = stop_zorla (fitil ucu/kirilan seviye + tampon; _grab_stop hesaplar)
+      * min_guc verilirse hedef adaylari 'guc' >= min_guc seviyelerle sinirlanir
+      * kisa_hedef = hedef yonunde ILK guclu seviye; swing_hedef = KARSI LIKIDITE
+        HAVUZU: hedef yonunde EN YUKSEK guc'lu seviye (esitlikte uzak olan —
+        "dip supuruldyse yuksekleri hedefle" miknatis ilkesi); magnet YOK SAYILIR
+      * R/R kapisi rr_KISA uzerinden: rr_kisa < SWING_MIN_RR -> gecerli=False (rr_red)
     Donus: {'kisa_hedef','swing_hedef','stop','rr_kisa','rr_swing','gecerli','sebep'}."""
     bos = {'kisa_hedef': None, 'swing_hedef': None, 'stop': None, 'rr_kisa': None,
            'rr_swing': None, 'gecerli': False, 'sebep': 'girdi yetersiz'}
     if yon not in ('LONG', 'SHORT') or not giris or giris <= 0 or not vol_pct or vol_pct <= 0:
         return bos
+    grab_modu = stop_zorla is not None
     gorunur = [s for s in (seviyeler or []) if not s.get('gizli')]
+    hedef_havuzu = [s for s in gorunur
+                    if min_guc is None or (s.get('guc') or 0) >= min_guc]
     tampon = giris * (SWING_STOP_TAMPON_VOL * vol_pct) / 100.0
+
+    def _en_guclu(adaylar):
+        # en yuksek guc; esitlikte girise UZAK olan (karsi havuz miknatisi)
+        return max(adaylar, key=lambda s: ((s.get('guc') or 0),
+                                           abs(s['fiyat'] - giris)))['fiyat']
+
     if yon == 'SHORT':
-        altlar = sorted((s for s in gorunur if s['fiyat'] < giris),
+        altlar = sorted((s for s in hedef_havuzu if s['fiyat'] < giris),
                         key=lambda s: -s['fiyat'])                 # en yakin alt once
-        ustler = sorted((s for s in gorunur if s['fiyat'] > giris and s['kaynak'] in SWING_YAPISAL),
-                        key=lambda s: s['fiyat'])                  # en yakin ust yapisal once
         kisa = altlar[0]['fiyat'] if altlar else None
-        swing = magnet if (magnet and magnet < giris) else (altlar[-1]['fiyat'] if altlar else None)
-        stop = (ustler[0]['fiyat'] + tampon) if ustler else None
+        if grab_modu:
+            stop = stop_zorla
+            swing = _en_guclu(altlar) if altlar else None
+        else:
+            ustler = sorted((s for s in gorunur if s['fiyat'] > giris and s['kaynak'] in SWING_YAPISAL),
+                            key=lambda s: s['fiyat'])              # en yakin ust yapisal once
+            stop = (ustler[0]['fiyat'] + tampon) if ustler else None
+            swing = magnet if (magnet and magnet < giris) else (altlar[-1]['fiyat'] if altlar else None)
         if kisa is None or swing is None or stop is None or stop <= giris:
             return {**bos, 'sebep': 'yapisal seviye eksik (alt hedef / ust stop yok)'}
         risk = stop - giris
         rr_kisa = (giris - kisa) / risk
         rr_swing = (giris - swing) / risk
     else:  # LONG
-        ustler = sorted((s for s in gorunur if s['fiyat'] > giris),
+        ustler = sorted((s for s in hedef_havuzu if s['fiyat'] > giris),
                         key=lambda s: s['fiyat'])
-        altlar = sorted((s for s in gorunur if s['fiyat'] < giris and s['kaynak'] in SWING_YAPISAL),
-                        key=lambda s: -s['fiyat'])
         kisa = ustler[0]['fiyat'] if ustler else None
-        swing = magnet if (magnet and magnet > giris) else (ustler[-1]['fiyat'] if ustler else None)
-        stop = (altlar[0]['fiyat'] - tampon) if altlar else None
+        if grab_modu:
+            stop = stop_zorla
+            swing = _en_guclu(ustler) if ustler else None
+        else:
+            altlar = sorted((s for s in gorunur if s['fiyat'] < giris and s['kaynak'] in SWING_YAPISAL),
+                            key=lambda s: -s['fiyat'])
+            stop = (altlar[0]['fiyat'] - tampon) if altlar else None
+            swing = magnet if (magnet and magnet > giris) else (ustler[-1]['fiyat'] if ustler else None)
         if kisa is None or swing is None or stop is None or stop >= giris:
             return {**bos, 'sebep': 'yapisal seviye eksik (ust hedef / alt stop yok)'}
         risk = giris - stop
         rr_kisa = (kisa - giris) / risk
         rr_swing = (swing - giris) / risk
-    gecerli = rr_swing >= SWING_MIN_RR
+    if grab_modu:
+        gecerli = rr_kisa >= SWING_MIN_RR         # v8 ADIM 5: R/R kapisi KISA hedefe
+        sebep = 'ok' if gecerli else f'rr_kisa {round(rr_kisa, 2)} < {SWING_MIN_RR}'
+    else:
+        gecerli = rr_swing >= SWING_MIN_RR
+        sebep = 'ok' if gecerli else f'rr_swing {round(rr_swing, 2)} < {SWING_MIN_RR}'
     return {'kisa_hedef': round(kisa, 1), 'swing_hedef': round(swing, 1),
             'stop': round(stop, 1), 'rr_kisa': round(rr_kisa, 2),
-            'rr_swing': round(rr_swing, 2), 'gecerli': gecerli,
-            'sebep': 'ok' if gecerli else f'rr_swing {round(rr_swing, 2)} < {SWING_MIN_RR}'}
+            'rr_swing': round(rr_swing, 2), 'gecerli': gecerli, 'sebep': sebep}
 
 
 def _grab_ozeti(dip_durumlari, tepe_durumlari, simdi):
@@ -2068,6 +2221,248 @@ def _grab_ozeti(dip_durumlari, tepe_durumlari, simdi):
     if tepe_baslad:
         return {'yon': 'SHORT', 'baslad': True, 'tamam': tepe_tamam}
     return {'yon': None, 'baslad': False, 'tamam': False}
+
+
+# ======================= v8: LIQ GRAB SWING MOTORU — SAF CEKIRDEK =======================
+# ADIM 2-5'in tum karar mantigi asagidaki SAF fonksiyonlardadir (yan etkisiz, test
+# edilebilir). Veri beslemesi: coinalyze thread'i 15dk/1s/4s kline ceker, ozet dongusu
+# her turda "yeni KAPALI 15dk mumu var mi?" diye sorar. Scalp skor yoluna DOKUNMAZ.
+
+def _kline_kapali(mumlar, simdi, periyot_sn):
+    """v8 — SADECE KAPALI mumlar: t + periyot <= simdi (GK-8: dizinin son elemani
+    acik olabilir; karar icin kapali olanlar gecerli). Alanlar float'a cevrilir,
+    bozuk kayit atlanir. Donus: zaman-sirali [{'t','o','h','l','c','v'}]."""
+    out = []
+    for m in (mumlar or []):
+        try:
+            t = float(m.get('t') or 0)
+            if t > 0 and t + periyot_sn <= simdi:
+                out.append({'t': t, 'o': float(m.get('o') or 0), 'h': float(m.get('h') or 0),
+                            'l': float(m.get('l') or 0), 'c': float(m.get('c') or 0),
+                            'v': float(m.get('v') or 0)})
+        except (TypeError, ValueError):
+            continue
+    out.sort(key=lambda m: m['t'])
+    return out
+
+
+def _kline_pivotlar(mumlar):
+    """v8 — 3-mum pivot kurali (KAPALI mumlar): h[i] iki komsusundan yuksekse swing
+    high ('H'), l[i] iki komsusundan dusukse swing low ('L'). 1s/4s cok-zaman
+    cakismasi (ADIM 1) icin. Donus: [{'fiyat','tur','ts'}]."""
+    out = []
+    ms = mumlar or []
+    for i in range(1, len(ms) - 1):
+        a, b, c = ms[i - 1], ms[i], ms[i + 1]
+        if b['h'] > 0 and b['h'] > a['h'] and b['h'] > c['h']:
+            out.append({'fiyat': round(b['h'], 1), 'tur': 'H', 'ts': b['t']})
+        if b['l'] > 0 and b['l'] < a['l'] and b['l'] < c['l']:
+            out.append({'fiyat': round(b['l'], 1), 'tur': 'L', 'ts': b['t']})
+    return out
+
+
+def _atr15(mumlar):
+    """v8 — ATR: son 14 KAPALI mumun true-range ortalamasi (TR icin bir onceki
+    kapanis gerekir -> en az 15 mum). Hesaplanamiyorsa None — sifir tuzagi:
+    ATR yokken aday URETILMEZ (A2-4), 0 uydurulmaz."""
+    ms = mumlar or []
+    if len(ms) < 15:
+        return None
+    trler = []
+    for i in range(len(ms) - 14, len(ms)):
+        onceki_c = ms[i - 1]['c']
+        h, l = ms[i]['h'], ms[i]['l']
+        if h <= 0 or l <= 0 or onceki_c <= 0:
+            return None
+        trler.append(max(h - l, abs(h - onceki_c), abs(l - onceki_c)))
+    return sum(trler) / len(trler)
+
+
+def _sweep_adayi(mum, seviye, guc, atr15, hacim_ort20, lik_pencere_toplam,
+                 son_aday_ts, simdi):
+    """
+    v8 ADIM 2+3 — 15dk KAPALI mumda sweep ADAYI + kapanis karari. SAF. Aday != sinyal.
+
+    ADIM 2 (aday sartlari — hepsi):
+      * delme: high > seviye + delme_min (SHORT-yonlu sweep = yukari fitil) VEYA
+               low < seviye - delme_min (LONG-yonlu). delme_min = max(
+               SWEEP_MIN_DELME_PCT x kapanis, 0.2 x ATR15). ATR None -> aday YOK.
+      * eslik (en az biri): 15dk penceresinde likidasyon toplami > 0 VEYA
+               mum hacmi > SWEEP_ESLIK_HACIM_KAT x son 20 mum ort. hacmi.
+      * cooldown: ayni seviyede SWEEP_COOLDOWN_DK icinde ikinci aday uretilmez.
+    ADIM 3 (ayni kapali mumda — mum ici ASLA):
+      * SHORT-sweep: close < seviye -> DONUS adayi; close > seviye -> DEVAM adayi.
+        LONG-sweep simetrik. DONUS icin GOVDE sarti: |close - seviye| >=
+        SWEEP_GOVDE_ORAN x (high - low); kil payi -> kapanis_tipi None (sadece kayit).
+
+    Donus: None (aday degil) veya dict{yon: sweep yonu ('SHORT'=yukari fitil,
+    'LONG'=asagi fitil — DONUS islem yonuyle ayni adlandirma), kapanis_tipi
+    ('DONUS'|'DEVAM'|None), sweep_seviye, sweep_guc, fitil_ucu, delme_derinligi,
+    kapanis, kapanis_mesafe_pct, mum_ts, eslik{likidasyon, hacim_kat}}.
+    """
+    if not mum or not seviye or seviye <= 0:
+        return None
+    if atr15 is None or atr15 <= 0:
+        return None                       # A2-4: ATR olculemedi -> uydurma yok, aday yok
+    if son_aday_ts and (simdi - son_aday_ts) < SWEEP_COOLDOWN_DK * 60:
+        return None                       # A2-3: cooldown
+    h, l, c = mum.get('h') or 0, mum.get('l') or 0, mum.get('c') or 0
+    if h <= 0 or l <= 0 or c <= 0:
+        return None
+    delme_min = max(SWEEP_MIN_DELME_PCT * c, 0.2 * atr15)
+    if h > seviye + delme_min:
+        yon, fitil_ucu, delme = 'SHORT', h, h - seviye
+    elif l < seviye - delme_min:
+        yon, fitil_ucu, delme = 'LONG', l, seviye - l
+    else:
+        return None                       # A2-1: delme yetersiz
+    lik_ok = lik_pencere_toplam is not None and lik_pencere_toplam > 0
+    hacim_kat = (mum.get('v') / hacim_ort20) \
+        if (hacim_ort20 and hacim_ort20 > 0 and mum.get('v')) else None
+    hacim_ok = hacim_kat is not None and hacim_kat > SWEEP_ESLIK_HACIM_KAT
+    if not (lik_ok or hacim_ok):
+        return None                       # A2-2: eslik yok -> aday degil
+    aralik = h - l
+    if yon == 'SHORT':
+        tip = 'DONUS' if c < seviye else 'DEVAM'
+    else:
+        tip = 'DONUS' if c > seviye else 'DEVAM'
+    if tip == 'DONUS' and aralik > 0 and abs(c - seviye) < SWEEP_GOVDE_ORAN * aralik:
+        tip = None                        # A3-3: kil payi kapanis -> belirsiz, sinyal yolu kapali
+    return {'yon': yon, 'kapanis_tipi': tip,
+            'sweep_seviye': round(float(seviye), 1), 'sweep_guc': guc,
+            'fitil_ucu': round(fitil_ucu, 1), 'delme_derinligi': round(delme, 1),
+            'kapanis': round(c, 1),
+            'kapanis_mesafe_pct': round(abs(c - seviye) / seviye * 100.0, 4),
+            'mum_ts': mum.get('t'),
+            'eslik': {'likidasyon': round(lik_pencere_toplam, 0) if lik_pencere_toplam is not None else None,
+                      'hacim_kat': round(hacim_kat, 2) if hacim_kat is not None else None}}
+
+
+def _grab_pencere_ozeti(seri, t0, t1):
+    """
+    v8 ADIM 4 penceresi — sweep mumunun 15 dakikasindaki dakikalik kayitlardan ozet.
+    SAF. seri: gecmis_seri kayitlari (ozet dongusu her dakika 'lik_long/lik_short/
+    lik_*_yog/rejim/emici_yon/alici_tuk/satici_tuk' alanlarini ekler).
+    Kapsama < %60 (kayit kopmasi) -> eksik=True -> teyit YAPILMAZ (sinyal yok).
+    Olculemeyen alanlar None kalir (sifir tuzagi).
+    """
+    rows = [r for r in (seri or []) if t0 <= (r.get('ts') or 0) < t1]
+    beklenen = max(1, int((t1 - t0) / 60))
+    out = {'eksik': len(rows) < max(3, int(beklenen * 0.6)), 'kayit_sayisi': len(rows),
+           'd_oi_pct': None, 'd_vadeli_cvd': None, 'lik_toplam': None,
+           'lik_long_yog_max': None, 'lik_short_yog_max': None,
+           'emici_yonler': [], 'rejimler': [], 'alici_tuk': False, 'satici_tuk': False}
+    if not rows:
+        return out
+    ois = [r.get('oi') for r in rows if r.get('oi')]
+    if len(ois) >= 2 and ois[0] > 0:
+        out['d_oi_pct'] = (ois[-1] - ois[0]) / ois[0] * 100.0
+    # Vadeli CVD deltasi ancak kaynak TUTARLIYSA (v7.8 dersi: kaynaklar arasi delta yasak)
+    cv = [(r.get('vadeli_cvd'), r.get('cvd_kaynak')) for r in rows
+          if r.get('vadeli_cvd') is not None]
+    if len(cv) >= 2 and len({k for _, k in cv}) == 1:
+        out['d_vadeli_cvd'] = cv[-1][0] - cv[0][0]
+    likler = [(r.get('lik_long') or 0) + (r.get('lik_short') or 0)
+              for r in rows if ('lik_long' in r or 'lik_short' in r)]
+    if likler:
+        # 5dk pencereli orneklerin toplami SISIRIKTIR — yalniz ">0" sorusuna cevap verir
+        out['lik_toplam'] = sum(likler)
+    yog_l = [r.get('lik_long_yog') for r in rows if r.get('lik_long_yog') is not None]
+    yog_s = [r.get('lik_short_yog') for r in rows if r.get('lik_short_yog') is not None]
+    if yog_l:
+        out['lik_long_yog_max'] = max(yog_l)
+    if yog_s:
+        out['lik_short_yog_max'] = max(yog_s)
+    out['emici_yonler'] = [r.get('emici_yon') for r in rows if r.get('emici_yon')]
+    out['rejimler'] = [r.get('rejim') for r in rows if r.get('rejim')]
+    out['alici_tuk'] = any(r.get('alici_tuk') for r in rows)
+    out['satici_tuk'] = any(r.get('satici_tuk') for r in rows)
+    return out
+
+
+def _sweep_teyit(sweep_yon, kapanis_tipi, pencere):
+    """
+    v8 ADIM 4 — ORDER FLOW TEYIDI (sinyal kapisi). SAF. Fitil + kapanis tek basina
+    YETMEZ; teyitsiz -> sinyal YOK, sadece kayit.
+
+    DONUS: 3 kriterden en az 2'si, OI ZORUNLU (OI yoksa asla DONUS):
+      1) OI cokusu — MEVCUT tasfiye tanimiyla (_tasfiye_bayraklari; yeni esik YOK:
+         diken tek basina tasfiye sayilmaz — G1c ile tutarli).
+      2) Delta divergence — pencerede d_vadeli_cvd fitil yonune TERS isaret.
+      3) Emici ters yon — short-sweep: DAGITIM_AILESI rejimi VEYA alici_tukenmesi
+         VEYA _emici_yon=='SHORT' izi (long-sweep simetrik).
+    DEVAM: 3'u de ZORUNLU: OI ARTISI + delta kirilim yonuyle AYNI + emici ayni
+    yon VEYA YOK (TERS emici -> iptal).
+    Pencere eksik/olculemedi -> ilgili kriter None; pencere.eksik -> sonuc None.
+
+    Donus: {'oi','delta','emici','sonuc'} — kriterler True/False/None,
+    sonuc in {'GRAB_DONUS','GRAB_DEVAM',None}.
+    """
+    bos = {'oi': None, 'delta': None, 'emici': None, 'sonuc': None}
+    if kapanis_tipi not in ('DONUS', 'DEVAM') or sweep_yon not in ('SHORT', 'LONG'):
+        return bos
+    if not pencere or pencere.get('eksik'):
+        return bos                        # A4-4: pencere verisi eksik -> None, cokme yok
+    d_oi = pencere.get('d_oi_pct')
+    d_cvd = pencere.get('d_vadeli_cvd')
+    rejimler = pencere.get('rejimler') or []
+    emici_yonler = pencere.get('emici_yonler') or []
+    if kapanis_tipi == 'DONUS':
+        oi_k = None
+        if d_oi is not None:
+            oi_k, _ = _tasfiye_bayraklari(pencere.get('lik_long_yog_max') or 0.0,
+                                          pencere.get('lik_short_yog_max') or 0.0, d_oi)
+        delta_k = None
+        if d_cvd is not None:
+            delta_k = (d_cvd < 0) if sweep_yon == 'SHORT' else (d_cvd > 0)
+        if sweep_yon == 'SHORT':
+            emici_k = (any(r in DAGITIM_AILESI for r in rejimler)
+                       or bool(pencere.get('alici_tuk')) or ('SHORT' in emici_yonler))
+        else:
+            emici_k = (any(r in TOPLAMA_AILESI for r in rejimler)
+                       or bool(pencere.get('satici_tuk')) or ('LONG' in emici_yonler))
+        say = sum(1 for k in (oi_k, delta_k, emici_k) if k is True)
+        sonuc = 'GRAB_DONUS' if (oi_k is True and say >= 2) else None
+        return {'oi': oi_k, 'delta': delta_k, 'emici': emici_k, 'sonuc': sonuc}
+    # DEVAM — kirilim yonu, sweep etiketinin TERSI islem yonudur
+    # (yukari fitil DEVAM = yukari kirilim = LONG islem)
+    kir_yon = 'LONG' if sweep_yon == 'SHORT' else 'SHORT'
+    oi_k = (d_oi > 0) if d_oi is not None else None
+    delta_k = None
+    if d_cvd is not None:
+        delta_k = (d_cvd > 0) if kir_yon == 'LONG' else (d_cvd < 0)
+    ters_yon = 'SHORT' if kir_yon == 'LONG' else 'LONG'
+    ters_aile = DAGITIM_AILESI if kir_yon == 'LONG' else TOPLAMA_AILESI
+    ters_tuk = pencere.get('alici_tuk') if kir_yon == 'LONG' else pencere.get('satici_tuk')
+    emici_k = not ((ters_yon in emici_yonler)
+                   or any(r in ters_aile for r in rejimler) or bool(ters_tuk))
+    sonuc = 'GRAB_DEVAM' if (oi_k is True and delta_k is True and emici_k is True) else None
+    return {'oi': oi_k, 'delta': delta_k, 'emici': emici_k, 'sonuc': sonuc}
+
+
+def _grab_stop(sinyal_tipi, sweep_yon, fitil_ucu, seviye, giris, atr15):
+    """
+    v8 ADIM 5 — STOP: yapisal + tampon (TAM ucta degil — sweep gurultusu payi).
+    tampon = max(SWEEP_STOP_TAMPON_PCT x giris, 0.1 x ATR15).
+      GRAB_DONUS-short: fitil_ucu + tampon | GRAB_DONUS-long: fitil_ucu - tampon
+      GRAB_DEVAM: kirilan seviyenin DIGER tarafi -/+ tampon
+    ATR/giris olculemiyorsa None (sifir tuzagi)."""
+    if atr15 is None or atr15 <= 0 or not giris or giris <= 0:
+        return None
+    tampon = max(SWEEP_STOP_TAMPON_PCT * giris, 0.1 * atr15)
+    if sinyal_tipi == 'GRAB_DONUS':
+        if not fitil_ucu or fitil_ucu <= 0:
+            return None
+        return round(fitil_ucu + tampon, 1) if sweep_yon == 'SHORT' \
+            else round(fitil_ucu - tampon, 1)
+    if sinyal_tipi == 'GRAB_DEVAM':
+        if not seviye or seviye <= 0:
+            return None
+        # yukari fitil DEVAM (LONG islem) -> stop seviye ALTI; simetrik
+        return round(seviye - tampon, 1) if sweep_yon == 'SHORT' \
+            else round(seviye + tampon, 1)
+    return None
 
 
 def _swing_backtest(olaylar, fiyat_seri, ufuklar):
@@ -2363,8 +2758,14 @@ def adaptif_esik_guncelle():
                     if _elle_kayit and _elle_kayit.get('deger'):
                         _dg = _elle_kayit['deger']
                         _elle = _dg.get('seviyeler', []) if isinstance(_dg, dict) else _dg
+                    # v8 ADIM 1: 1s/4s pivotlar cok-zaman cakismasi icin (coinalyze
+                    # thread'i saatte bir yeniler; yoksa bos liste -> puan eklenmez)
+                    with durum.lock:
+                        _p1 = list(durum.pivotlar_1s)
+                        _p4 = list(durum.pivotlar_4s)
                     _oto = _swing_seviye_haritasi(
-                        _af, fiyat_seri, vol_seviye, yeni_dipler, yeni_tepeler, _liq, _elle)
+                        _af, fiyat_seri, vol_seviye, yeni_dipler, yeni_tepeler, _liq, _elle,
+                        pivotlar_1s=_p1, pivotlar_4s=_p4)
                     durum.swing_seviyeler = _oto      # v8.1: ozet dongusu (dk) bunu okur
                     _gorunur = [s for s in _oto if not s.get('gizli')]
                     _ayarlar_yaz('swing_seviyeler_oto', {
@@ -2717,11 +3118,10 @@ def surec_takip_et(durum_ref, rejim, anlik_fiyat, spot_cvd, vadeli_cvd,
                       "TEPE_DAGITIM_SPOT", "TEPE_DAGITIM_TEYITSIZ", "TEPE_DAGITIM_PERP")
 
     # Surec devami mi, yeni surec mi?
-    _DAGITIM_SETI = {"TEPE_DAGITIM", "SHORT_SQUEEZE", "SHORT_TASFIYE",
-                     "TASFIYE_SONRASI_DONUS",
-                     "TEPE_DAGITIM_SPOT", "TEPE_DAGITIM_TEYITSIZ", "TEPE_DAGITIM_PERP"}
-    _TOPLAMA_SETI = {"DIP_TOPLAMA", "LONG_TASFIYE", "LONG_KAPITULASYON",
-                     "DIP_TOPLAMA_SPOT", "DIP_TOPLAMA_TEYITSIZ", "DIP_TOPLAMA_PERP"}
+    # v8: kume tanimlari SABITLER'e tasindi (DAGITIM_AILESI/TOPLAMA_AILESI — tek tanim,
+    # GK-4). Degerler birebir ayni; asagidaki ayni_aile haritasi degismedi.
+    _DAGITIM_SETI = DAGITIM_AILESI
+    _TOPLAMA_SETI = TOPLAMA_AILESI
     ayni_aile = {
         "TEPE_DAGITIM": _DAGITIM_SETI,       # dagitim + squeeze/tasfiye = ayni hikaye
         "SHORT_SQUEEZE": _DAGITIM_SETI,
@@ -3936,6 +4336,25 @@ def ozet_ve_analiz_dongusu():
             long_skor, short_skor, sinyal, rejim, aciklama, emilim = balina_skoru_hesapla(
                 skor_girdi, pencere, kalite)
 
+            # ---- v8: GRAB TEYIT PENCERESI icin dakikalik iz ----
+            # anlik_kayit dict'i ZATEN gecmis_seri deque'sinde; buradaki ek alanlar
+            # _grab_pencere_ozeti'nin 15dk penceresinde okunur. Skor yolu bu alanlari
+            # OKUMAZ (Faz 1 fark=0 etkilenmez). Tukenme bayraklari HAM (None=olculemedi)
+            # tasinir — sifir tuzagi: bool(None) ile False uydurulmaz.
+            try:
+                with durum.lock:
+                    anlik_kayit.update({
+                        'lik_long': agg_liq_long, 'lik_short': agg_liq_short,
+                        'lik_long_yog': skor_girdi.get('tasfiye_long_yogunluk'),
+                        'lik_short_yog': skor_girdi.get('tasfiye_short_yogunluk'),
+                        'rejim': rejim,
+                        'emici_yon': _emici_yon(emilim),
+                        'alici_tuk': (emilim or {}).get('alici_tukenmesi'),
+                        'satici_tuk': (emilim or {}).get('satici_tukenmesi'),
+                    })
+            except Exception as e:
+                logging.warning(f"grab dakika izi yazilamadi (akis devam eder): {e}")
+
             # v5 COOLDOWN: sinyal cikti ama son 30dk icinde zaten sinyal verildiyse
             # sustur. Ayni hareket 6 kez sinyallenmez — balina bir kez konusur.
             if sinyal in ("LONG", "SHORT"):
@@ -4228,6 +4647,153 @@ def ozet_ve_analiz_dongusu():
                                          f"{'RR_swing=' + str(_hedef['rr_swing']) if _hedef else ''}")
                     except Exception as e:
                         logging.warning(f"swing motor hatasi (akis devam eder): {e}")
+
+                # ========== v8: LIQ GRAB SWING MOTORU (ADIM 2-5; 15dk KAPALI mum) ==========
+                # Her turda "yeni kapanmis 15dk mumu var mi?" sorulur — ayni mum iki kez
+                # ISLENMEZ (durum.son_islenen_15dk_ts). Aday (ADIM 2) -> kapanis karari
+                # (ADIM 3, AYNI kapali mumda) -> order flow teyidi (ADIM 4) -> kagit ustu
+                # sinyal + kayit (ADIM 5). Scalp skor yoluna DOKUNMAZ; hata akisi kesmez.
+                if SWING_MOTOR_AKTIF:
+                    try:
+                        with durum.lock:
+                            _mumlar = list(durum.mumlar_15dk)
+                        _simdi_g = time.time()
+                        _kapali15 = [m for m in _mumlar if m['t'] + 900 <= _simdi_g]
+                        _mum15 = _kapali15[-1] if _kapali15 else None
+                        if _mum15 is not None and _mum15['t'] != durum.son_islenen_15dk_ts:
+                            durum.son_islenen_15dk_ts = _mum15['t']
+                            # ATR15: sweep mumundan ONCEKI 14 kapali mum — mumun kendi
+                            # araligi kendi delme esigini sisirmesin
+                            _onceki15 = _kapali15[:-1]
+                            _atr = _atr15(_onceki15)
+                            _h20 = [m['v'] for m in _onceki15[-20:] if m.get('v')]
+                            _hacim_ort = (sum(_h20) / len(_h20)) if len(_h20) >= 20 else None
+                            _poz = _grab_pencere_ozeti(seri_kopya, _mum15['t'], _mum15['t'] + 900)
+                            _svl = durum.swing_seviyeler or []
+                            for _k in list(durum.grab_cooldown):   # budama (2x cooldown)
+                                if _simdi_g - durum.grab_cooldown[_k] > SWEEP_COOLDOWN_DK * 120:
+                                    del durum.grab_cooldown[_k]
+                            _adaylar = []
+                            for _s in _svl:
+                                if _s.get('gizli') or (_s.get('guc') or 0) < SWING_SEVIYE_MIN_GUC:
+                                    continue          # ADIM 1: zayif seviyede grab CALISMAZ
+                                _key = round(_s['fiyat'])
+                                _aday = _sweep_adayi(_mum15, _s['fiyat'], _s.get('guc'), _atr,
+                                                     _hacim_ort, _poz.get('lik_toplam'),
+                                                     durum.grab_cooldown.get(_key), _simdi_g)
+                                if _aday:
+                                    durum.grab_cooldown[_key] = _simdi_g
+                                    _aday['teyit'] = _sweep_teyit(_aday['yon'],
+                                                                  _aday['kapanis_tipi'], _poz)
+                                    _adaylar.append(_aday)
+                            if _adaylar:
+                                _mum_kapanis_iso = datetime.datetime.utcfromtimestamp(
+                                    _mum15['t'] + 900).isoformat()
+                                _sinyalli = [a for a in _adaylar if a['teyit'].get('sonuc')]
+                                # ayni mumda birden cok teyitli aday olursa EN GUCLU seviye
+                                # sinyal olur; digerleri aday olarak kayda gecer
+                                _secilen = max(_sinyalli, key=lambda a: a.get('sweep_guc') or 0) \
+                                    if _sinyalli else None
+                                _yeni_olaylar = []
+                                _sinyal_karti = None
+                                for _a in _adaylar:
+                                    if _a is _secilen:
+                                        continue      # sinyal kaydi asagida (hedef/stop ile)
+                                    # ADIM 2 kaydi: aday != sinyal; hedef/stop/rr ANAHTARLARI
+                                    # bilerek YOK — _swing_backtest bunlari sinyal sanmasin
+                                    _yeni_olaylar.append({
+                                        'zaman': _mum_kapanis_iso, 'tetik': 'GRAB_ADAY',
+                                        'seviye': _a['sweep_seviye'], 'skor': _a['sweep_guc'],
+                                        'ham': _a})
+                                if _secilen is not None:
+                                    _tip = _secilen['teyit']['sonuc']
+                                    # islem yonu: DONUS = sweep etiketiyle ayni;
+                                    # DEVAM = kirilim yonu (etiketin tersi)
+                                    _iy = _secilen['yon'] if _tip == 'GRAB_DONUS' else \
+                                        ('LONG' if _secilen['yon'] == 'SHORT' else 'SHORT')
+                                    _giris = _secilen['kapanis']   # teyit anindaki 15dk kapanisi
+                                    _stp = _grab_stop(_tip, _secilen['yon'], _secilen['fitil_ucu'],
+                                                      _secilen['sweep_seviye'], _giris, _atr)
+                                    _hs2 = _swing_hedef_stop(_iy, _giris, _svl, esik_vol,
+                                                             stop_zorla=_stp,
+                                                             min_guc=SWING_SEVIYE_MIN_GUC) \
+                                        if _stp is not None else None
+                                    _ham = dict(_secilen)
+                                    _ham['hedef_stop'] = _hs2
+                                    if _hs2 and _hs2['gecerli']:
+                                        _yeni_olaylar.append({
+                                            'zaman': _mum_kapanis_iso, 'yon': _iy,
+                                            'giris': _giris,
+                                            'kisa_hedef': _hs2['kisa_hedef'],
+                                            'swing_hedef': _hs2['swing_hedef'],
+                                            'stop': _hs2['stop'], 'rr_swing': _hs2['rr_swing'],
+                                            'skor': _secilen['sweep_guc'],
+                                            'seviye': _secilen['sweep_seviye'],
+                                            'tetik': _tip, 'ham': _ham})
+                                        _sinyal_karti = {
+                                            'zaman': _mum_kapanis_iso, 'tip': _tip, 'yon': _iy,
+                                            'giris': _giris, 'seviye': _secilen['sweep_seviye'],
+                                            'fitil_ucu': _secilen['fitil_ucu'],
+                                            'stop': _hs2['stop'],
+                                            'kisa_hedef': _hs2['kisa_hedef'],
+                                            'swing_hedef': _hs2['swing_hedef'],
+                                            'rr_kisa': _hs2['rr_kisa'],
+                                            'rr_swing': _hs2['rr_swing'],
+                                            'guc': _secilen['sweep_guc'],
+                                            'teyit': _secilen['teyit']}
+                                        logging.info(
+                                            f"GRAB SINYAL {_tip} {_iy} @ {_giris:,.1f} | "
+                                            f"seviye {_secilen['sweep_seviye']:,.1f} "
+                                            f"(guc {_secilen['sweep_guc']}) | "
+                                            f"stop {_hs2['stop']:,.1f} | hedef "
+                                            f"{_hs2['kisa_hedef']:,.1f}/{_hs2['swing_hedef']:,.1f} | "
+                                            f"rr_kisa {_hs2['rr_kisa']}")
+                                        if SWING_ARSIV_AKTIF and yeni_satir_id:
+                                            try:
+                                                supabase.table("balina_avcisi_data").update({
+                                                    "swing_kademe": 'SINYAL', "swing_yon": _iy,
+                                                    "swing_skor": _secilen['sweep_guc'],
+                                                    "swing_seviye": _secilen['sweep_seviye'],
+                                                    "swing_kisa_hedef": _hs2['kisa_hedef'],
+                                                    "swing_uzun_hedef": _hs2['swing_hedef'],
+                                                    "swing_stop": _hs2['stop'],
+                                                    "swing_rr": _hs2['rr_swing'],
+                                                    "swing_tetik": _tip,
+                                                }).eq("id", yeni_satir_id).execute()
+                                            except Exception as e:
+                                                logging.warning(f"grab arsiv UPDATE hatasi: {e}")
+                                    else:
+                                        # ADIM 5 R/R kapisi: sinyal URETILMEZ, kayit kalir.
+                                        # ust-duzey hedef/stop anahtari YOK (backtest korumasi)
+                                        _ham['rr_red'] = _hs2 is not None
+                                        _yeni_olaylar.append({
+                                            'zaman': _mum_kapanis_iso, 'tetik': 'GRAB_ADAY',
+                                            'seviye': _secilen['sweep_seviye'],
+                                            'skor': _secilen['sweep_guc'], 'ham': _ham})
+                                        logging.info(
+                                            f"GRAB {_tip} teyitli ama sinyal YOK: "
+                                            f"{(_hs2 or {}).get('sebep', 'stop hesaplanamadi')}")
+                                # kohort yazimi (tek RMW; v8.7 korumasi: okuma hatasi ->
+                                # 'bos kohort' DEGIL, bu tur yazim atlanir, veri korunur)
+                                _ok_kk, _kk = _ayarlar_oku_katilim('swing_kohortu')
+                                if not _ok_kk:
+                                    raise RuntimeError('kohort okunamadi — grab kaydi atlandi (veri korunur)')
+                                _oly = []
+                                if _kk and _kk.get('deger'):
+                                    _oly = (_kk['deger'].get('olaylar', [])
+                                            if isinstance(_kk['deger'], dict) else [])
+                                _oly.extend(_yeni_olaylar)
+                                if len(_oly) > KOHORT_AZAMI_KAYIT:
+                                    _oly = _oly[-KOHORT_AZAMI_KAYIT:]
+                                _ayarlar_yaz('swing_kohortu', {
+                                    'guncelleme': datetime.datetime.utcnow().isoformat(),
+                                    'olaylar': _oly})
+                                logging.info(f"GRAB KOHORT: {len(_yeni_olaylar)} kayit -> "
+                                             f"toplam {len(_oly)}")
+                                if _sinyal_karti:
+                                    _ayarlar_yaz('grab_aktif_sinyal', _sinyal_karti)
+                    except Exception as e:
+                        logging.warning(f"grab motoru hatasi (akis devam eder): {e}")
 
                 if kalite['cvd_guvenilir'] and (tasfiye_a or supurme_yeni_onaylar):
                     olaylar = []
