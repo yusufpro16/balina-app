@@ -55,7 +55,7 @@ SABITLER = {'SINYAL_ESIGI','SINYAL_MARJI','MALIYET_CITASI_PCT','VE_ISLEM_MIN',
             'SWING_SEVIYE_MIN_GUC','SWING_COKZAMAN_BANT','SWEEP_MIN_DELME_PCT',
             'SWEEP_ESLIK_HACIM_KAT','SWEEP_COOLDOWN_DK','SWEEP_GOVDE_ORAN',
             'SWEEP_STOP_TAMPON_PCT','SWING_EQ_BANT','SWING_GUC_PUAN',
-            'DAGITIM_AILESI','TOPLAMA_AILESI'}
+            'DAGITIM_AILESI','TOPLAMA_AILESI','CHOCH_MAX_MUM'}
 FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et',
                 '_tasfiye_bayraklari',
@@ -66,7 +66,9 @@ FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 '_swing_backtest','_grab_ozeti',
                 # v8 LIQ GRAB motoru:
                 '_kline_kapali','_kline_pivotlar','_atr15','_sweep_adayi',
-                '_grab_pencere_ozeti','_sweep_teyit','_grab_stop'}  # v7.4-v8
+                '_grab_pencere_ozeti','_sweep_teyit','_grab_stop',
+                # v8 guclendiriciler (G1 FVG / G2 CHoCH / G3 EQ):
+                '_fvg_bul','_choch_bul','_choch_olgunlastir','_eq_kumeleri'}  # v7.4-v8
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -682,6 +684,15 @@ check("A2-3: cooldown icinde (10dk once ayni seviyede aday) -> aday DEGIL",
       and sad(_M(60100,59700,59880), _SEV, 80, _ATRV, 50.0, 1e6, 1e6-91*60, 1e6) is not None)
 check("A2-4: ATR15=None -> aday uretilmez, cokme yok",
       sad(_M(60100,59700,59880), _SEV, 80, None, 50.0, 1e6, None, 1e6) is None)
+# Denetim (KESIN) regresyon kapisi: mum araligi seviyeyi KESMELI — mumun cok
+# altindaki/ustundeki seviyeler sweep DEGILDIR (l<=seviye<=h sarti)
+check("A2-5: mum seviyeyi kesmiyor (seviye mumun cok altinda/ustunde) -> aday DEGIL",
+      sad(_M(60100,59700,59880), 55000.0, 80, _ATRV, 50.0, 1e6, None, 1e6) is None
+      and sad(_M(60100,59700,59880), 66000.0, 80, _ATRV, 50.0, 1e6, None, 1e6) is None)
+# lik penceresi OLCULEMEDI (None) -> lik ayagi kanit sayilmaz; hacim yeterliyse aday olur
+check("A2-6: lik=None (olculemedi) -> yalniz hacimle aday; hacim de yoksa aday DEGIL",
+      sad(_M(60100,59700,59880), _SEV, 80, _ATRV, 50.0, None, None, 1e6) is not None
+      and sad(_M(60100,59700,59880,v=60.0), _SEV, 80, _ATRV, 50.0, None, None, 1e6) is None)
 _d1 = sad(_M(60100,59700,59880), _SEV, 80, _ATRV, 50.0, 1e6, None, 1e6)
 check("A3-1: yukari fitil + seviye alti NET kapanis (govde ok) -> DONUS (yon SHORT)",
       _d1 is not None and _d1['kapanis_tipi']=='DONUS' and _d1['yon']=='SHORT'
@@ -699,16 +710,28 @@ check("A3-4: asagi fitil (LONG sweep) + seviye ustu kapanis -> DONUS LONG (simet
 
 # ADIM 4 — order flow teyidi (sinyal kapisi)
 st_ = YENI['_sweep_teyit']
-_P = lambda **kw: {'eksik':False,'kayit_sayisi':15,'d_oi_pct':None,'d_vadeli_cvd':None,
+_P = lambda **kw: {'eksik':False,'kayit_sayisi':15,'d_oi_pct':None,'d_oi_5dk_min_pct':None,
+                   'd_vadeli_cvd':None,
                    'lik_toplam':1e6,'lik_long_yog_max':0.0,'lik_short_yog_max':0.0,
                    'emici_yonler':[],'rejimler':[],'alici_tuk':None,'satici_tuk':None,**kw}
-_r41 = st_('SHORT','DONUS',_P(d_oi_pct=+0.2, d_vadeli_cvd=-500.0, alici_tuk=True))
+_r41 = st_('SHORT','DONUS',_P(d_oi_pct=+0.2, d_oi_5dk_min_pct=+0.2,
+                              d_vadeli_cvd=-500.0, alici_tuk=True))
 check("A4-1: DONUS adayi + OI dusmedi -> sinyal YOK (OI ZORUNLU; G1c tutarli)",
       _r41['sonuc'] is None and _r41['oi'] is False)
-_r42 = st_('SHORT','DONUS',_P(d_oi_pct=-0.5, lik_long_yog_max=3.0, d_vadeli_cvd=-500.0))
-check("A4-2: DONUS + OI coktu (diken+dusus) + delta ters -> GRAB_DONUS",
+_r42 = st_('SHORT','DONUS',_P(d_oi_pct=-0.5, d_oi_5dk_min_pct=-0.4,
+                              lik_long_yog_max=3.0, d_vadeli_cvd=-500.0))
+check("A4-2: DONUS + OI coktu (5dk olcekte diken+dusus) + delta ters -> GRAB_DONUS",
       _r42['sonuc']=='GRAB_DONUS' and _r42['oi'] is True and _r42['delta'] is True,
       f"={_r42}")
+# Denetim: 15dk NET dusus ama hicbir 5dk dilim esigi asmadi -> OI kriteri MEVCUT
+# (5dk kalibreli) tanimla degerlendirilir; likidasyon izi tumden None ise oi=None
+_r42b = st_('SHORT','DONUS',_P(d_oi_pct=-0.5, d_oi_5dk_min_pct=-0.02,
+                               lik_long_yog_max=3.0, d_vadeli_cvd=-500.0))
+_r42c = st_('SHORT','DONUS',_P(d_oi_pct=-0.5, d_oi_5dk_min_pct=-0.4,
+                               lik_long_yog_max=None, lik_short_yog_max=None,
+                               d_vadeli_cvd=-500.0))
+check("A4-2b: 5dk dilimde esik asilmadi -> oi False; diken izi olculemedi -> oi None",
+      _r42b['oi'] is False and _r42c['oi'] is None and _r42c['sonuc'] is None)
 _r43 = st_('SHORT','DEVAM',_P(d_oi_pct=+0.4, d_vadeli_cvd=+800.0, emici_yonler=['SHORT']))
 _r43b = st_('SHORT','DEVAM',_P(d_oi_pct=+0.4, d_vadeli_cvd=+800.0))
 check("A4-3: DEVAM + OI artti + delta ayni + emici TERS -> iptal (tersi yoksa GRAB_DEVAM)",
@@ -717,9 +740,14 @@ check("A4-3: DEVAM + OI artti + delta ayni + emici TERS -> iptal (tersi yoksa GR
 _r44 = st_('SHORT','DONUS',_P(eksik=True, d_oi_pct=-0.5, lik_long_yog_max=3.0))
 check("A4-4: pencere verisi eksik -> teyit None, cokme yok",
       _r44=={'oi':None,'delta':None,'emici':None,'sonuc':None})
-_r45 = st_('LONG','DONUS',_P(d_oi_pct=-0.5, lik_short_yog_max=3.0, satici_tuk=True))
+_r45 = st_('LONG','DONUS',_P(d_oi_pct=-0.5, d_oi_5dk_min_pct=-0.4,
+                             lik_short_yog_max=3.0, satici_tuk=True))
 check("A4-5: LONG-sweep DONUS simetrik (OI + satici tukenmesi 2/3) -> GRAB_DONUS",
       _r45['sonuc']=='GRAB_DONUS' and _r45['emici'] is True)
+# Sifir tuzagi: tukenme None (olculemedi) DEVAM'da karsit kanit UYDURMAZ
+_r46 = st_('SHORT','DEVAM',_P(d_oi_pct=+0.4, d_vadeli_cvd=+800.0, alici_tuk=None))
+check("A4-6: tukenme olculemedi (None) -> DEVAM iptal edilmez (kanit uydurulmaz)",
+      _r46['sonuc']=='GRAB_DEVAM' and _r46['emici'] is True)
 
 # ADIM 5 — giris/stop/hedef + R/R kapisi
 gstop = YENI['_grab_stop']
@@ -754,6 +782,86 @@ _hs_reg = hst('SHORT',63450,_sev,_vol,magnet=60480.0)
 check("A5-5: eski (kademe) yol REGRESYONSUZ — SB8 fixturu ayni",
       _hs_reg['kisa_hedef']==62000.0 and _hs_reg['swing_hedef']==60480.0
       and _hs_reg['gecerli'] is True)
+
+# ---------- 13) v8 GUCLENDIRICILER: G1 FVG / G2 CHoCH / G3 EQ (sadece kayit) ----------
+# G1 — Fair Value Gap (3 ardisik kapali mum)
+fvg = YENI['_fvg_bul']
+_FM = lambda h,l,t: {'t':t,'o':(h+l)/2,'h':h,'l':l,'c':(h+l)/2,'v':1.0}
+_g1b = fvg([_FM(100.0,90.0,0), _FM(112.0,99.0,900), _FM(115.0,105.0,1800)])
+check("G1-1a: bullish FVG (mum1.high 100 < mum3.low 105) -> aralik [100,105]",
+      _g1b['var'] is True and _g1b['tur']=='BULL' and _g1b['aralik']==[100.0,105.0], f"={_g1b}")
+_g1s = fvg([_FM(110.0,100.0,0), _FM(101.0,88.0,900), _FM(95.0,85.0,1800)])
+check("G1-1b: bearish FVG (mum1.low 100 > mum3.high 95) -> aralik [95,100]",
+      _g1s['var'] is True and _g1s['tur']=='BEAR' and _g1s['aralik']==[95.0,100.0])
+check("G1-1c: bosluk yoksa var=False; <3 mum / mum kacmis (ardisik degil) -> var=None",
+      fvg([_FM(100.0,90.0,0), _FM(105.0,95.0,900), _FM(108.0,98.0,1800)])['var'] is False
+      and fvg([_FM(100.0,90.0,0)])['var'] is None and fvg(None)['var'] is None
+      and fvg([_FM(100.0,90.0,0), _FM(105.0,95.0,900), _FM(108.0,98.0,2700)])['var'] is None)
+
+# G2 — CHoCH (sweep sonrasi ilk TERS yapi kirilimi; asagi yapida higher-high)
+chb = YENI['_choch_bul']
+_CM = lambda h,l,i: {'t':i*900.0,'o':(h+l)/2,'h':h,'l':l,'c':(h+l)/2,'v':1.0}
+# ASAGI yapi: pivotlar H120 -> L95 -> H115 -> L90 (LH+LL); sweep i5'te
+_choch_mumlar = [_CM(110,100,0),_CM(120,105,1),_CM(110,95,2),_CM(115,100,3),
+                 _CM(105,90,4),_CM(100,95,5),          # sweep mumu (i5)
+                 _CM(110,100,6),_CM(118,105,7)]        # i7: high 118 > son swing high 115
+_g2 = chb(_choch_mumlar, 5*900.0)
+check("G2-1a: asagi yapida sweep sonrasi higher-high -> CHoCH var, gecikme=2 mum",
+      _g2=={'var':True,'gecikme_mum':2,'yapi':'ASAGI'}, f"={_g2}")
+_g2y = chb(_choch_mumlar[:7], 5*900.0)   # kirilim mumu (i7) yok -> henuz CHoCH yok
+check("G2-1b: kirilim gelmediyse var=False (yapi ASAGI okunur, muhur cagiranin isi)",
+      _g2y['var'] is False and _g2y['yapi']=='ASAGI')
+check("G2-1c: pivot yetersiz (yapi belirsiz) -> var=None (sifir tuzagi: uydurmaz)",
+      chb(_choch_mumlar[:4], 2*900.0)['var'] is None)
+# G2-2 — olgunlastirma: olay muhurlenir, ikinci tur degisiklik uretmez
+cho = YENI['_choch_olgunlastir']
+_olay = [{'tetik':'GRAB_ADAY','ham':{'mum_ts':5*900.0}},
+         {'tetik':'SEVIYE+GRAB','ham':{'mum_ts':5*900.0}},   # grab DEGIL -> dokunulmaz
+         {'tetik':'GRAB_DONUS','ham':{}}]                    # mum_ts yok -> atlanir
+_d1 = cho(_olay, _choch_mumlar, 7*900.0)
+_d2 = cho(_olay, _choch_mumlar, 7*900.0)
+check("G2-2: CHoCH olgunlasti (var=True, kesin) ve MUHURLENDI (2. tur degisiklik yok)",
+      _d1 is True and _d2 is False
+      and _olay[0]['ham']['choch']=={'var':True,'gecikme_mum':2,'yapi':'ASAGI','kesin':True}
+      and 'choch' not in _olay[1]['ham'] and 'choch' not in _olay[2]['ham'],
+      f"choch={_olay[0]['ham'].get('choch')}")
+_eski_olay = [{'tetik':'GRAB_ADAY','ham':{'mum_ts':900.0}}]  # cok eski, mum gecmisi yetersiz
+cho(_eski_olay, _choch_mumlar[-3:], (YENI['CHOCH_MAX_MUM']+6)*900.0)
+check("G2-2b: azami mum gecti + olculemiyor -> None ile MUHURLENIR (sonsuz tekrar yok)",
+      _eski_olay[0]['ham']['choch']['kesin'] is True
+      and _eski_olay[0]['ham']['choch']['var'] is None)
+
+# G3 — EQUAL HIGHS/LOWS (%0.08 ara -> EQ; %0.3 ara -> degil)
+eqk = YENI['_eq_kumeleri']
+check("G3-0: %0.08 arali iki H pivot -> EQH kumesi; %0.3 arali -> kume YOK",
+      len(eqk([{'fiyat':60010.0,'tur':'H'},{'fiyat':60058.0,'tur':'H'}]))==1
+      and eqk([{'fiyat':60010.0,'tur':'H'},{'fiyat':60058.0,'tur':'H'}])[0]['tur']=='EQH'
+      and eqk([{'fiyat':60010.0,'tur':'H'},{'fiyat':60190.0,'tur':'H'}])==[]
+      and eqk([{'fiyat':60010.0,'tur':'H'},{'fiyat':60040.0,'tur':'L'}])==[])
+_g3 = ssh(62000.0, _seri, 0.15, [], [], [], [60000.0],
+          pivotlar_1s=[{'fiyat':60010.0,'tur':'H','ts':1.0},
+                       {'fiyat':60058.0,'tur':'H','ts':2.0}])
+_g3e = [s for s in _g3 if s['kaynak']=='ELLE'][0]
+_g3n = ssh(62000.0, _seri, 0.15, [], [], [], [60000.0],
+           pivotlar_1s=[{'fiyat':60010.0,'tur':'H','ts':1.0},
+                        {'fiyat':60190.0,'tur':'H','ts':2.0}])
+_g3ne = [s for s in _g3n if s['kaynak']=='ELLE'][0]
+check("G3-1: EQ kumesiyle cakisan seviye 'EQ' etiketi + 20 puan alir; %0.3 arada almaz",
+      'EQ' in _g3e['kaynaklar'] and _g3e['guc']==_g3ne['guc']+20
+      and 'EQ' not in _g3ne['kaynaklar'],
+      f"eq_guc={_g3e['guc']} eqsiz_guc={_g3ne['guc']}")
+# Denetim (KESIN) regresyon kapisi: ayni fiziksel ekstrem hem 1s hem 4s pivotudur —
+# zaman dilimleri ARASI eslesme EQ sayilmaz (kumeleme dilim basina)
+_g3x = ssh(62000.0, _seri, 0.15, [], [], [], [60000.0],
+           pivotlar_1s=[{'fiyat':60010.0,'tur':'H','ts':1.0}],
+           pivotlar_4s=[{'fiyat':60010.0,'tur':'H','ts':1.0}])
+_g3xe = [s for s in _g3x if s['kaynak']=='ELLE'][0]
+check("G3-2: ayni ekstrem 1s+4s'te (tek dokunus) -> EQ DEGIL (sahte kume yok)",
+      'EQ' not in _g3xe['kaynaklar'], f"kaynaklar={_g3xe['kaynaklar']}")
+# Grab modunda vol_pct olculemese de (restart penceresi) sinyal olur — stop hazir gelir
+_h56 = hst('SHORT', 59880.0, _sevA5, None, stop_zorla=59940.0, min_guc=40)
+check("A5-6: grab modunda vol_pct=None gecerli sinyali OLDURMEZ (stop_zorla hazir)",
+      _h56['gecerli'] is True and abs(_h56['rr_kisa']-3.0)<0.01)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")

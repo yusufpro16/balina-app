@@ -604,10 +604,14 @@ function seviyeHaritasi(oto,elle,karar,anlik){
       const gucKutu=s.guc!=null
         ?`<span class="sev-guc${gucAktif?' aktif':''}" title="${esc((s.kaynaklar||[s.kaynak]).join('+'))}">${s.guc}</span>`
         :'';
+      /* v8 G3: EQ rozeti — esit tepe/dip kumesi (en yogun stop bolgesi) */
+      const eqRozet=(s.kaynaklar||[]).includes('EQ')
+        ?'<span class="sev-rozet" style="background:rgba(255,194,75,.18);color:var(--amber)">EQ</span>':'';
       html+=`<div class="sev-satir ${sinif}">
         <span class="sev-fiyat">$${tl(s.fiyat)}</span>
         <span class="sev-kaynak" style="background:${renk}22;color:${renk}">${s.kaynak}</span>
         ${gucKutu}
+        ${eqRozet}
         ${miknatis?'<span class="sev-rozet" style="background:rgba(47,245,200,.16);color:var(--sonar)">🧲 MIKNATIS</span>':''}
         <span class="sev-not">${esc(s.not||'')}</span>
         ${rozet}
@@ -652,7 +656,8 @@ function sinyalSonuc(o,rows){
 function sinyalKart(k,ist,kohort,rows,grab){
   const kart=$('sinyalKart');
   const hs=k&&k.hedef_stop;
-  const kohortN=(ist&&ist.olay_sayisi)||0;
+  /* v8: sinyal_sayisi = gercek sinyaller (GRAB_ADAY kayitlari haric); eski alanla geri uyumlu */
+  const kohortN=(ist&&(ist.sinyal_sayisi??ist.olay_sayisi))||0;
   /* v8: GRAB sinyali (15dk mum motoru) oncelikli — taze (<4s) ve cozulmemisse goster */
   if(grab&&grab.zaman&&grab.tip){
     const gz=new Date(grab.zaman.endsWith('Z')?grab.zaman:grab.zaman+'Z').getTime();
@@ -690,7 +695,8 @@ function sinyalKart(k,ist,kohort,rows,grab){
   }
   if(!k||k.kademe!=='SINYAL'||!hs||!hs.gecerli){
     kart.style.boxShadow='';
-    const olaylar=((kohort&&kohort.olaylar)||[]).slice(-5).reverse();
+    /* v8: GRAB_ADAY kayitlari sinyal degildir — listede yalniz gercek sinyaller */
+    const olaylar=((kohort&&kohort.olaylar)||[]).filter(o=>o.yon&&o.stop).slice(-5).reverse();
     let liste='';
     if(olaylar.length){
       liste='<div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin:10px 0 5px">SON SWING SİNYALLERİ</div>'
