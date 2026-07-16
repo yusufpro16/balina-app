@@ -202,6 +202,47 @@ table.defter{width:100%;border-collapse:collapse;font-size:10.5px;font-variant-n
 .son-sinyal .z{color:var(--dim);font-size:9.5px;min-width:76px}
 .son-sinyal .f{margin-left:auto;font-weight:700}
 
+/* ---------- SEKMELER + SAVAS MODU (v9.0) ---------- */
+.sekmeler{display:flex;gap:6px}
+.sekme-btn{background:var(--panel2);border:1px solid var(--line);color:var(--mist);
+  border-radius:9px;padding:6px 14px;font-family:var(--mono);font-size:11px;
+  letter-spacing:1.5px;cursor:pointer;font-weight:700}
+.sekme-btn.aktif{background:rgba(47,245,200,.12);border-color:var(--sonar);color:var(--sonar)}
+#savasKarti{display:flex;gap:18px;align-items:stretch;padding:11px 16px}
+.mom-blok{min-width:250px;display:flex;flex-direction:column;justify-content:center;gap:6px}
+.mom-etiket{font-size:16px;font-weight:800;letter-spacing:1.5px}
+.mom-sayi{font-size:12px;color:var(--mist)}
+.mom-bar{height:8px;background:rgba(233,245,251,.07);border-radius:5px;position:relative;overflow:hidden}
+.mom-bar .orta{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--dim)}
+.mom-bar .dolgu{position:absolute;top:0;bottom:0;border-radius:5px}
+.mom-dipnot{font-size:8.5px;color:var(--dim)}
+.feed-blok{flex:1;border-left:1px solid var(--line);padding-left:16px;min-width:0}
+.feed-baslik{font-size:9px;color:var(--mist);letter-spacing:1.5px;margin-bottom:5px}
+.feed-satir{display:flex;align-items:baseline;gap:8px;font-size:10.5px;padding:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.feed-satir .z{color:var(--dim);font-size:9px;min-width:38px}
+/* savas gorunumu */
+.savas-ust{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:12px}
+.cephe-alan{position:relative;height:360px;border:1px solid var(--line);border-radius:var(--radius);
+  overflow:hidden;background:
+    linear-gradient(90deg, rgba(255,84,112,.10), transparent 32%, transparent 68%, rgba(47,245,200,.10)),
+    linear-gradient(168deg,var(--panel) 0%,var(--panel2) 100%)}
+.cephe-cizgi{position:absolute;top:0;bottom:0;width:2px;background:var(--foam);
+  box-shadow:0 0 14px rgba(233,245,251,.8),0 0 34px rgba(74,144,217,.5);transition:left 1s ease}
+.cephe-fiyat{position:absolute;top:8px;transform:translateX(-50%);font-size:12px;font-weight:800;
+  background:rgba(2,13,22,.85);border:1px solid var(--whale);border-radius:7px;padding:3px 10px;
+  color:var(--foam);white-space:nowrap;transition:left 1s ease}
+.cephe-kenar{position:absolute;top:0;bottom:0;display:flex;flex-direction:column;justify-content:center;
+  padding:10px;font-size:11px;font-weight:800}
+.cephe-kenar.sol{left:0;color:var(--alarm);text-align:left}
+.cephe-kenar.sag{right:0;color:var(--sonar);text-align:right}
+.cephe-kenar .f{font-size:14px}
+.cephe-kenar .k{font-size:8.5px;font-weight:400;color:var(--dim);letter-spacing:1px}
+.ordu-nokta{position:absolute;width:5px;height:5px;border-radius:50%;opacity:.85}
+.ordu-nokta.kirmizi{background:var(--alarm);box-shadow:0 0 4px rgba(255,84,112,.7)}
+.ordu-nokta.yesil{background:var(--sonar);box-shadow:0 0 4px rgba(47,245,200,.7)}
+.savas-feed-buyuk{margin-top:12px}
+.savas-feed-buyuk .feed-satir{font-size:12px;padding:4px 0;border-bottom:1px solid rgba(22,66,87,.25)}
+
 .err{background:rgba(255,84,112,.1);border:1px solid var(--alarm);color:#ffd0d8;
   padding:10px 14px;border-radius:10px;display:none;margin:10px 18px 0}
 </style>
@@ -215,6 +256,10 @@ table.defter{width:100%;border-collapse:collapse;font-size:10.5px;font-variant-n
       <h1>🐋 BALİNA AVCISI</h1>
       <div style="font-size:8.5px;color:var(--dim);letter-spacing:2px">KOMUTA MERKEZİ · v5</div>
     </div>
+  </div>
+  <div class="sekmeler">
+    <button class="sekme-btn aktif" id="sekmeK" onclick="sekmeSec('komuta')">KOMUTA MERKEZİ</button>
+    <button class="sekme-btn" id="sekmeS" onclick="sekmeSec('savas')">⚔️ SAVAŞ MODU</button>
   </div>
   <div class="hspacer"></div>
   <div class="mini-metrikler" id="miniMetrik"></div>
@@ -231,6 +276,9 @@ table.defter{width:100%;border-collapse:collapse;font-size:10.5px;font-variant-n
 <div class="err" id="err"></div>
 
 <main>
+ <div id="gorunumKomuta">
+  <!-- SAVAS KARTI (gomulu, tam genislik) -->
+  <section class="kart" id="savasKarti" style="margin-bottom:12px"></section>
   <!-- SIRA 1: KARAR -->
   <section class="sira1">
     <div class="kart" id="hukumKart">
@@ -289,7 +337,18 @@ table.defter{width:100%;border-collapse:collapse;font-size:10.5px;font-variant-n
     <div id="cekmeceIc"></div>
   </section>
 
-  <div style="text-align:center;font-size:9px;color:var(--dim);letter-spacing:1.5px">
+ </div><!-- /gorunumKomuta -->
+
+ <div id="gorunumSavas" style="display:none">
+  <div class="savas-ust kart" id="savasUst"></div>
+  <div class="cephe-alan" id="cepheAlan"></div>
+  <div class="kart savas-feed-buyuk">
+    <div class="kbaslik">⚔️ CEPHE RAPORU — savaş akışı<span class="cizgi"></span></div>
+    <div id="savasFeedBuyuk"></div>
+  </div>
+ </div>
+
+  <div style="text-align:center;font-size:9px;color:var(--dim);letter-spacing:1.5px;margin-top:10px">
     FAZ 1 — ÖLÇÜM MODU · panel motorun kendi kayıtlarını okur · yatırım tavsiyesi değildir
   </div>
 </main>
@@ -370,6 +429,11 @@ async function yukle(){
     likPanel(rows,motorSbt,+L.anlik_fiyat||0);
     surecOi(surec,rows,L);
     cekmeceIc(rows,L);
+    /* v9.0: momentum + savas akisi (komuta karti + savas modu) */
+    const mom=hesaplaMomentum(rows,surec,motorSbt);
+    const feed=savasOlaylari(rows);
+    savasKarti(mom,feed);
+    cephe(mom,rows,L,swingSev,feed);
 
     $('err').style.display='none';
     /* v8.7: son kaydin YASI denetlenir (bayat veri taze gibi gorunmesin) */
@@ -793,6 +857,139 @@ function cekmeceIc(rows,L){
     <div class="emici-graf">${barlar}</div>
     <div class="eksen"><span>−60dk</span><span>şimdi</span></div>
     ${defter}`;
+}
+
+/* ================= v9.0 SAVAS MODU ================= */
+/* MOMENTUM — ozet gosterge, KARAR DEGIL. Agirliklar sabit (spec):
+   0.30 cvd_egim + 0.30 emici_yon(±40) + 0.20 lik_delta + 0.20 defter_egilim((s+p)/2*40).
+   NOTLAR: emici_yon spec'te DIP_TOPLAMA=+/TEPE_DAGITIM=- der — bu adlar SUREC
+   rejim aileleridir (emilim_borsasi SPOT/PERP/YOK dondurur); motorun surec
+   ailesinden alinir. Likidasyonlar ZATEN USD (convert_to_usd) — oran kullanildigi
+   icin birim zaten sadelesir. */
+function hesaplaMomentum(rows,surec,ms){
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  /* 1) vadeli CVD egimi: son 5 kaydin toplam degisimi, adaptif esikle normalize */
+  const son6=rows.slice(-6);
+  let d5=0; for(let i=1;i<son6.length;i++) d5+=(+son6[i].vadeli_cvd||0)-(+son6[i-1].vadeli_cvd||0);
+  let olcek=Math.max(Math.abs(+(ms&&ms.esik_cvd_negatif)||0), Math.abs(+(ms&&ms.esik_cvd_pozitif)||0));
+  if(!olcek){ /* esik yoksa son 60 dk'nin en buyuk |delta|'si */
+    const s60=rows.slice(-61); let mx=1;
+    for(let i=1;i<s60.length;i++) mx=Math.max(mx,Math.abs((+s60[i].vadeli_cvd||0)-(+s60[i-1].vadeli_cvd||0)));
+    olcek=mx*5;
+  }
+  const cvd_egim=clamp(d5/olcek,-1,1)*100;
+  /* 2) emici yon: surec rejim ailesi */
+  const rejim=surec&&surec.rejim||'NOTR';
+  const emici_yon = TOPLAMA.includes(rejim)?40 : DAGITIM.includes(rejim)?-40 : 0;
+  /* 3) likidasyon delta (60dk): short yaniyor = + boga */
+  let L60=0,S60=0; rows.slice(-60).forEach(r=>{L60+=+r.agg_long_liq||0;S60+=+r.agg_short_liq||0;});
+  const lik_delta=(L60+S60)>0?clamp((S60-L60)/(S60+L60),-1,1)*100:0;
+  /* 4) defter egilimi: (spot+perp)/2 x 40 (satir kolonlari v7.10 arsivi; null-guvenli) */
+  const c=rows[rows.length-1]||{};
+  const se=c.spot_egilim==null?0:+c.spot_egilim;
+  const pe=c.perp_egilim==null?0:+c.perp_egilim;
+  const defter=((se+pe)/2)*40;
+  const skor=clamp(0.30*cvd_egim + 0.30*emici_yon + 0.20*lik_delta + 0.20*defter, -100, 100);
+  return {skor:Math.round(skor),
+    etiket: skor>15?['🐂 ALICI ÖNDE','var(--sonar)'] : skor<-15?['🐻 SATICI ÖNDE','var(--alarm)'] : ['⚖️ DENGE','var(--mist)'],
+    parcalar:{cvd:Math.round(cvd_egim),emici:emici_yon,lik:Math.round(lik_delta),defter:Math.round(defter)}};
+}
+
+/* SAVAS AKISI — son 60 kayittan DIKKAT CEKEN olaylar (her dakika degil):
+   likidasyon>0 (rising-edge), emilim_borsasi degisimi, spot_egilim isaret degisimi. */
+function savasOlaylari(rows){
+  const son=rows.slice(-60);
+  const ol=[];
+  const hhmm=r=>new Date(r.kayit_zamani).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'});
+  for(let i=1;i<son.length;i++){
+    const r=son[i], p=son[i-1];
+    const sl=+r.agg_short_liq||0, ll=+r.agg_long_liq||0;
+    if(sl>0&&!(+p.agg_short_liq>0)) ol.push({z:hhmm(r),html:`<span class="pos">✓ short yandı · ${usd(sl)}</span>`});
+    if(ll>0&&!(+p.agg_long_liq>0))  ol.push({z:hhmm(r),html:`<span class="neg">✗ long yandı · ${usd(ll)}</span>`});
+    if(r.emilim_borsasi!==p.emilim_borsasi && (r.emilim_borsasi||p.emilim_borsasi))
+      ol.push({z:hhmm(r),html:`<span class="warn">◆ emici ${esc(p.emilim_borsasi||'—')} → ${esc(r.emilim_borsasi||'—')}</span>`});
+    const s0=p.spot_egilim==null?null:+p.spot_egilim, s1=r.spot_egilim==null?null:+r.spot_egilim;
+    if(s0!=null&&s1!=null&&Math.sign(s0)!==Math.sign(s1)&&s1!==0)
+      ol.push({z:hhmm(r),html:s1>0?'<span class="pos">◆ spot defter bid tarafına döndü</span>'
+                               :'<span class="neg">◆ spot defter ask tarafına döndü</span>'});
+  }
+  return ol.slice(-12).reverse();   // en yeni ustte
+}
+
+/* PARCA 1 — komuta merkezine gomulu savas karti */
+function savasKarti(mom,feed){
+  const [et,renk]=mom.etiket;
+  const w=Math.min(50,Math.abs(mom.skor)/2);   // ±100 -> yarim bar
+  const dolgu = mom.skor>=0
+    ? `<div class="dolgu" style="left:50%;width:${w}%;background:var(--sonar)"></div>`
+    : `<div class="dolgu" style="right:50%;width:${w}%;background:var(--alarm)"></div>`;
+  $('savasKarti').innerHTML=`
+    <div class="mom-blok">
+      <div class="mom-etiket" style="color:${renk}">${et}</div>
+      <div class="mom-sayi">momentum <b style="color:${renk}">${mom.skor>0?'+':''}${mom.skor}</b>
+        <span style="color:var(--dim);font-size:9.5px"> · cvd ${mom.parcalar.cvd} · emici ${mom.parcalar.emici} · lik ${mom.parcalar.lik} · defter ${mom.parcalar.defter}</span></div>
+      <div class="mom-bar"><div class="orta"></div>${dolgu}</div>
+      <div class="mom-dipnot">özet gösterge · karar için sensörlere bak</div>
+    </div>
+    <div class="feed-blok">
+      <div class="feed-baslik">⚔️ SAVAŞ AKIŞI — son olaylar</div>
+      ${feed.slice(0,5).map(o=>`<div class="feed-satir"><span class="z">${o.z}</span>${o.html}</div>`).join('')
+        ||'<span class="neu" style="font-size:10.5px">son 60 dk sakin — dikkat çeken olay yok</span>'}
+    </div>`;
+}
+
+/* PARCA 2 — cephe hatti (savas modu) */
+function cephe(mom,rows,L,swingSev,feed){
+  if($('gorunumSavas').style.display==='none'){ /* gizliyken de son durumu hazirla */ }
+  const f=+L.anlik_fiyat||0;
+  const sev=((swingSev&&swingSev.seviyeler)||[]).filter(s=>!s.gizli);
+  const ust=sev.filter(s=>s.fiyat>f).sort((a,b)=>a.fiyat-b.fiyat)[0];   // en yakin direnc
+  const alt=sev.filter(s=>s.fiyat<f).sort((a,b)=>b.fiyat-a.fiyat)[0];   // en yakin destek
+  const dirF=ust?ust.fiyat:f*1.005, desF=alt?alt.fiyat:f*0.995;
+  const oran=Math.max(.06,Math.min(.94,(dirF-f)/Math.max(dirF-desF,1e-9))); // sol=direnc
+  const solPct=(oran*100).toFixed(1);
+  const [et,renk]=mom.etiket;
+  $('savasUst').innerHTML=`
+    <div class="mom-etiket" style="color:${renk}">${et}</div>
+    <div style="font-size:13px">momentum <b style="color:${renk}">${mom.skor>0?'+':''}${mom.skor}</b></div>
+    <div style="font-size:13px;color:var(--whale)">cephe: <b>$${tl(f)}</b></div>
+    <div class="mom-bar" style="flex:1;max-width:340px"><div class="orta"></div>
+      ${mom.skor>=0?`<div class="dolgu" style="left:50%;width:${Math.min(50,Math.abs(mom.skor)/2)}%;background:var(--sonar)"></div>`
+                   :`<div class="dolgu" style="right:50%;width:${Math.min(50,Math.abs(mom.skor)/2)}%;background:var(--alarm)"></div>`}</div>
+    <div class="mom-dipnot">özet gösterge · karar için sensörlere bak</div>`;
+  /* ordu noktalari: GERCEK defter derinligi oranindan (uydurma degil) */
+  const bid=+L.order_book_depth_bid_1pct||0, ask=+L.order_book_depth_ask_1pct||0;
+  const toplamN=36, birim=(bid+ask)/toplamN||1;
+  const kN=Math.max(1,Math.round(ask/birim)), yN=Math.max(1,Math.round(bid/birim));
+  let noktalar='';
+  for(let i=0;i<kN;i++){ // kirmizi: cephenin SOLU (direnc tarafi)
+    const x=(Math.random()*(oran*100-8)+3).toFixed(1), y=(Math.random()*78+12).toFixed(1);
+    noktalar+=`<div class="ordu-nokta kirmizi" style="left:${x}%;top:${y}%"></div>`;
+  }
+  for(let i=0;i<yN;i++){ // yesil: cephenin SAGI (destek tarafi)
+    const x=(oran*100+5+Math.random()*(94-oran*100-8)).toFixed(1), y=(Math.random()*78+12).toFixed(1);
+    noktalar+=`<div class="ordu-nokta yesil" style="left:${x}%;top:${y}%"></div>`;
+  }
+  $('cepheAlan').innerHTML=`
+    <div class="cephe-kenar sol"><div class="k">DİRENÇ ${ust?esc(ust.kaynak):''}</div>
+      <div class="f">$${tl(dirF)}</div><div class="k">satış ordusu ${usd(ask)}</div></div>
+    <div class="cephe-kenar sag"><div class="k">DESTEK ${alt?esc(alt.kaynak):''}</div>
+      <div class="f">$${tl(desF)}</div><div class="k">alış ordusu ${usd(bid)}</div></div>
+    ${noktalar}
+    <div class="cephe-cizgi" style="left:${solPct}%"></div>
+    <div class="cephe-fiyat" style="left:${solPct}%">$${tl(f)}</div>`;
+  $('savasFeedBuyuk').innerHTML=
+    feed.map(o=>`<div class="feed-satir"><span class="z">${o.z}</span>${o.html}</div>`).join('')
+    ||'<span class="neu">son 60 dk sakin</span>';
+}
+
+/* sekme gecisi */
+function sekmeSec(hangi){
+  const komuta=hangi==='komuta';
+  $('gorunumKomuta').style.display=komuta?'':'none';
+  $('gorunumSavas').style.display=komuta?'none':'';
+  $('sekmeK').classList.toggle('aktif',komuta);
+  $('sekmeS').classList.toggle('aktif',!komuta);
 }
 
 /* ---------- ELLE SEVIYE (v4'ten AYNEN — dokunulmadi) ---------- */
