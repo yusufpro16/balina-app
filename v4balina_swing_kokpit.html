@@ -243,6 +243,12 @@ table.defter{width:100%;border-collapse:collapse;font-size:10.5px;font-variant-n
 .savas-feed-buyuk{margin-top:12px}
 .savas-feed-buyuk .feed-satir{font-size:12px;padding:4px 0;border-bottom:1px solid rgba(22,66,87,.25)}
 
+/* v9.1: canli akis — yoklama flasi + damlayan feed */
+@keyframes yoklaFlash{0%{color:var(--sonar);text-shadow:0 0 10px rgba(47,245,200,.8)}100%{}}
+#durum.yokla{animation:yoklaFlash .55s ease}
+@keyframes feedGir{0%{opacity:0;transform:translateY(-7px)}100%{opacity:1;transform:none}}
+.feed-satir.feed-yeni{animation:feedGir .45s ease}
+
 .err{background:rgba(255,84,112,.1);border:1px solid var(--alarm);color:#ffd0d8;
   padding:10px 14px;border-radius:10px;display:none;margin:10px 18px 0}
 </style>
@@ -379,7 +385,19 @@ const KAYNAK_RENK={ELLE:'var(--alarm)',VP:'var(--violet)',HL:'var(--amber)',
   LIQ:'var(--sonar)',SWING_PIVOT:'var(--whale)',ROUND:'var(--dim)'};
 
 /* ---------- ANA YUKLEME (fetch kismi v4'ten AYNEN; render cagrilari yeni) ---------- */
-async function yukle(){
+/* v9.1 CANLI AKIS: 10 sn'de bir YOKLA; yeni satir yoksa HIC render etme —
+   yalniz saat+nabiz. Yeni satir gelince (max 10 sn gecikme) tam render.
+   Dakikalik kaynak dokunulmadan kalir; ekstra maliyet ~sifir (ayni sorgu). */
+let sonId=null, sonKayitZamani=null, sonKayitSayisi=0;
+function saatGuncelle(){
+  const d=$('durum');
+  const yas=sonKayitZamani?(Date.now()-new Date(sonKayitZamani).getTime())/1000:0;
+  d.innerHTML = yas>180
+    ? `<span style="color:var(--amber)">⚠ VERİ BAYAT — son kayıt ${(yas/60).toFixed(0)} dk önce</span>`
+    : `<span class="pulse"></span>bağlı · ${sonKayitSayisi} kayıt · ${new Date().toLocaleTimeString('tr-TR')}`;
+  d.classList.remove('yokla'); void d.offsetWidth; d.classList.add('yokla');
+}
+async function yukle(force){
   try{
     const lim=UFUK_LIM[$('ufuk').value]||1440;
     const {data,error}=await sb.from('balina_avcisi_data').select('*')
@@ -387,6 +405,12 @@ async function yukle(){
     if(error) throw error;
     if(!data||!data.length){ hata('Veri yok — motor çalışıyor mu?'); return; }
     const L=data[0];
+    /* yeni satir yoksa: sadece saat/nabiz (titreme yok, ayarlar sorgusu da atlanir) */
+    const kimlik=L.id??L.kayit_zamani;
+    if(!force && kimlik===sonId){
+      sonKayitZamani=L.kayit_zamani; saatGuncelle(); return;
+    }
+    sonId=kimlik; sonKayitZamani=L.kayit_zamani; sonKayitSayisi=data.length;
     const rows=[...data].reverse();
 
     let surec=null,veRed=null,geriTest=null,motorSbt=null,canli=null;
@@ -432,15 +456,12 @@ async function yukle(){
     /* v9.0: momentum + savas akisi (komuta karti + savas modu) */
     const mom=hesaplaMomentum(rows,surec,motorSbt);
     const feed=savasOlaylari(rows);
-    savasKarti(mom,feed);
-    cephe(mom,rows,L,swingSev,feed);
+    savasKarti(mom);
+    cephe(mom,rows,L,swingSev);
+    feedGuncelle(feed);          /* v9.1: damla damla akis (iki konteynere) */
 
     $('err').style.display='none';
-    /* v8.7: son kaydin YASI denetlenir (bayat veri taze gibi gorunmesin) */
-    const sonYas=(Date.now()-new Date(L.kayit_zamani).getTime())/1000;
-    $('durum').innerHTML = sonYas>180
-      ? `<span style="color:var(--amber)">⚠ VERİ BAYAT — son kayıt ${(sonYas/60).toFixed(0)} dk önce</span>`
-      : `<span class="pulse"></span>bağlı · ${rows.length} kayıt · ${new Date().toLocaleTimeString('tr-TR')}`;
+    saatGuncelle();   /* v9.1: bayatlik kontrolu dahil tek yerden */
   }catch(e){ hata('Bağlantı hatası: '+(e.message||e)); }
 }
 function hata(m){ $('err').textContent=m; $('err').style.display='block';
@@ -917,7 +938,7 @@ function savasOlaylari(rows){
 }
 
 /* PARCA 1 — komuta merkezine gomulu savas karti */
-function savasKarti(mom,feed){
+function savasKarti(mom){
   const [et,renk]=mom.etiket;
   const w=Math.min(50,Math.abs(mom.skor)/2);   // ±100 -> yarim bar
   const dolgu = mom.skor>=0
@@ -933,13 +954,12 @@ function savasKarti(mom,feed){
     </div>
     <div class="feed-blok">
       <div class="feed-baslik">⚔️ SAVAŞ AKIŞI — son olaylar</div>
-      ${feed.slice(0,5).map(o=>`<div class="feed-satir"><span class="z">${o.z}</span>${o.html}</div>`).join('')
-        ||'<span class="neu" style="font-size:10.5px">son 60 dk sakin — dikkat çeken olay yok</span>'}
+      <div id="feedKart"></div>
     </div>`;
 }
 
 /* PARCA 2 — cephe hatti (savas modu) */
-function cephe(mom,rows,L,swingSev,feed){
+function cephe(mom,rows,L,swingSev){
   if($('gorunumSavas').style.display==='none'){ /* gizliyken de son durumu hazirla */ }
   const f=+L.anlik_fiyat||0;
   const sev=((swingSev&&swingSev.seviyeler)||[]).filter(s=>!s.gizli);
@@ -978,9 +998,40 @@ function cephe(mom,rows,L,swingSev,feed){
     ${noktalar}
     <div class="cephe-cizgi" style="left:${solPct}%"></div>
     <div class="cephe-fiyat" style="left:${solPct}%">$${tl(f)}</div>`;
-  $('savasFeedBuyuk').innerHTML=
-    feed.map(o=>`<div class="feed-satir"><span class="z">${o.z}</span>${o.html}</div>`).join('')
-    ||'<span class="neu">son 60 dk sakin</span>';
+}
+
+/* v9.1 DAMLAYAN FEED: yeni dakika verisi gelince o dakikanin olaylarini
+   HEPSINI BIRDEN degil, ~850ms arayla ustten dusur (fade+slide). Ilk dolum
+   animasyonsuz. Damlatma bir sonraki 10sn yoklamasindan ONCE biter (aralik
+   olay sayisina gore kisilir); yeni tam-render gelirse eski zamanlayicilar
+   iptal edilir (cakisma yok). Feed max 15 satir. */
+let feedSeen=new Set(), feedList=[], feedTimers=[], feedIlkDolum=false;
+const feedKey=o=>o.z+'|'+o.html;
+function feedRender(){
+  const yap=(n)=>feedList.slice(0,n).map(o=>
+    `<div class="feed-satir${o._yeni?' feed-yeni':''}"><span class="z">${o.z}</span>${o.html}</div>`).join('');
+  const bos='<span class="neu" style="font-size:10.5px">son 60 dk sakin — dikkat çeken olay yok</span>';
+  const k=$('feedKart');      if(k) k.innerHTML=yap(5)||bos;
+  const b=$('savasFeedBuyuk');if(b) b.innerHTML=yap(15)||bos;
+}
+function feedGuncelle(events){            // events: en yeni once
+  feedTimers.forEach(clearTimeout); feedTimers=[];
+  const yeni=events.filter(o=>!feedSeen.has(feedKey(o)));
+  if(!feedIlkDolum){                       // ilk dolum: animasyonsuz (bos olsa bile)
+    feedIlkDolum=true;
+    events.slice(0,15).forEach(o=>feedSeen.add(feedKey(o)));
+    feedList=events.slice(0,15); feedRender(); return;
+  }
+  if(!yeni.length){ feedRender(); return; }   // konteynerler yeni render'da bosaldi — doldur
+  feedRender();                                // once mevcut liste geri basilir
+  const sira=[...yeni].reverse();              // en eski YENI once duser -> son durum dogru sirali
+  const aralik=Math.max(250, Math.min(900, Math.floor(8000/sira.length)));
+  sira.forEach((o,i)=>{ feedTimers.push(setTimeout(()=>{
+    feedSeen.add(feedKey(o)); o._yeni=true;
+    feedList.unshift(o); feedList=feedList.slice(0,15);
+    feedRender();
+    setTimeout(()=>{ o._yeni=false; },700);
+  }, 300+i*aralik)); });
 }
 
 /* sekme gecisi */
@@ -1008,7 +1059,7 @@ async function elleEkle(){
     .upsert({anahtar:'swing_seviyeler_elle',deger:{seviyeler:mevcut,guncelleme:new Date().toISOString()}},{onConflict:'anahtar'});
   if(error){ elleDurumYaz('yazılamadı — Supabase RLS anon-write izni gerekli: '+esc(error.message),'neg'); }
   else{ elleDurumYaz(`$${f.toLocaleString('tr-TR')} eklendi ✓ (motor ~10dk içinde işler)`,'pos');
-        $('elleFiyat').value='';$('elleNot').value=''; setTimeout(yukle,600); }
+        $('elleFiyat').value='';$('elleNot').value=''; setTimeout(()=>yukle(true),600); }
 }
 async function elleSil(f){
   let mevcut=[];
@@ -1020,18 +1071,18 @@ async function elleSil(f){
   const {error}=await sb.from('balina_ayarlar')
     .upsert({anahtar:'swing_seviyeler_elle',deger:{seviyeler:mevcut,guncelleme:new Date().toISOString()}},{onConflict:'anahtar'});
   if(error){ elleDurumYaz('silinemedi: '+esc(error.message),'neg'); }
-  else{ elleDurumYaz('silindi (motor ~10dk içinde günceller)','neu'); setTimeout(yukle,600); }
+  else{ elleDurumYaz('silindi (motor ~10dk içinde günceller)','neu'); setTimeout(()=>yukle(true),600); }
 }
 function elleDurumYaz(m,c){ $('elleDurum').innerHTML=`<span class="${c}">${m}</span>`; }
 
 /* ---------- baslat ---------- */
-$('yenile').addEventListener('click',yukle);
-$('ufuk').addEventListener('change',yukle);
+$('yenile').addEventListener('click',()=>yukle(true));
+$('ufuk').addEventListener('change',()=>yukle(true));
 $('elleEkle').addEventListener('click',elleEkle);
 $('elleFiyat').addEventListener('keydown',e=>{if(e.key==='Enter')elleEkle();});
 $('cekmeceTut').addEventListener('click',()=>$('cekmece').classList.toggle('acik'));
 yukle();
-setInterval(yukle,60000);
+setInterval(yukle,10000);   /* v9.1: 10 sn yoklama (degismemisse cizmez) */
 </script>
 </body>
 </html>
