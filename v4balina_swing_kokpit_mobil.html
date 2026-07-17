@@ -1214,8 +1214,10 @@ $('elleEkle').addEventListener('click',elleEkle);
 $('elleFiyat').addEventListener('keydown',e=>{if(e.key==='Enter')elleEkle();});
 $('cekmeceTut').addEventListener('click',()=>$('cekmece').classList.toggle('acik'));
 yukle();
-/* v8.4 MOBIL: arka planda yoklama DURUR (pil/veri); one gelince aninda yenilenir */
-setInterval(()=>{ if(document.hidden){ console.log('[mobil] arka plan — yoklama duraklatıldı'); return; } yukle(); },10000);
+/* v8.4 MOBIL: 5 sn'de bir otomatik yenileme (kullanici istegi; akilli atlama
+   korunur: veri degismemisse yeniden CIZMEZ, yalniz saat/nabiz). Arka planda
+   yoklama DURUR (pil/veri); one gelince aninda yenilenir */
+setInterval(()=>{ if(document.hidden){ console.log('[mobil] arka plan — yoklama duraklatıldı'); return; } yukle(); },5000);
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ console.log('[mobil] öne geldi — anında yenileme'); yukle(true); } });
 </script>
 <script>
@@ -1227,7 +1229,7 @@ document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ console
 
 /* --- akordeon (varsayilan acik: hukum + tasfiye; durum localStorage'da) --- */
 (function(){
-  const VARSAYILAN_ACIK=['hukum','tasfiye'];
+  const VARSAYILAN_ACIK=['hukum','tasfiye','cekmece'];  // v8.4.2: son 60 dk hep acik baslar
   let kayit={};
   try{ kayit=JSON.parse(localStorage.getItem('kokpitMobilAkordeon')||'{}'); }catch(e){}
   document.querySelectorAll('.akordeon').forEach(a=>{
