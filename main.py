@@ -500,6 +500,7 @@ class RenderKalkanHandler(BaseHTTPRequestHandler):
       /mobil       -> telefon paneli (balina_mobil.html)
       /panel       -> masaustu paneli (v3balina_sonar_terminal.html)
       /kokpit      -> swing kokpiti (v4balina_swing_kokpit.html)
+      /kokpit-mobil-> swing kokpiti MOBIL (v4balina_swing_kokpit_mobil.html)
     Panel dosyalari main.py ile AYNI KLASORDE olmali (repo koku).
     Boylece GitHub Pages / ayri repo / dosya transferi gerekmez;
     tek link: https://<servis>.onrender.com/mobil
@@ -509,6 +510,7 @@ class RenderKalkanHandler(BaseHTTPRequestHandler):
         "/mobil": "balina_mobil.html",
         "/panel": "v3balina_sonar_terminal.html",
         "/kokpit": "v4balina_swing_kokpit.html",   # v8.3: rotasiz paneldi -> 404 (denetim)
+        "/kokpit-mobil": "v4balina_swing_kokpit_mobil.html",   # v8.4: telefon icin yeniden tasarim
     }
 
     def _panel_gonder(self, dosya_adi):
@@ -566,6 +568,7 @@ class RenderKalkanHandler(BaseHTTPRequestHandler):
             b"<a href='/mobil'>Mobil Panel</a>"
             b"<a href='/panel'>Masaustu Panel</a>"
             b"<a href='/kokpit'>Swing Kokpiti</a>"
+            b"<a href='/kokpit-mobil'>Swing Kokpiti (Mobil)</a>"
             b"</body></html>"
         )
 

@@ -1,0 +1,1320 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Balina Avcısı · Swing Kokpiti Mobil</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+/* ============ v8.4 SWING KOKPITI MOBIL ============
+   VERI SOZLESMESI: masaustu v4balina_swing_kokpit.html ile BIREBIR — asagidaki
+   temel CSS ve TUM <script> yorum katmani ORADAN PROGRAMATIK KOPYADIR
+   (programatik kopya). Yorum katmanini elle DUZENLEME — masaustu degisince buraya
+   ayni blok yeniden kopyalanmali (panel-motor senkron ilkesi: ayni girdi, ayni sayi). */
+/* ============ KOMUTA MERKEZI — v5 duzen (v8.8) ============
+   Ayni motor, ayni veri, YENI YERLESIM: yatay komuta-merkezi, minimal scroll.
+   ust serit -> KARAR sirasi (hukum/av/emici) -> harita+sinyal -> baglam
+   panelleri -> centikli "son 60 dk" cekmecesi. Veri/mantik degismedi;
+   yukle()/elleEkle()/elleSil() v4'ten AYNEN tasindi. */
+:root{
+  --abyss:#020d16; --deep:#06192a; --panel:#0b2739; --panel2:#081e2e;
+  --line:#164257; --foam:#e9f5fb; --mist:#6d97ad; --dim:#3d6478;
+  --sonar:#2ff5c8; --alarm:#ff5470; --amber:#ffc24b; --whale:#4a90d9;
+  --violet:#8b6ef2; --veto:#ff8a3d; --radius:12px;
+  --mono:ui-monospace,'Cascadia Code','JetBrains Mono',Menlo,Consolas,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:
+    radial-gradient(1100px 460px at 82% -8%, rgba(74,144,217,.10), transparent 60%),
+    radial-gradient(900px 400px at 8% 108%, rgba(47,245,200,.05), transparent 55%),
+    var(--abyss);
+  color:var(--foam); font-family:var(--mono); font-size:12.5px; min-height:100vh;
+}
+::selection{background:rgba(47,245,200,.25)}
+
+/* ---------- ust serit ---------- */
+header{
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  padding:10px 20px;border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg, rgba(11,39,57,.92), rgba(6,25,42,.7));
+  position:sticky;top:0;z-index:50;backdrop-filter:blur(6px);
+}
+.brand{display:flex;align-items:center;gap:10px}
+.sonar-ping{position:relative;width:22px;height:22px;flex:none}
+.sonar-ping::before,.sonar-ping::after{content:'';position:absolute;inset:0;border-radius:50%;
+  border:2px solid var(--sonar);opacity:0;animation:ping 2.6s ease-out infinite}
+.sonar-ping::after{animation-delay:1.3s}
+.sonar-core{position:absolute;inset:7px;border-radius:50%;background:var(--sonar);box-shadow:0 0 10px var(--sonar)}
+@keyframes ping{0%{transform:scale(.35);opacity:.9}80%{transform:scale(1.6);opacity:0}100%{opacity:0}}
+.brand h1{font-size:14px;letter-spacing:2.5px;font-weight:700;
+  background:linear-gradient(90deg,var(--sonar),var(--whale));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.hspacer{flex:1}
+.mini-metrikler{display:flex;gap:10px;flex-wrap:wrap}
+.mm{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+  padding:6px 12px;min-width:118px}
+.mm .l{font-size:8.5px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase}
+.mm .v{font-size:15px;font-weight:800;display:flex;align-items:baseline;gap:6px}
+.mm .v .ok-yon{font-size:12px}
+.hctl{display:flex;align-items:center;gap:8px}
+select,button{background:var(--panel);color:var(--foam);border:1px solid var(--line);
+  border-radius:8px;padding:5px 10px;font-family:var(--mono);font-size:11px;cursor:pointer}
+select:hover,button:hover{border-color:var(--sonar);color:var(--sonar)}
+.upd{font-size:10px;color:var(--mist)}
+.pulse{width:7px;height:7px;border-radius:50%;background:var(--sonar);display:inline-block;
+  margin-right:5px;box-shadow:0 0 7px var(--sonar);animation:nabiz 2s ease-in-out infinite}
+@keyframes nabiz{50%{opacity:.35}}
+
+/* ---------- yerlesim ---------- */
+main{max-width:1860px;margin:0 auto;padding:20px 28px 30px;display:grid;gap:12px}
+.sira1{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:12px}
+.sira2{display:grid;grid-template-columns:1.3fr 1fr;gap:12px}
+.sira3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+@media(max-width:1150px){.sira1,.sira2,.sira3{grid-template-columns:1fr}}
+.kart{background:linear-gradient(168deg,var(--panel) 0%,var(--panel2) 100%);
+  border:1px solid var(--line);border-radius:var(--radius);padding:13px 15px;
+  box-shadow:0 6px 22px rgba(0,0,0,.32), inset 0 1px 0 rgba(233,245,251,.04)}
+.kbaslik{font-size:9.5px;color:var(--mist);text-transform:uppercase;letter-spacing:2px;
+  margin-bottom:9px;display:flex;align-items:center;gap:7px}
+.kbaslik .cizgi{flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
+.kbaslik .sag{font-size:11px;font-weight:800;letter-spacing:0}
+.expl{font-size:9.5px;color:var(--dim);line-height:1.5;margin-top:7px}
+.pos{color:var(--sonar)}.neg{color:var(--alarm)}.warn{color:var(--amber)}.neu{color:var(--mist)}
+
+/* ---------- HUKUM ---------- */
+#hukumKart{position:relative;border-left:4px solid var(--dim)}
+.kademe-roz{display:inline-block;font-size:11px;font-weight:800;letter-spacing:2px;
+  border-radius:7px;padding:4px 12px;margin-bottom:7px}
+.hukum-cumle{font-size:12px;color:var(--foam);line-height:1.6}
+.hukum-alt{font-size:11px;color:var(--mist);line-height:1.55;margin-top:5px}
+.mesafe-satir{margin-top:8px;font-size:11.5px}
+.mesafe-satir b{font-size:15px}
+
+/* ---------- AV / EMICI ---------- */
+.sart{display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:7px;
+  margin-bottom:3px;background:rgba(233,245,251,.02)}
+.sart .im{width:16px;text-align:center;font-weight:800;flex:none}
+.sart.dolu .im{color:var(--sonar)} .sart.bos .im{color:var(--dim)}
+.sart .ad{font-size:11px}
+.sart.bos .ad{color:var(--dim)}
+.emici-buyuk{font-size:24px;font-weight:800;letter-spacing:2px;margin:2px 0 9px}
+.piller{display:flex;gap:6px;flex-wrap:wrap}
+.pill{font-size:10px;border:1px solid var(--line);border-radius:20px;padding:3px 10px;color:var(--mist)}
+.pill b{color:var(--foam)}
+
+/* ---------- SEVIYE HARITASI ---------- */
+.elle-giris{display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap}
+.elle-giris input{background:var(--panel2);color:var(--foam);border:1px solid var(--line);
+  border-radius:7px;padding:6px 9px;font-family:var(--mono);font-size:11px}
+.elle-giris input#elleFiyat{width:130px}.elle-giris input#elleNot{flex:1;min-width:100px}
+.elle-giris button{background:rgba(47,245,200,.14);border:1px solid var(--sonar);color:var(--sonar);
+  border-radius:7px;padding:6px 12px;font-weight:700}
+.elle-durum{font-size:10px;min-height:14px;margin-bottom:4px}
+#seviyeHarita{max-height:330px;overflow-y:auto;padding-right:4px}
+/* v8: seviye guc rozeti — gri kutu; >=40 (grab esigi) hafif parlak */
+.sev-guc{font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;
+  background:rgba(140,150,170,.14);color:var(--mist);letter-spacing:.5px;flex:none}
+.sev-guc.aktif{background:rgba(140,150,170,.26);color:var(--foam)}
+#seviyeHarita::-webkit-scrollbar{width:6px}
+#seviyeHarita::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.sev-satir{display:flex;align-items:center;gap:8px;padding:4px 6px;
+  border-bottom:1px solid rgba(22,66,87,.3);font-size:11.5px}
+.sev-satir.oto{opacity:.72}
+.sev-satir.elle{background:rgba(255,84,112,.07);border-left:3px solid var(--alarm);opacity:1}
+.sev-satir.miknatis{background:rgba(47,245,200,.06);border-left:3px solid var(--sonar);opacity:1}
+.sev-fiyat{font-weight:700;min-width:72px}
+.sev-kaynak{font-size:8.5px;letter-spacing:.5px;padding:2px 6px;border-radius:5px;flex:none}
+.sev-not{font-size:9.5px;color:var(--mist);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sev-rozet{font-size:8.5px;font-weight:800;letter-spacing:1px;padding:2px 6px;border-radius:5px;flex:none}
+.sev-mesafe{font-size:9px;color:var(--dim);min-width:46px;text-align:right}
+.sev-sil{cursor:pointer;color:var(--dim);font-size:13px;padding:0 3px}
+.sev-sil:hover{color:var(--alarm)}
+.sev-simdi{border-top:1px dashed var(--whale);border-bottom:1px dashed var(--whale);
+  background:rgba(74,144,217,.10);font-size:10px;color:var(--whale);text-align:center;padding:3px;font-weight:700}
+
+/* ---------- AKTIF SINYAL ---------- */
+.sinyal-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.sk{background:rgba(233,245,251,.03);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.sk .l{font-size:8.5px;color:var(--dim);letter-spacing:1px;text-transform:uppercase}
+.sk .v{font-size:16px;font-weight:800}
+.swing-hedef-satir{margin-top:9px;font-size:12px;display:flex;justify-content:space-between;align-items:baseline}
+
+/* ---------- BAGLAM: CVD / LIK / SUREC ---------- */
+.cvd-ikili{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.mini-graf{height:64px;display:flex;align-items:flex-end;gap:1px;background:rgba(0,0,0,.18);
+  border-radius:6px;padding:3px;overflow:hidden}
+.mini-graf .b{flex:1;min-width:2px;border-radius:1px 1px 0 0}
+.mg-alt{display:flex;justify-content:space-between;font-size:10px;margin-top:4px}
+.lik-ust{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.lik-kutu{background:rgba(233,245,251,.03);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.lik-kutu .l{font-size:8.5px;letter-spacing:1px;text-transform:uppercase}
+.lik-kutu .v{font-size:14px;font-weight:800}
+.patlama-graf{height:46px;display:flex;align-items:flex-end;gap:4px;justify-content:center;padding:2px}
+.patlama-graf .b{width:26px;border-radius:2px 2px 0 0;position:relative}
+.surec-etiket{display:inline-block;font-size:12px;font-weight:800;letter-spacing:1.5px;
+  border-radius:7px;padding:4px 11px;margin-bottom:8px}
+.oi-trend{height:40px;display:flex;align-items:flex-end;gap:1px;background:rgba(0,0,0,.18);
+  border-radius:6px;padding:3px;margin:6px 0}
+.oi-trend .b{flex:1;min-width:2px;background:rgba(139,110,242,.6);border-radius:1px 1px 0 0}
+
+/* ---------- CEKMECE ---------- */
+#cekmece{border:1px solid var(--line);border-radius:var(--radius);
+  background:linear-gradient(168deg,var(--panel) 0%,var(--panel2) 100%)}
+#cekmeceTut{display:flex;align-items:center;justify-content:center;gap:10px;
+  padding:9px;cursor:pointer;user-select:none;color:var(--mist);font-size:10.5px;letter-spacing:1.5px}
+#cekmeceTut:hover{color:var(--sonar)}
+#cekmeceTut .tutamak{width:44px;height:4px;border-radius:3px;background:var(--line)}
+#cekmeceTut .chev{transition:transform .25s}
+#cekmece.acik #cekmeceTut .chev{transform:rotate(180deg)}
+#cekmeceIc{display:none;padding:4px 15px 15px}
+#cekmece.acik #cekmeceIc{display:block}
+.ozet4{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:11px}
+@media(max-width:900px){.ozet4{grid-template-columns:1fr 1fr}}
+.oz{background:rgba(233,245,251,.03);border:1px solid var(--line);border-radius:8px;padding:8px 11px}
+.oz .l{font-size:8.5px;color:var(--dim);letter-spacing:1px;text-transform:uppercase}
+.oz .v{font-size:15px;font-weight:800}
+.oz .s{font-size:9.5px;color:var(--mist)}
+.emici-graf{height:78px;display:flex;align-items:center;gap:1px;background:rgba(0,0,0,.18);
+  border-radius:6px;padding:3px}
+.emici-graf .b{flex:1;min-width:2px;border-radius:1px}
+.eksen{display:flex;justify-content:space-between;font-size:9px;color:var(--dim);margin-top:3px}
+.mg-eksen{display:flex;justify-content:space-between;font-size:8.5px;color:var(--dim);margin-top:2px;padding:0 2px}
+
+/* ---------- KAYIT DEFTERI (cekmece) ---------- */
+.defter-wrap{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:11px}
+.defter-wrap::-webkit-scrollbar{width:6px;height:6px}
+.defter-wrap::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+table.defter{width:100%;border-collapse:collapse;font-size:10.5px;font-variant-numeric:tabular-nums}
+.defter thead th{position:sticky;top:0;background:var(--deep);color:var(--dim);font-weight:400;
+  font-size:8.5px;letter-spacing:1px;text-transform:uppercase;padding:6px 9px;text-align:right;
+  border-bottom:1px solid var(--line);z-index:2}
+.defter thead th:first-child,.defter thead th.sol{text-align:left}
+.defter td{padding:4px 9px;text-align:right;border-bottom:1px solid rgba(22,66,87,.25);white-space:nowrap}
+.defter td:first-child,.defter td.sol{text-align:left}
+.defter tbody tr:nth-child(even){background:rgba(233,245,251,.025)}
+.defter tbody tr{border-left:1px solid transparent;transition:background .12s}
+.defter tbody tr:hover{background:rgba(47,245,200,.06);box-shadow:inset 2px 0 0 var(--sonar)}
+.dpill{display:inline-block;font-size:8.5px;font-weight:700;letter-spacing:.5px;
+  border-radius:10px;padding:2px 8px;border:1px solid var(--line);color:var(--mist)}
+.dpill.yesil{background:rgba(47,245,200,.14);border-color:rgba(47,245,200,.4);color:var(--sonar)}
+.dpill.kirmizi{background:rgba(255,84,112,.14);border-color:rgba(255,84,112,.4);color:var(--alarm)}
+.dpill.sari{background:rgba(255,194,75,.13);border-color:rgba(255,194,75,.4);color:var(--amber)}
+.dpill.turuncu{background:rgba(255,138,61,.13);border-color:rgba(255,138,61,.4);color:var(--veto)}
+.dpill.dolu-yesil{background:var(--sonar);border-color:var(--sonar);color:#04241c}
+.dpill.dolu-kirmizi{background:var(--alarm);border-color:var(--alarm);color:#2b0710}
+.sonuc-nokta{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px}
+
+/* ---------- son sinyaller mini listesi ---------- */
+.son-sinyal{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;
+  background:rgba(233,245,251,.025);margin-bottom:4px;font-size:11px}
+.son-sinyal .z{color:var(--dim);font-size:9.5px;min-width:76px}
+.son-sinyal .f{margin-left:auto;font-weight:700}
+
+/* ---------- SEKMELER + SAVAS MODU (v9.0) ---------- */
+.sekmeler{display:flex;gap:6px}
+.sekme-btn{background:var(--panel2);border:1px solid var(--line);color:var(--mist);
+  border-radius:9px;padding:6px 14px;font-family:var(--mono);font-size:11px;
+  letter-spacing:1.5px;cursor:pointer;font-weight:700}
+.sekme-btn.aktif{background:rgba(47,245,200,.12);border-color:var(--sonar);color:var(--sonar)}
+#savasKarti{display:flex;gap:18px;align-items:stretch;padding:11px 16px}
+.mom-blok{min-width:250px;display:flex;flex-direction:column;justify-content:center;gap:6px}
+.mom-etiket{font-size:16px;font-weight:800;letter-spacing:1.5px}
+.mom-sayi{font-size:12px;color:var(--mist)}
+.mom-bar{height:8px;background:rgba(233,245,251,.07);border-radius:5px;position:relative;overflow:hidden}
+.mom-bar .orta{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--dim)}
+.mom-bar .dolgu{position:absolute;top:0;bottom:0;border-radius:5px}
+.mom-dipnot{font-size:8.5px;color:var(--dim)}
+.feed-blok{flex:1;border-left:1px solid var(--line);padding-left:16px;min-width:0}
+.feed-baslik{font-size:9px;color:var(--mist);letter-spacing:1.5px;margin-bottom:5px}
+.feed-satir{display:flex;align-items:baseline;gap:8px;font-size:10.5px;padding:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.feed-satir .z{color:var(--dim);font-size:9px;min-width:38px}
+/* savas gorunumu */
+.savas-ust{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:12px}
+.cephe-alan{position:relative;height:360px;border:1px solid var(--line);border-radius:var(--radius);
+  overflow:hidden;background:
+    linear-gradient(90deg, rgba(255,84,112,.10), transparent 32%, transparent 68%, rgba(47,245,200,.10)),
+    linear-gradient(168deg,var(--panel) 0%,var(--panel2) 100%)}
+.cephe-cizgi{position:absolute;top:0;bottom:0;width:2px;background:var(--foam);
+  box-shadow:0 0 14px rgba(233,245,251,.8),0 0 34px rgba(74,144,217,.5);transition:left 1s ease}
+.cephe-fiyat{position:absolute;top:8px;transform:translateX(-50%);font-size:12px;font-weight:800;
+  background:rgba(2,13,22,.85);border:1px solid var(--whale);border-radius:7px;padding:3px 10px;
+  color:var(--foam);white-space:nowrap;transition:left 1s ease}
+.cephe-kenar{position:absolute;top:0;bottom:0;display:flex;flex-direction:column;justify-content:center;
+  padding:10px;font-size:11px;font-weight:800}
+.cephe-kenar.sol{left:0;color:var(--alarm);text-align:left}
+.cephe-kenar.sag{right:0;color:var(--sonar);text-align:right}
+.cephe-kenar .f{font-size:14px}
+.cephe-kenar .k{font-size:8.5px;font-weight:400;color:var(--dim);letter-spacing:1px}
+.ordu-nokta{position:absolute;width:5px;height:5px;border-radius:50%;opacity:.85}
+.ordu-nokta.kirmizi{background:var(--alarm);box-shadow:0 0 4px rgba(255,84,112,.7)}
+.ordu-nokta.yesil{background:var(--sonar);box-shadow:0 0 4px rgba(47,245,200,.7)}
+.savas-feed-buyuk{margin-top:12px}
+.savas-feed-buyuk .feed-satir{font-size:12px;padding:4px 0;border-bottom:1px solid rgba(22,66,87,.25)}
+
+/* v9.1: canli akis — yoklama flasi + damlayan feed */
+@keyframes yoklaFlash{0%{color:var(--sonar);text-shadow:0 0 10px rgba(47,245,200,.8)}100%{}}
+#durum.yokla{animation:yoklaFlash .55s ease}
+@keyframes feedGir{0%{opacity:0;transform:translateY(-7px)}100%{opacity:1;transform:none}}
+.feed-satir.feed-yeni{animation:feedGir .45s ease}
+
+.err{background:rgba(255,84,112,.1);border:1px solid var(--alarm);color:#ffd0d8;
+  padding:10px 14px;border-radius:10px;display:none;margin:10px 18px 0}
+
+/* ================== v8.4 MOBIL KATMANI (masaustu CSS ustune) ==================
+   Palet/degiskenler yukarida v4'ten AYNEN. Burasi yalniz yerlesim: tek sutun,
+   yapisken ust serit, alt sekme cubugu, akordeon kartlar, >=44px dokunma. */
+html,body{overflow-x:hidden}
+body{font-size:14px}
+#mobilAna{padding:10px 10px 84px;display:block;max-width:100%}
+#mobilAna .kart{margin-bottom:10px;font-size:14px}
+/* --- yapisken ust serit --- */
+#ustSerit{position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:8px;
+  padding:8px 10px;border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg, rgba(11,39,57,.97), rgba(6,25,42,.93));backdrop-filter:blur(6px)}
+#mobilFiyat{font-size:22px;font-weight:800;letter-spacing:.5px}
+#mobilKademe{font-size:13px;font-weight:800;letter-spacing:1.5px;border-radius:8px;
+  padding:8px 10px;min-height:24px}
+#ustSerit .upd{margin-left:auto;text-align:right;font-size:10.5px;line-height:1.35;max-width:40%}
+#ustSerit select,#ustSerit button{min-height:44px;min-width:52px;font-size:12px}
+#bayatBant{display:none;background:var(--alarm);color:#2b0710;font-weight:800;text-align:center;
+  padding:8px;font-size:13px;letter-spacing:1px}
+#bayatBant.gorunur{display:block}
+/* --- alt sekme cubugu --- */
+#altBar{position:fixed;left:0;right:0;bottom:0;z-index:60;display:flex;gap:1px;
+  background:var(--line);border-top:1px solid var(--line)}
+#altBar .sekme-btn{flex:1;min-height:56px;border-radius:0;border:none;background:var(--deep);
+  font-size:13px;letter-spacing:2px}
+#altBar .sekme-btn.aktif{background:rgba(47,245,200,.14);color:var(--sonar)}
+/* --- akordeon --- */
+.akordeon{background:linear-gradient(168deg,var(--panel) 0%,var(--panel2) 100%);
+  border:1px solid var(--line);border-radius:var(--radius);margin-bottom:10px;
+  box-shadow:0 6px 22px rgba(0,0,0,.32)}
+.ak-bas{display:flex;align-items:center;gap:8px;min-height:48px;padding:4px 14px;cursor:pointer;
+  user-select:none;font-size:11px;color:var(--mist);text-transform:uppercase;letter-spacing:2px}
+.ak-bas .chev{margin-left:auto;transition:transform .2s;color:var(--dim)}
+.akordeon.acik .ak-bas .chev{transform:rotate(180deg)}
+.ak-icerik{display:none;padding:0 13px 13px}
+.akordeon.acik .ak-icerik{display:block}
+/* --- kart icerigi mobil ayarlari --- */
+.hukum-cumle{font-size:14px}
+.hukum-alt{font-size:12.5px}
+.sart .ad{font-size:12.5px}
+.mesafe-satir b{font-size:20px}
+.lik-kutu .v{font-size:20px}
+.sk .v{font-size:18px}
+.sev-satir{font-size:13px;padding:6px}
+.sev-sil{min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.elle-giris input{min-height:44px;font-size:14px}
+.elle-giris button{min-height:44px;font-size:13px}
+.elle-giris input#elleFiyat{width:44%}
+#sevTumu{width:100%;min-height:44px;margin-top:6px;background:rgba(74,144,217,.10);
+  border:1px solid var(--whale);color:var(--whale);border-radius:8px;font-weight:700}
+#seviyeHarita{max-height:none;overflow:visible}
+.mini-graf{height:96px;max-height:120px}
+.cvd-ikili{grid-template-columns:1fr;gap:8px}
+/* savas gorunumu tek sutun */
+#savasKarti{flex-direction:column;gap:12px;padding:12px}
+.feed-blok{border-left:none;border-top:1px solid var(--line);padding-left:0;padding-top:10px}
+.cephe-alan{height:300px}
+.savas-ust{gap:10px}
+/* cekmece: akordeon zaten aciyor — kendi tutamagi gizli, icerik hep gorunur */
+#cekmeceTut{display:none}
+#cekmece{border:none;background:none}
+#cekmece #cekmeceIc{display:block;padding:0}
+.ozet4{grid-template-columns:1fr 1fr}
+.defter-wrap{max-height:300px}
+/* masaustu scriptinin yazdigi ama mobilde gosterilmeyen konteyner */
+#miniMetrik{display:none}
+/* kohort istatistik mini tablo (mevcut alanlarin dogrudan gosterimi) */
+.kh-tablo{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.kh-tablo th{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;
+  text-align:right;padding:5px 7px;border-bottom:1px solid var(--line)}
+.kh-tablo td{padding:5px 7px;text-align:right;border-bottom:1px solid rgba(22,66,87,.25)}
+.kh-tablo th:first-child,.kh-tablo td:first-child{text-align:left}
+
+</style>
+</head>
+<body>
+
+<div id="ustSerit">
+  <div>
+    <div id="mobilFiyat">—</div>
+    <div style="font-size:8.5px;color:var(--dim);letter-spacing:1.5px">🐋 SWING KOKPİTİ</div>
+  </div>
+  <span id="mobilKademe" style="background:rgba(109,151,173,.15);color:var(--mist)">—</span>
+  <div class="upd" id="durum"><span class="pulse"></span>bağlanıyor…</div>
+  <select id="ufuk" title="Bakış penceresi">
+    <option value="24s">24s</option><option value="48s">48s</option>
+    <option value="72s">72s</option><option value="7g">7g</option>
+  </select>
+  <button id="yenile">YENİLE</button>
+</div>
+<div id="bayatBant">⚠ VERİ BAYAT</div>
+<div class="err" id="err"></div>
+<div id="miniMetrik"></div>
+
+<div id="mobilAna">
+ <div id="gorunumKomuta">
+
+  <div class="akordeon" data-ak="hukum">
+    <div class="ak-bas">⚓ HÜKÜM + 💥 SİNYAL<span class="chev">▾</span></div>
+    <div class="ak-icerik">
+      <div id="hukumKart" style="border-left:4px solid var(--dim);padding-left:10px;margin-bottom:10px">
+        <div id="hukumIc">yükleniyor…</div>
+      </div>
+      <div id="sinyalKart"><div id="sinyalIc">yükleniyor…</div></div>
+      <div style="margin-top:10px">
+        <div class="kbaslik">🎯 AV KURULUMU<span class="cizgi"></span><span class="sag" id="avSayi"></span></div>
+        <div id="avIc">yükleniyor…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="akordeon" data-ak="tasfiye">
+    <div class="ak-bas">💥 TASFİYE YOĞUNLUĞU + BUGÜNÜN NORMALİ<span class="chev">▾</span></div>
+    <div class="ak-icerik"><div id="likIc">yükleniyor…</div></div>
+  </div>
+
+  <div class="akordeon" data-ak="seviye">
+    <div class="ak-bas">🗺️ SEVİYE HARİTASI + ELLE GİRİŞ<span class="chev">▾</span></div>
+    <div class="ak-icerik">
+      <div class="elle-giris">
+        <input id="elleFiyat" type="number" placeholder="fiyat (örn 63500)" step="1" inputmode="decimal">
+        <input id="elleNot" type="text" placeholder="not (ops.)" maxlength="24">
+        <button id="elleEkle">+ EKLE</button>
+      </div>
+      <div id="elleDurum" class="elle-durum"></div>
+      <div id="seviyeHarita">yükleniyor…</div>
+      <button id="sevTumu" style="display:none">tümünü göster</button>
+    </div>
+  </div>
+
+  <div class="akordeon" data-ak="emici">
+    <div class="ak-bas">🐋 EMİCİ<span class="chev">▾</span></div>
+    <div class="ak-icerik"><div id="emiciIc">yükleniyor…</div></div>
+  </div>
+
+  <div class="akordeon" data-ak="cvd">
+    <div class="ak-bas">🌊 CVD AKIŞI — spot vs vadeli<span class="chev">▾</span></div>
+    <div class="ak-icerik"><div id="cvdIc">yükleniyor…</div></div>
+  </div>
+
+  <div class="akordeon" data-ak="surec">
+    <div class="ak-bas">📡 SÜREÇ + OI<span class="chev">▾</span></div>
+    <div class="ak-icerik"><div id="surecIc">yükleniyor…</div></div>
+  </div>
+
+  <div class="akordeon" data-ak="kohort">
+    <div class="ak-bas">📊 KOHORT İSTATİSTİK<span class="chev">▾</span></div>
+    <div class="ak-icerik"><div id="kohortMobilIc" class="neu">henüz veri yok</div></div>
+  </div>
+
+  <div class="akordeon" data-ak="cekmece">
+    <div class="ak-bas">🗃️ SON 60 DK DETAYI<span class="chev">▾</span></div>
+    <div class="ak-icerik">
+      <div id="cekmece" class="acik">
+        <div id="cekmeceTut"><div class="tutamak"></div><span class="chev">▾</span></div>
+        <div id="cekmeceIc"></div>
+      </div>
+    </div>
+  </div>
+
+ </div><!-- /gorunumKomuta -->
+
+ <div id="gorunumSavas" style="display:none">
+  <section class="kart" id="savasKarti"></section>
+  <div class="savas-ust kart" id="savasUst"></div>
+  <div class="cephe-alan" id="cepheAlan"></div>
+  <div class="kart savas-feed-buyuk">
+    <div class="kbaslik">⚔️ CEPHE RAPORU — savaş akışı<span class="cizgi"></span></div>
+    <div id="savasFeedBuyuk"></div>
+  </div>
+ </div>
+
+ <div style="text-align:center;font-size:9px;color:var(--dim);letter-spacing:1.5px;margin:6px 0">
+   FAZ 1 — ÖLÇÜM MODU · panel motorun kendi kayıtlarını okur · yatırım tavsiyesi değildir
+ </div>
+</div><!-- /mobilAna -->
+
+<div id="altBar">
+  <button class="sekme-btn aktif" id="sekmeK" onclick="sekmeSec('komuta')">KOMUTA</button>
+  <button class="sekme-btn" id="sekmeS" onclick="sekmeSec('savas')">⚔️ SAVAŞ</button>
+</div>
+
+<script>
+const SUPABASE_URL = "https://aojhyiiiwllgvgglzokz.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFvamh5aWlpd2xsZ3ZnZ2x6b2t6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0NDI0NzYsImV4cCI6MjA5OTAxODQ3Nn0.bMbWJr8uIwbuumLIWMphgs5gWUb_nlrGUDRK8_TM5N8";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+/* ---------- yardimcilar (v4'ten aynen) ---------- */
+const $=id=>document.getElementById(id);
+const big=n=>{n=+n||0;const a=Math.abs(n);
+  if(a>=1e9)return (n/1e9).toFixed(2)+'B';
+  if(a>=1e6)return (n/1e6).toFixed(2)+'M';
+  if(a>=1e3)return (n/1e3).toFixed(1)+'K';
+  return n.toFixed(0)};
+const bigS=n=>(n>0?'+':'')+big(n);
+const usd=n=>'$'+big(n);
+/* v8.7 GUVENLIK: kullanici metni innerHTML'e escape'siz gitmez. */
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const tl=n=>(+n||0).toLocaleString('tr-TR',{maximumFractionDigits:0});
+const UFUK_LIM={'24s':1440,'48s':2880,'72s':4320,'7g':10080};
+const TOPLAMA=['DIP_TOPLAMA','DIP_TOPLAMA_SPOT','DIP_TOPLAMA_TEYITSIZ','DIP_TOPLAMA_PERP','TAZE_ALIM'];
+const DAGITIM=['TEPE_DAGITIM','TEPE_DAGITIM_SPOT','TEPE_DAGITIM_TEYITSIZ','TEPE_DAGITIM_PERP',
+               'SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS','TAZE_SATIS'];
+const KAPITULASYON=['LONG_TASFIYE','LONG_KAPITULASYON'];
+const KAYNAK_RENK={ELLE:'var(--alarm)',VP:'var(--violet)',HL:'var(--amber)',
+  LIQ:'var(--sonar)',SWING_PIVOT:'var(--whale)',ROUND:'var(--dim)'};
+
+/* ---------- ANA YUKLEME (fetch kismi v4'ten AYNEN; render cagrilari yeni) ---------- */
+/* v9.1 CANLI AKIS: 10 sn'de bir YOKLA; yeni satir yoksa HIC render etme —
+   yalniz saat+nabiz. Yeni satir gelince (max 10 sn gecikme) tam render.
+   Dakikalik kaynak dokunulmadan kalir; ekstra maliyet ~sifir (ayni sorgu). */
+let sonId=null, sonKayitZamani=null, sonKayitSayisi=0;
+function saatGuncelle(){
+  const d=$('durum');
+  const yas=sonKayitZamani?(Date.now()-new Date(sonKayitZamani).getTime())/1000:0;
+  d.innerHTML = yas>180
+    ? `<span style="color:var(--amber)">⚠ VERİ BAYAT — son kayıt ${(yas/60).toFixed(0)} dk önce</span>`
+    : `<span class="pulse"></span>bağlı · ${sonKayitSayisi} kayıt · ${new Date().toLocaleTimeString('tr-TR')}`;
+  d.classList.remove('yokla'); void d.offsetWidth; d.classList.add('yokla');
+}
+async function yukle(force){
+  try{
+    const lim=UFUK_LIM[$('ufuk').value]||1440;
+    const {data,error}=await sb.from('balina_avcisi_data').select('*')
+      .order('kayit_zamani',{ascending:false}).limit(lim);
+    if(error) throw error;
+    if(!data||!data.length){ hata('Veri yok — motor çalışıyor mu?'); return; }
+    const L=data[0];
+    /* yeni satir yoksa: sadece saat/nabiz (titreme yok, ayarlar sorgusu da atlanir) */
+    const kimlik=L.id??L.kayit_zamani;
+    if(!force && kimlik===sonId){
+      sonKayitZamani=L.kayit_zamani; saatGuncelle(); return;
+    }
+    sonId=kimlik; sonKayitZamani=L.kayit_zamani; sonKayitSayisi=data.length;
+    const rows=[...data].reverse();
+
+    let surec=null,veRed=null,geriTest=null,motorSbt=null,canli=null;
+    let swingSev=null,swingElle=null,swingKarar=null,swingIst=null,swingKohort=null,grabSinyal=null;
+    try{
+      const {data:ay}=await sb.from('balina_ayarlar').select('*')
+        .in('anahtar',['surec_durumu','ve_kapisi_redleri','geri_test_istatistik',
+                       'motor_sabitleri','canli_emilim',
+                       'swing_seviyeler_oto','swing_seviyeler_elle','swing_karar','swing_kohort_istatistik','swing_kohortu',
+                       'grab_aktif_sinyal']);
+      (ay||[]).forEach(k=>{
+        const v=typeof k.deger==='string'?JSON.parse(k.deger):k.deger;
+        if(k.anahtar==='surec_durumu')surec=v;
+        else if(k.anahtar==='ve_kapisi_redleri')veRed=v;
+        else if(k.anahtar==='geri_test_istatistik')geriTest=v;
+        else if(k.anahtar==='motor_sabitleri')motorSbt=v;
+        else if(k.anahtar==='canli_emilim')canli=v;
+        else if(k.anahtar==='swing_seviyeler_oto')swingSev=v;
+        else if(k.anahtar==='swing_seviyeler_elle')swingElle=v;
+        else if(k.anahtar==='swing_karar')swingKarar=v;
+        else if(k.anahtar==='swing_kohort_istatistik')swingIst=v;
+        else if(k.anahtar==='swing_kohortu')swingKohort=v;
+        else if(k.anahtar==='grab_aktif_sinyal')grabSinyal=v;
+      });
+    }catch(e){}
+
+    /* canli emilim bayatsa isaretle (sifir tuzagi) */
+    if(canli&&canli.guncelleme){
+      const g=canli.guncelleme.endsWith('Z')?canli.guncelleme:canli.guncelleme+'Z';
+      const yas=(Date.now()-new Date(g).getTime())/1000;
+      canli={...canli,_bayat:yas>180,_yas:yas};
+    }
+
+    /* ---- YENI DUZEN render'lari ---- */
+    ustSerit(L,rows,surec);
+    hukumKart(L,swingKarar);
+    avKart(swingKarar);
+    emiciKart(canli);
+    seviyeHaritasi(swingSev,swingElle,swingKarar,+L.anlik_fiyat||0);
+    sinyalKart(swingKarar,swingIst,swingKohort,rows,grabSinyal);
+    cvdPanel(rows);
+    likPanel(rows,motorSbt,+L.anlik_fiyat||0);
+    surecOi(surec,rows,L);
+    cekmeceIc(rows,L);
+    /* v9.0: momentum + savas akisi (komuta karti + savas modu) */
+    const mom=hesaplaMomentum(rows,surec,motorSbt);
+    const feed=savasOlaylari(rows);
+    savasKarti(mom);
+    cephe(mom,rows,L,swingSev);
+    feedGuncelle(feed);          /* v9.1: damla damla akis (iki konteynere) */
+
+    $('err').style.display='none';
+    saatGuncelle();   /* v9.1: bayatlik kontrolu dahil tek yerden */
+  }catch(e){ hata('Bağlantı hatası: '+(e.message||e)); }
+}
+function hata(m){ $('err').textContent=m; $('err').style.display='block';
+  $('durum').innerHTML='bağlantı yok'; }
+
+/* ---------- UST SERIT: 4 mini metrik ---------- */
+function ustSerit(L,rows,surec){
+  const f=+L.anlik_fiyat||0;
+  const geri=rows.length>30?rows[rows.length-31]:rows[0];   // ~30 dk once
+  const ok=(simdiV,eskiV,tersRenk)=>{ // ok yonu + renk (funding'de yukari=riskli kirmizi)
+    if(eskiV==null||simdiV==null||eskiV===simdiV) return ['·','var(--mist)'];
+    const yukari=simdiV>eskiV;
+    const renk = tersRenk ? (yukari?'var(--alarm)':'var(--sonar)')
+                          : (yukari?'var(--sonar)':'var(--alarm)');
+    return [yukari?'↑':'↓', renk];
+  };
+  const [fOk,fRenk]=ok(+L.funding_rate, geri?+geri.funding_rate:null, true);
+  const [oOk,oRenk]=ok(+L.open_interest, geri?+geri.open_interest:null, false);
+  const rejim=surec&&surec.rejim||'NOTR';
+  const sTaraf = TOPLAMA.includes(rejim)?['TOPLAMA','var(--sonar)']
+    : DAGITIM.includes(rejim)?['DAĞITIM','var(--alarm)']
+    : KAPITULASYON.includes(rejim)?['KAPİTÜLASYON','var(--amber)']
+    : ['SIKIŞMA','var(--mist)'];
+  $('miniMetrik').innerHTML=`
+    <div class="mm"><div class="l">BTC</div>
+      <div class="v">$${tl(f)}</div></div>
+    <div class="mm"><div class="l">Funding</div>
+      <div class="v">${((+L.funding_rate||0)*100).toFixed(4)}%
+        <span class="ok-yon" style="color:${fRenk}">${fOk}</span></div></div>
+    <div class="mm"><div class="l">Açık Pozisyon</div>
+      <div class="v">${usd(+L.open_interest||0)}
+        <span class="ok-yon" style="color:${oRenk}">${oOk}</span></div></div>
+    <div class="mm"><div class="l">Süreç</div>
+      <div class="v" style="color:${sTaraf[1]};font-size:13px">${sTaraf[0]}</div></div>`;
+}
+
+/* ---------- SIRA 1a: HUKUM ---------- */
+function hukumKart(L,k){
+  const kart=$('hukumKart');
+  if(!k||!k.kademe){ $('hukumIc').innerHTML='<span class="neu">motor henüz swing kararı yazmadı</span>';
+    kart.style.borderLeftColor='var(--dim)'; return; }
+  const f=+L.anlik_fiyat||0;
+  const kd=k.kademe, yon=k.yon;
+  const R = kd==='SINYAL'?(yon==='SHORT'?'var(--alarm)':'var(--sonar)')
+    : kd==='HAZIRLAN'?'var(--veto)': kd==='IZLE'?'var(--amber)':'var(--dim)';
+  kart.style.borderLeftColor=R;
+  const rozBg = kd==='SINYAL'?(yon==='SHORT'?'rgba(255,84,112,.18)':'rgba(47,245,200,.18)')
+    : kd==='HAZIRLAN'?'rgba(255,138,61,.16)': kd==='IZLE'?'rgba(255,194,75,.14)':'rgba(109,151,173,.12)';
+  const ys=k.yakin_seviye;
+  const uzak = (ys&&ys.fiyat&&f>0)?Math.abs(ys.fiyat-f):null;
+  const cumleler={
+    SINYAL:`4/4 koşul sağlandı — motor ${yon||''} kurulumu onayladı. Hedef/stop yapıdan üretildi.`,
+    HAZIRLAN:'Kurulum oluşuyor: seviye yakın + en az bir sensör (grab/funding/emici) tetikte. Henüz işlem sinyali DEĞİL.',
+    IZLE:'Fiyat bir seviyeye yaklaştı; sensörler sakin. İzlemedeyiz.',
+    YOK:'Yakın seviye yok — piyasa haritanın ortasında. Sermaye korunuyor.'};
+  const seb=(k.sebepler&&k.sebepler.length)?esc(k.sebepler.slice(0,2).join(' · ')):'';
+  $('hukumIc').innerHTML=`
+    <span class="kademe-roz" style="background:${rozBg};color:${R}">${kd==='SINYAL'?('SİNYAL — '+(yon||'')):kd==='HAZIRLAN'?'HAZIRLAN':kd==='IZLE'?'İZLE':'İZLEME YOK'}</span>
+    <div class="hukum-cumle">${cumleler[kd]||''}</div>
+    ${seb?`<div class="hukum-alt">${seb}</div>`:''}
+    ${uzak!=null?`<div class="mesafe-satir neu">en yakın kutu: <b style="color:${R}">$${tl(ys.fiyat)}</b>
+      <span style="color:var(--dim)">(${ys.kaynak||''})</span> — fiyata <b>$${tl(uzak)}</b> uzakta
+      ${k.mesafe_vol!=null?`<span style="color:var(--dim)">· ${k.mesafe_vol}×vol</span>`:''}</div>`:''}`;
+}
+
+/* ---------- SIRA 1b: AV KURULUMU (motorun kendi 4 sarti) ---------- */
+function avKart(k){
+  const s=(k&&k.sartlar)||{};
+  const liste=[['seviye','Seviyeye yakın'],['grab_tamam','Grab tamam (süpürme onaylı)'],
+               ['tasfiye','Tasfiye teyidi (OI çöktü)'],['emici_yon','Emici yön verdi']];
+  const n=liste.filter(([kk])=>s[kk]).length;
+  $('avSayi').textContent = (k&&k.kademe)?`${n}/4`:'—';
+  $('avSayi').style.color = n>=4?'var(--sonar)':n>=2?'var(--amber)':'var(--mist)';
+  $('avIc').innerHTML = (k&&k.kademe)
+    ? liste.map(([kk,ad])=>`<div class="sart ${s[kk]?'dolu':'bos'}">
+        <span class="im">${s[kk]?'✓':'—'}</span><span class="ad">${ad}</span></div>`).join('')
+      +`<div class="expl">Motorun kendi 4/4 kapısı (swing_karar.sartlar) — panel hesabı değil.</div>`
+    : '<span class="neu">veri yok</span>';
+}
+
+/* ---------- SIRA 1c: EMICI ---------- */
+function emiciKart(c){
+  if(!c){ $('emiciIc').innerHTML='<span class="neu">canlı emilim yok</span>'; return; }
+  if(c._bayat){ $('emiciIc').innerHTML=`<span class="warn">BAYAT — son yazım ${(c._yas/60).toFixed(0)} dk önce</span>`; return; }
+  const b=c.emilim_borsasi;
+  const [etiket,renk] = b==null?['ÖLÇÜLEMEDİ','var(--mist)']
+    : b==='SPOT'?['SPOT','var(--sonar)'] : b==='HER_IKISI'?['HER İKİSİ','var(--sonar)']
+    : b==='PERP'?['PERP','var(--amber)'] : b==='YOK'?['YOK','var(--alarm)']
+    : [String(b).replace(/_/g,' '),'var(--mist)'];
+  const eg=c.spot_egilim;
+  const egTxt = eg==null?'—':(eg>0?'+':'')+eg.toFixed(2);
+  $('emiciIc').innerHTML=`
+    <div class="emici-buyuk" style="color:${renk}">${etiket}</div>
+    <div class="piller">
+      <span class="pill">spot <b>${c.spot_bid_agir_sayi??0}/${c.spot_borsa_sayisi??0}</b> bid</span>
+      <span class="pill">perp <b>${c.perp_bid_agir_sayi??0}/${c.perp_borsa_sayisi??0}</b> bid</span>
+      <span class="pill">eğilim <b class="${eg>0?'pos':eg<0?'neg':'neu'}">${egTxt}</b></span>
+    </div>
+    <div class="expl">${b==='SPOT'||b==='HER_IKISI'?'Gerçek envanter alımı — toplama teyidi.'
+      : b==='PERP'?'Yalnız kaldıraçlı destek — kırılgan.'
+      : b==='YOK'?'İki defter de satış-ağır — emici yok.'
+      : 'Akış eşiğin altında — uydurmuyoruz.'}
+      Tükenme: satıcı ${c.sonme_orani==null?'—':(c.satici_tukenmesi?'✓':'✗')} ·
+      alıcı ${c.alici_sonme_orani==null?'—':(c.alici_tukenmesi?'✓':'✗')}</div>`;
+}
+
+/* ---------- SIRA 2a: SEVIYE HARITASI (elle mantigi AYNEN) ---------- */
+function seviyeHaritasi(oto,elle,karar,anlik){
+  const list=((oto&&oto.seviyeler)||[]).filter(s=>!s.gizli).sort((a,b)=>b.fiyat-a.fiyat);
+  const vol=(oto&&oto.vol_pct)||0;
+  const yakinFiyat=(karar&&karar.yakin_seviye&&karar.yakin_seviye.fiyat);
+  /* miknatis: en yogun LIQ kumesi (motorla ayni: hacim max) */
+  const liqler=((oto&&oto.seviyeler)||[]).filter(s=>s.kaynak==='LIQ');
+  const mag=liqler.length?liqler.reduce((a,b)=>((a.hacim||0)>=(b.hacim||0)?a:b)):null;
+  let html=''; let simdiBasildi=false;
+  if(!list.length){ html='<span class="neu">motor henüz seviye üretmedi (~10dk)</span>'; }
+  else{
+    list.forEach(s=>{
+      if(!simdiBasildi && anlik>0 && s.fiyat<anlik){
+        html+=`<div class="sev-simdi">▸ ŞU AN $${tl(anlik)} ◂</div>`; simdiBasildi=true;
+      }
+      const renk=KAYNAK_RENK[s.kaynak]||'var(--mist)';
+      const mesafe=(anlik>0&&vol>0)?Math.abs(s.fiyat-anlik)/anlik*100/vol:null;
+      const izlenen=yakinFiyat&&Math.abs(s.fiyat-yakinFiyat)<0.5&&karar&&karar.kademe&&karar.kademe!=='YOK';
+      let rk=izlenen?karar.kademe:((mesafe!=null&&mesafe<=2.0)?'IZLE':'');
+      const rBg=rk==='SINYAL'?'rgba(47,245,200,.2)':rk==='HAZIRLAN'?'rgba(255,138,61,.2)':rk==='IZLE'?'rgba(255,194,75,.15)':'';
+      const rFg=rk==='SINYAL'?'var(--sonar)':rk==='HAZIRLAN'?'var(--veto)':rk==='IZLE'?'var(--amber)':'';
+      const rozet=rk?`<span class="sev-rozet" style="background:${rBg};color:${rFg}">${rk}</span>`:'';
+      const miknatis = mag && !mag.gizli && Math.abs(s.fiyat-mag.fiyat)<0.5;
+      const sinif = s.kaynak==='ELLE'?'elle':(miknatis?'miknatis':'oto');
+      const sil = s.kaynak==='ELLE'?`<span class="sev-sil" data-fiyat="${s.fiyat}" title="sil">✕</span>`:'';
+      /* v8: guc rozeti — grab motoru bu puanla calisir (>=40 aktif) */
+      const gucAktif=(s.guc!=null&&s.guc>=40);
+      const gucKutu=s.guc!=null
+        ?`<span class="sev-guc${gucAktif?' aktif':''}" title="${esc((s.kaynaklar||[s.kaynak]).join('+'))}">${s.guc}</span>`
+        :'';
+      /* v8 G3: EQ rozeti — esit tepe/dip kumesi (en yogun stop bolgesi) */
+      const eqRozet=(s.kaynaklar||[]).includes('EQ')
+        ?'<span class="sev-rozet" style="background:rgba(255,194,75,.18);color:var(--amber)">EQ</span>':'';
+      html+=`<div class="sev-satir ${sinif}">
+        <span class="sev-fiyat">$${tl(s.fiyat)}</span>
+        <span class="sev-kaynak" style="background:${renk}22;color:${renk}">${s.kaynak}</span>
+        ${gucKutu}
+        ${eqRozet}
+        ${miknatis?'<span class="sev-rozet" style="background:rgba(47,245,200,.16);color:var(--sonar)">🧲 MIKNATIS</span>':''}
+        <span class="sev-not">${esc(s.not||'')}</span>
+        ${rozet}
+        <span class="sev-mesafe">${mesafe==null?'':mesafe.toFixed(1)+'×v'}</span>
+        ${sil}</div>`;
+    });
+    if(!simdiBasildi && anlik>0) html+=`<div class="sev-simdi">▸ ŞU AN $${tl(anlik)} ◂</div>`;
+  }
+  /* bekleyen elle seviyeler (motor ~10dk'da isler) — v4'ten aynen */
+  const elleList=(elle&&elle.seviyeler)||[];
+  const otoElle=list.filter(s=>s.kaynak==='ELLE').map(s=>s.fiyat);
+  const bekleyen=elleList.filter(e=>!otoElle.some(f=>Math.abs(f-(e.fiyat||0))<0.5));
+  if(bekleyen.length){
+    html+=`<div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin-top:7px;padding-top:5px;border-top:1px solid var(--line)">SENİN — MOTOR İŞLİYOR (~10dk)</div>`;
+    bekleyen.sort((a,b)=>(b.fiyat||0)-(a.fiyat||0)).forEach(e=>{
+      html+=`<div class="sev-satir elle" style="opacity:.7">
+        <span class="sev-fiyat">$${tl(e.fiyat)}</span>
+        <span class="sev-kaynak" style="background:rgba(255,84,112,.13);color:var(--alarm)">ELLE</span>
+        <span class="sev-not">${esc(e.not||'elle')} · <span class="warn">beklemede</span></span>
+        <span class="sev-sil" data-fiyat="${e.fiyat}" title="sil">✕</span></div>`;
+    });
+  }
+  $('seviyeHarita').innerHTML=html;
+  document.querySelectorAll('#seviyeHarita .sev-sil').forEach(el=>
+    el.addEventListener('click',()=>elleSil(parseFloat(el.dataset.fiyat))));
+}
+
+/* ---------- SIRA 2b: AKTIF SINYAL ---------- */
+/* olayin sonucu: pencere icindeki fiyat yoluyla hedef/stop ilk-temas (backtest kurali) */
+function sinyalSonuc(o,rows){
+  if(!o||!o.zaman||!o.stop||!o.swing_hedef||!o.yon) return 'açık';
+  const ep=new Date(o.zaman.endsWith('Z')?o.zaman:o.zaman+'Z').getTime();
+  const sonra=rows.filter(r=>new Date(r.kayit_zamani).getTime()>ep);
+  if(!sonra.length) return 'açık';
+  for(const r of sonra){
+    const f=+r.anlik_fiyat||0; if(!f) continue;
+    if(o.yon==='LONG'){ if(f<=o.stop) return 'stop'; if(f>=o.swing_hedef) return 'hedef'; }
+    else{ if(f>=o.stop) return 'stop'; if(f<=o.swing_hedef) return 'hedef'; }
+  }
+  return 'açık';
+}
+function sinyalKart(k,ist,kohort,rows,grab){
+  const kart=$('sinyalKart');
+  const hs=k&&k.hedef_stop;
+  /* v8: sinyal_sayisi = gercek sinyaller (GRAB_ADAY kayitlari haric); eski alanla geri uyumlu */
+  const kohortN=(ist&&(ist.sinyal_sayisi??ist.olay_sayisi))||0;
+  /* v8: GRAB sinyali (15dk mum motoru) oncelikli — taze (<4s) ve cozulmemisse goster */
+  if(grab&&grab.zaman&&grab.tip){
+    const gz=new Date(grab.zaman.endsWith('Z')?grab.zaman:grab.zaman+'Z').getTime();
+    const taze=(Date.now()-gz)<4*3600*1000;
+    const snc=sinyalSonuc({zaman:grab.zaman,stop:grab.stop,swing_hedef:grab.swing_hedef,yon:grab.yon},rows);
+    if(taze&&snc==='açık'){
+      const R=grab.yon==='SHORT'?'var(--alarm)':'var(--sonar)';
+      const tipAd=grab.tip==='GRAB_DONUS'?'DÖNÜŞ (tuzak avı)':'DEVAM (gerçek kırılım)';
+      kart.style.boxShadow=`0 0 0 1px ${grab.yon==='SHORT'?'rgba(255,84,112,.4)':'rgba(47,245,200,.4)'},0 0 30px rgba(0,0,0,.3)`;
+      const rrRenk=grab.rr_kisa>=3?'var(--sonar)':grab.rr_kisa>=2?'var(--amber)':'var(--alarm)';
+      $('sinyalIc').innerHTML=`
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <b style="color:${R};font-size:15px">${grab.yon}</b>
+          <span class="sev-rozet" style="background:rgba(140,150,170,.2);color:var(--foam)">⚡ ${tipAd}</span>
+          <span class="sev-guc aktif" title="seviye gücü">${grab.guc??'—'}</span>
+        </div>
+        <div class="sinyal-grid">
+          <div class="sk"><div class="l">Süpürülen Seviye</div><div class="v">$${tl(grab.seviye)}</div></div>
+          <div class="sk"><div class="l">Fitil Ucu</div><div class="v">$${tl(grab.fitil_ucu)}</div></div>
+          <div class="sk"><div class="l">Giriş (15dk kapanış)</div><div class="v">$${tl(grab.giris)}</div></div>
+          <div class="sk"><div class="l">Stop (fitil+tampon)</div><div class="v neg">$${tl(grab.stop)}</div></div>
+          <div class="sk"><div class="l">Kısa Hedef</div><div class="v">$${tl(grab.kisa_hedef)}</div></div>
+          <div class="sk"><div class="l">R/R (kısa · swing)</div><div class="v" style="color:${rrRenk}">${(grab.rr_kisa||0).toFixed(1)} · ${(grab.rr_swing||0).toFixed(1)}</div></div>
+        </div>
+        <div class="swing-hedef-satir">
+          <span class="neu">🧲 swing hedef (karşı havuz)</span>
+          <b class="pos" style="font-size:16px">$${tl(grab.swing_hedef)}</b>
+        </div>
+        <div class="expl">teyit: OI ${grab.teyit&&grab.teyit.oi===true?'✓':grab.teyit&&grab.teyit.oi===false?'✗':'—'} ·
+          delta ${grab.teyit&&grab.teyit.delta===true?'✓':grab.teyit&&grab.teyit.delta===false?'✗':'—'} ·
+          emici ${grab.teyit&&grab.teyit.emici===true?'✓':grab.teyit&&grab.teyit.emici===false?'✗':'—'}
+          · kağıt üstü — gerçek emir yok · R/R&lt;2 sinyal vermez</div>`;
+      return;
+    }
+  }
+  if(!k||k.kademe!=='SINYAL'||!hs||!hs.gecerli){
+    kart.style.boxShadow='';
+    /* v8: GRAB_ADAY kayitlari sinyal degildir — listede yalniz gercek sinyaller */
+    const olaylar=((kohort&&kohort.olaylar)||[]).filter(o=>o.yon&&o.stop).slice(-5).reverse();
+    let liste='';
+    if(olaylar.length){
+      liste='<div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin:10px 0 5px">SON SWING SİNYALLERİ</div>'
+        + olaylar.map(o=>{
+          const R=o.yon==='SHORT'?'var(--alarm)':'var(--sonar)';
+          const z=o.zaman?new Date(o.zaman.endsWith('Z')?o.zaman:o.zaman+'Z')
+            .toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
+          const snc=sinyalSonuc(o,rows);
+          const sncRenk=snc==='hedef'?'var(--sonar)':snc==='stop'?'var(--alarm)':'var(--amber)';
+          return `<div class="son-sinyal">
+            <span class="z">${z}</span>
+            <b style="color:${R}">${o.yon||'—'}</b>
+            <span class="f">$${tl(o.giris||0)}</span>
+            <span style="font-size:9.5px;color:${sncRenk}"><span class="sonuc-nokta" style="background:${sncRenk}"></span>${snc}</span>
+          </div>`;}).join('');
+    }
+    $('sinyalIc').innerHTML=`<div class="neu" style="font-size:12px;line-height:1.6">
+      Aktif sinyal yok — motor 4/4 kurulumu bekliyor.<br>
+      <span style="font-size:10.5px;color:var(--dim)">şimdiye kadar kaydedilen SİNYAL: <b>${kohortN}</b></span></div>${liste}`;
+    return;
+  }
+  const R=k.yon==='SHORT'?'var(--alarm)':'var(--sonar)';
+  kart.style.boxShadow=`0 0 0 1px ${k.yon==='SHORT'?'rgba(255,84,112,.4)':'rgba(47,245,200,.4)'},0 0 30px rgba(0,0,0,.3)`;
+  const rrRenk=hs.rr_swing>=3?'var(--sonar)':hs.rr_swing>=1.5?'var(--amber)':'var(--alarm)';
+  $('sinyalIc').innerHTML=`
+    <div class="sinyal-grid">
+      <div class="sk"><div class="l">Yön</div><div class="v" style="color:${R}">${k.yon}</div></div>
+      <div class="sk"><div class="l">Stop (yapısal)</div><div class="v neg">$${tl(hs.stop)}</div></div>
+      <div class="sk"><div class="l">Kısa Hedef</div><div class="v">$${tl(hs.kisa_hedef)}</div></div>
+      <div class="sk"><div class="l">R / R</div><div class="v" style="color:${rrRenk}">${(hs.rr_swing||0).toFixed(1)}R</div></div>
+    </div>
+    <div class="swing-hedef-satir">
+      <span class="neu">🧲 swing hedef (mıknatıs)</span>
+      <b class="pos" style="font-size:16px">$${tl(hs.swing_hedef)}</b>
+    </div>
+    <div class="expl">skor ${k.kademe_skoru||0}/100 · kohort n=${kohortN} · stop hep yapıdan, R/R&lt;1.5 sinyal vermez</div>`;
+}
+
+/* ---------- SIRA 3a: CVD — spot & vadeli ayri mini bar ---------- */
+function cvdPanel(rows){
+  const N=60;
+  const dilim=rows.slice(-N-1);
+  const del=(alan)=>{const out=[];for(let i=1;i<dilim.length;i++)
+    out.push((+dilim[i][alan]||0)-(+dilim[i-1][alan]||0));return out;};
+  const dSpot=del('spot_cvd'), dVad=del('vadeli_cvd');
+  const zamanlar=dilim.slice(1).map(r=>new Date(r.kayit_zamani));
+  /* saat ekseni: ~10 dk'da bir HH:MM (6-7 etiket) */
+  const etiketler=[];
+  for(let i=0;i<zamanlar.length;i+=10)
+    etiketler.push(zamanlar[i]?zamanlar[i].toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'}):'');
+  const eksen=`<div class="mg-eksen">${etiketler.map(e=>`<span>${e}</span>`).join('')}</div>`;
+  const graf=(dizi,tip)=>{
+    const mx=Math.max(...dizi.map(Math.abs),1);
+    return `<div class="mini-graf">`+dizi.map(v=>{
+      const h=Math.max(6,Math.abs(v)/mx*100);
+      const renk = tip==='spot' ? (v>=0?'rgba(47,245,200,.85)':'rgba(255,84,112,.85)')
+                                : 'rgba(74,144,217,.8)';
+      return `<div class="b" style="height:${h}%;background:${renk}"></div>`;
+    }).join('')+`</div>`;
+  };
+  const son=(dizi)=>{const s=dizi[dizi.length-1]||0;
+    return `<span class="${s>=0?'pos':'neg'}">${bigS(s)} ${s>=0?'▲':'▼'}</span>`;};
+  $('cvdIc').innerHTML=`
+    <div class="cvd-ikili">
+      <div>
+        <div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin-bottom:3px;display:flex;justify-content:space-between">
+          <span>SPOT (gerçek envanter)</span>${son(dSpot)}</div>
+        ${graf(dSpot,'spot')}
+        ${eksen}
+      </div>
+      <div>
+        <div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin-bottom:3px;display:flex;justify-content:space-between">
+          <span>VADELİ (kaldıraçlı)</span>${son(dVad)}</div>
+        ${graf(dVad,'vadeli')}
+        ${eksen}
+      </div>
+    </div>
+    <div class="expl">son 60 dk · dakikalık CVD değişimi · spot yeşil/kırmızı · vadeli mavi · sağ üst = şimdiki dk</div>`;
+}
+
+/* ---------- SIRA 3b: LIKIDASYON — dolar bazli ----------
+   NOT: agg_long/short_liq Coinalyze'dan convert_to_usd=true ile gelir — ZATEN
+   USD'dir (motor loglari da $ formatlar). coin×fiyat carpimi YANLIS olurdu
+   (60.000x sisirirdi). 5dk KAYAN pencere dakikada orneklenir -> toplamlar /5. */
+function likPanel(rows,ms,fiyat){
+  const saat=rows.slice(-60);
+  const medL=(ms&&ms.esik_lik_long_medyan)||0, medS=(ms&&ms.esik_lik_short_medyan)||0;
+  const TDC=(ms&&ms.TASFIYE_DIKEN_CARPANI)||2.5;
+  const esikL=medL>0?medL*TDC:Infinity, esikS=medS>0?medS*TDC:Infinity;
+  let topL=0,topS=0,patL=0,patS=0,oncekiL=false,oncekiS=false;
+  const patlamalar=[];
+  saat.forEach(r=>{
+    const l=+r.agg_long_liq||0, s=+r.agg_short_liq||0;
+    topL+=l/5; topS+=s/5;
+    const spkL=l>=esikL, spkS=s>=esikS;
+    if(spkL&&!oncekiL){patL++;patlamalar.push({tip:'L',usd:l,t:r.kayit_zamani});}
+    if(spkS&&!oncekiS){patS++;patlamalar.push({tip:'S',usd:s,t:r.kayit_zamani});}
+    oncekiL=spkL; oncekiS=spkS;
+  });
+  const son6=patlamalar.slice(-6);
+  const mx=Math.max(...son6.map(p=>p.usd),1);
+  const barlar=son6.length?son6.map(p=>
+    `<div class="b" title="${p.tip==='L'?'long':'short'} ${usd(p.usd)}"
+       style="height:${Math.max(14,p.usd/mx*100)}%;background:${p.tip==='L'?'rgba(255,84,112,.8)':'rgba(47,245,200,.8)'}"></div>`).join('')
+    :'<span class="neu" style="font-size:10px;align-self:center">son 1 saatte patlama yok (eşik: medyan×'+TDC+')</span>';
+  $('likIc').innerHTML=`
+    <div class="lik-ust">
+      <div class="lik-kutu"><div class="l pos">SHORT patlama (1s)</div>
+        <div class="v pos">${patS} patlama · ${usd(topS)}</div></div>
+      <div class="lik-kutu"><div class="l neg">LONG patlama (1s)</div>
+        <div class="v neg">${patL} patlama · ${usd(topL)}</div></div>
+    </div>
+    <div class="patlama-graf">${barlar}</div>
+    <div class="expl">yeşil=short yandı (squeeze), kırmızı=long yandı (kapitülasyon yakıtı).
+      Tutarlar USD (motor convert_to_usd ile çeker) · 5dk pencere düzeltmesi uygulandı.</div>`;
+}
+
+/* ---------- SIRA 3c: SUREC + OI ---------- */
+function surecOi(surec,rows,L){
+  const rejim=surec&&surec.rejim||'NOTR';
+  const [ad,renk,aciklama] = TOPLAMA.includes(rejim)?['TOPLAMA','var(--sonar)','balina mal topluyor']
+    : DAGITIM.includes(rejim)?['DAĞITIM','var(--alarm)','dağıtım/satış modu']
+    : KAPITULASYON.includes(rejim)?['KAPİTÜLASYON','var(--amber)','zorla boşalma — dönüş adayı']
+    : ['SIKIŞMA','var(--mist)','belirgin süreç yok'];
+  const N=40; const dilim=rows.slice(-N);
+  const oiler=dilim.map(r=>+r.open_interest||0).filter(v=>v>0);
+  const mn=Math.min(...oiler,Infinity), mxo=Math.max(...oiler,1);
+  const bars=dilim.map(r=>{const v=+r.open_interest||0;
+    const h=mxo>mn?Math.max(8,(v-mn)/(mxo-mn)*100):50;
+    return `<div class="b" style="height:${h}%"></div>`;}).join('');
+  const ilk=oiler[0]||0, sonO=oiler[oiler.length-1]||0;
+  const dOi=ilk>0?(sonO/ilk-1)*100:0;
+  const ilkF=+dilim[0]?.anlik_fiyat||0, sonF=+L.anlik_fiyat||0;
+  const dF=ilkF>0?(sonF/ilkF-1)*100:0;
+  let yorum,yRenk;
+  if(dOi>0.15&&dF>0){yorum='taze long — yeni para girişiyle yükseliş';yRenk='var(--sonar)';}
+  else if(dOi<-0.15&&dF>0){yorum='yakıtsız yükseliş — short kapanışı, kırılgan';yRenk='var(--amber)';}
+  else if(dOi>0.15&&dF<0){yorum='taze short — satış baskısı gerçek';yRenk='var(--alarm)';}
+  else if(dOi<-0.15&&dF<0){yorum='pozisyon boşalması — tasfiye/temizlik';yRenk='var(--amber)';}
+  else {yorum='OI yatay — belirgin akım yok';yRenk='var(--mist)';}
+  $('surecIc').innerHTML=`
+    <span class="surec-etiket" style="background:${renk}22;color:${renk}">${ad}</span>
+    <span style="font-size:10px;color:var(--dim)"> ${esc(aciklama)}${surec&&surec.sure_dk?` · ${(+surec.sure_dk).toFixed(0)} dk`:''}
+      ${surec&&surec.tukenme!=null?` · tükenme ${surec.tukenme}/4`:''}</span>
+    <div class="oi-trend">${bars}</div>
+    <div class="mg-alt"><span class="neu">OI ${N}dk</span>
+      <span class="${dOi>=0?'pos':'neg'}">${dOi>=0?'+':''}${dOi.toFixed(2)}%</span></div>
+    <div style="margin-top:6px;font-size:11px;color:${yRenk}">◆ ${yorum}</div>`;
+}
+
+/* ---------- CEKMECE: son 60 dk detayi ---------- */
+function cekmeceIc(rows,L){
+  const son60=rows.slice(-60);
+  const egilimler=son60.map(r=>r.spot_egilim==null?null:+r.spot_egilim);
+  const olculen=egilimler.filter(e=>e!=null);
+  const bidDk=olculen.filter(e=>e>=0.15).length;
+  const ortEg=olculen.length?olculen.reduce((a,b)=>a+b,0)/olculen.length:null;
+  const fiyatlar=son60.map(r=>+r.anlik_fiyat||0).filter(v=>v>0);
+  const fMin=Math.min(...fiyatlar,Infinity), fMax=Math.max(...fiyatlar,0);
+  const aralikPct=fMin<Infinity&&fMin>0?((fMax-fMin)/fMin*100):null;
+  let likTop=0,likSay=0;
+  son60.forEach(r=>{const t=(+r.agg_long_liq||0)+(+r.agg_short_liq||0);
+    likTop+=t/5; if(t>0)likSay++;});
+  const barlar=egilimler.map(e=>{
+    if(e==null) return `<div class="b" style="height:8%;background:rgba(109,151,173,.25)"></div>`;
+    const h=Math.max(8,Math.min(100,Math.abs(e)*100));
+    const renk=e>=0?'rgba(47,245,200,.8)':'rgba(255,84,112,.8)';
+    return `<div class="b" style="height:${h}%;background:${renk}"></div>`;
+  }).join('');
+  /* --- KAYIT DEFTERI: son 60 dk, en yeni ustte --- */
+  const enyeni=[...son60].reverse();
+  const rejimPill=(r,i)=>{
+    /* 5 dk onceki satira gore dF/dOI — v7.2 rejim dortlusu (yaklasik, gosterim) */
+    const eskiR=enyeni[i+5]; if(!eskiR) return '<span class="dpill">—</span>';
+    const f0=+eskiR.anlik_fiyat||0, o0=+eskiR.open_interest||0;
+    const dF=f0>0?((+r.anlik_fiyat||0)/f0-1)*100:0;
+    const dO=o0>0?((+r.open_interest||0)/o0-1)*100:0;
+    if(dF>0.02&&dO>0.05)  return '<span class="dpill yesil">TAZE ALIM</span>';
+    if(dF>0.02&&dO<-0.05) return '<span class="dpill turuncu">SQUEEZE</span>';
+    if(dF<-0.02&&dO>0.05) return '<span class="dpill kirmizi">TAZE SATIŞ</span>';
+    if(dF<-0.02&&dO<-0.05)return '<span class="dpill sari">TASFİYE</span>';
+    return '<span class="dpill">NÖTR</span>';
+  };
+  const sinyalRozet=r=>{
+    const kd=r.swing_kademe, yn=r.swing_yon;
+    if(kd==='SINYAL') return `<span class="dpill ${yn==='SHORT'?'dolu-kirmizi':'dolu-yesil'}">${yn||'SINYAL'}</span>`;
+    if(kd==='HAZIRLAN') return '<span class="dpill turuncu">HAZIRLAN</span>';
+    if(kd==='IZLE') return '<span class="dpill sari">İZLE</span>';
+    const s=(r.sinyal_durumu||'').toUpperCase();
+    if(s==='LONG') return '<span class="dpill dolu-yesil">LONG</span>';
+    if(s==='SHORT') return '<span class="dpill dolu-kirmizi">SHORT</span>';
+    return '<span class="dpill">BEKLE</span>';
+  };
+  const cvdH=v=>{v=+v||0;return `<span class="${v>=0?'pos':'neg'}">${bigS(v)}</span>`;};
+  const likH=v=>{v=+v||0;return v>0?usd(v):'<span style="color:var(--dim)">$0</span>';};
+  const defterSatirlar=enyeni.map((r,i)=>{
+    const z=new Date(r.kayit_zamani).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'});
+    return `<tr>
+      <td>${z}</td>
+      <td>$${tl(+r.anlik_fiyat||0)}</td>
+      <td>${cvdH(r.vadeli_cvd)}</td>
+      <td>${cvdH(r.spot_cvd)}</td>
+      <td>${big(+r.order_book_depth_bid_1pct||0)} / ${big(+r.order_book_depth_ask_1pct||0)}</td>
+      <td><span class="neg">${likH(r.agg_long_liq)}</span> / <span class="pos">${likH(r.agg_short_liq)}</span></td>
+      <td class="sol">${rejimPill(r,i)}</td>
+      <td class="sol">${sinyalRozet(r)}</td>
+    </tr>`;}).join('');
+  const defter=`
+    <div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin:13px 0 0">
+      📒 KAYIT DEFTERİ — son 60 dk · ${enyeni.length} kayıt · en yeni üstte
+      <span style="opacity:.7">(likid: USD, 5dk kayan pencere)</span></div>
+    <div class="defter-wrap"><table class="defter">
+      <thead><tr><th class="sol">Zaman</th><th>Fiyat</th><th>Vadeli CVD</th><th>Spot CVD</th>
+        <th>Bid/Ask Derinlik</th><th>Long/Short Likid ($)</th><th class="sol">Rejim</th><th class="sol">Sinyal</th></tr></thead>
+      <tbody>${defterSatirlar}</tbody></table></div>`;
+  $('cekmeceIc').innerHTML=`
+    <div class="ozet4">
+      <div class="oz"><div class="l">SPOT emici</div>
+        <div class="v ${bidDk>30?'pos':'neu'}">${olculen.length?Math.round(bidDk/Math.max(olculen.length,1)*100)+'%':'—'}</div>
+        <div class="s">${bidDk}/${olculen.length||0} dk bid-ağır</div></div>
+      <div class="oz"><div class="l">Ort. eğilim</div>
+        <div class="v ${ortEg>0?'pos':ortEg<0?'neg':'neu'}">${ortEg==null?'—':(ortEg>0?'+':'')+ortEg.toFixed(2)}</div>
+        <div class="s">(bid−ask)/(bid+ask)</div></div>
+      <div class="oz"><div class="l">Fiyat aralığı</div>
+        <div class="v">${fMin<Infinity?('$'+tl(fMin)+'–'+tl(fMax)):'—'}</div>
+        <div class="s">${aralikPct!=null?'%'+aralikPct.toFixed(1)+' bant':''}</div></div>
+      <div class="oz"><div class="l">Likidasyon (60dk)</div>
+        <div class="v">${usd(likTop)}</div>
+        <div class="s">${likSay} dk aktif · USD</div></div>
+    </div>
+    <div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin-bottom:4px">DAKİKA DAKİKA SPOT EMİCİ — yeşil bid-ağır · kırmızı ask-ağır · yükseklik=|eğilim|</div>
+    <div class="emici-graf">${barlar}</div>
+    <div class="eksen"><span>−60dk</span><span>şimdi</span></div>
+    ${defter}`;
+}
+
+/* ================= v9.0 SAVAS MODU ================= */
+/* MOMENTUM — ozet gosterge, KARAR DEGIL. Agirliklar sabit (spec):
+   0.30 cvd_egim + 0.30 emici_yon(±40) + 0.20 lik_delta + 0.20 defter_egilim((s+p)/2*40).
+   NOTLAR: emici_yon spec'te DIP_TOPLAMA=+/TEPE_DAGITIM=- der — bu adlar SUREC
+   rejim aileleridir (emilim_borsasi SPOT/PERP/YOK dondurur); motorun surec
+   ailesinden alinir. Likidasyonlar ZATEN USD (convert_to_usd) — oran kullanildigi
+   icin birim zaten sadelesir. */
+function hesaplaMomentum(rows,surec,ms){
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  /* 1) vadeli CVD egimi: son 5 kaydin toplam degisimi, adaptif esikle normalize */
+  const son6=rows.slice(-6);
+  let d5=0; for(let i=1;i<son6.length;i++) d5+=(+son6[i].vadeli_cvd||0)-(+son6[i-1].vadeli_cvd||0);
+  let olcek=Math.max(Math.abs(+(ms&&ms.esik_cvd_negatif)||0), Math.abs(+(ms&&ms.esik_cvd_pozitif)||0));
+  if(!olcek){ /* esik yoksa son 60 dk'nin en buyuk |delta|'si */
+    const s60=rows.slice(-61); let mx=1;
+    for(let i=1;i<s60.length;i++) mx=Math.max(mx,Math.abs((+s60[i].vadeli_cvd||0)-(+s60[i-1].vadeli_cvd||0)));
+    olcek=mx*5;
+  }
+  const cvd_egim=clamp(d5/olcek,-1,1)*100;
+  /* 2) emici yon: surec rejim ailesi */
+  const rejim=surec&&surec.rejim||'NOTR';
+  const emici_yon = TOPLAMA.includes(rejim)?40 : DAGITIM.includes(rejim)?-40 : 0;
+  /* 3) likidasyon delta (60dk): short yaniyor = + boga */
+  let L60=0,S60=0; rows.slice(-60).forEach(r=>{L60+=+r.agg_long_liq||0;S60+=+r.agg_short_liq||0;});
+  const lik_delta=(L60+S60)>0?clamp((S60-L60)/(S60+L60),-1,1)*100:0;
+  /* 4) defter egilimi: (spot+perp)/2 x 40 (satir kolonlari v7.10 arsivi; null-guvenli) */
+  const c=rows[rows.length-1]||{};
+  const se=c.spot_egilim==null?0:+c.spot_egilim;
+  const pe=c.perp_egilim==null?0:+c.perp_egilim;
+  const defter=((se+pe)/2)*40;
+  const skor=clamp(0.30*cvd_egim + 0.30*emici_yon + 0.20*lik_delta + 0.20*defter, -100, 100);
+  return {skor:Math.round(skor),
+    etiket: skor>15?['🐂 ALICI ÖNDE','var(--sonar)'] : skor<-15?['🐻 SATICI ÖNDE','var(--alarm)'] : ['⚖️ DENGE','var(--mist)'],
+    parcalar:{cvd:Math.round(cvd_egim),emici:emici_yon,lik:Math.round(lik_delta),defter:Math.round(defter)}};
+}
+
+/* SAVAS AKISI — son 60 kayittan DIKKAT CEKEN olaylar (her dakika degil):
+   likidasyon>0 (rising-edge), emilim_borsasi degisimi, spot_egilim isaret degisimi. */
+function savasOlaylari(rows){
+  const son=rows.slice(-60);
+  const ol=[];
+  const hhmm=r=>new Date(r.kayit_zamani).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'});
+  for(let i=1;i<son.length;i++){
+    const r=son[i], p=son[i-1];
+    const sl=+r.agg_short_liq||0, ll=+r.agg_long_liq||0;
+    if(sl>0&&!(+p.agg_short_liq>0)) ol.push({z:hhmm(r),html:`<span class="pos">✓ short yandı · ${usd(sl)}</span>`});
+    if(ll>0&&!(+p.agg_long_liq>0))  ol.push({z:hhmm(r),html:`<span class="neg">✗ long yandı · ${usd(ll)}</span>`});
+    if(r.emilim_borsasi!==p.emilim_borsasi && (r.emilim_borsasi||p.emilim_borsasi))
+      ol.push({z:hhmm(r),html:`<span class="warn">◆ emici ${esc(p.emilim_borsasi||'—')} → ${esc(r.emilim_borsasi||'—')}</span>`});
+    const s0=p.spot_egilim==null?null:+p.spot_egilim, s1=r.spot_egilim==null?null:+r.spot_egilim;
+    if(s0!=null&&s1!=null&&Math.sign(s0)!==Math.sign(s1)&&s1!==0)
+      ol.push({z:hhmm(r),html:s1>0?'<span class="pos">◆ spot defter bid tarafına döndü</span>'
+                               :'<span class="neg">◆ spot defter ask tarafına döndü</span>'});
+  }
+  return ol.slice(-12).reverse();   // en yeni ustte
+}
+
+/* PARCA 1 — komuta merkezine gomulu savas karti */
+function savasKarti(mom){
+  const [et,renk]=mom.etiket;
+  const w=Math.min(50,Math.abs(mom.skor)/2);   // ±100 -> yarim bar
+  const dolgu = mom.skor>=0
+    ? `<div class="dolgu" style="left:50%;width:${w}%;background:var(--sonar)"></div>`
+    : `<div class="dolgu" style="right:50%;width:${w}%;background:var(--alarm)"></div>`;
+  $('savasKarti').innerHTML=`
+    <div class="mom-blok">
+      <div class="mom-etiket" style="color:${renk}">${et}</div>
+      <div class="mom-sayi">momentum <b style="color:${renk}">${mom.skor>0?'+':''}${mom.skor}</b>
+        <span style="color:var(--dim);font-size:9.5px"> · cvd ${mom.parcalar.cvd} · emici ${mom.parcalar.emici} · lik ${mom.parcalar.lik} · defter ${mom.parcalar.defter}</span></div>
+      <div class="mom-bar"><div class="orta"></div>${dolgu}</div>
+      <div class="mom-dipnot">özet gösterge · karar için sensörlere bak</div>
+    </div>
+    <div class="feed-blok">
+      <div class="feed-baslik">⚔️ SAVAŞ AKIŞI — son olaylar</div>
+      <div id="feedKart"></div>
+    </div>`;
+}
+
+/* PARCA 2 — cephe hatti (savas modu) */
+function cephe(mom,rows,L,swingSev){
+  if($('gorunumSavas').style.display==='none'){ /* gizliyken de son durumu hazirla */ }
+  const f=+L.anlik_fiyat||0;
+  const sev=((swingSev&&swingSev.seviyeler)||[]).filter(s=>!s.gizli);
+  const ust=sev.filter(s=>s.fiyat>f).sort((a,b)=>a.fiyat-b.fiyat)[0];   // en yakin direnc
+  const alt=sev.filter(s=>s.fiyat<f).sort((a,b)=>b.fiyat-a.fiyat)[0];   // en yakin destek
+  const dirF=ust?ust.fiyat:f*1.005, desF=alt?alt.fiyat:f*0.995;
+  const oran=Math.max(.06,Math.min(.94,(dirF-f)/Math.max(dirF-desF,1e-9))); // sol=direnc
+  const solPct=(oran*100).toFixed(1);
+  const [et,renk]=mom.etiket;
+  $('savasUst').innerHTML=`
+    <div class="mom-etiket" style="color:${renk}">${et}</div>
+    <div style="font-size:13px">momentum <b style="color:${renk}">${mom.skor>0?'+':''}${mom.skor}</b></div>
+    <div style="font-size:13px;color:var(--whale)">cephe: <b>$${tl(f)}</b></div>
+    <div class="mom-bar" style="flex:1;max-width:340px"><div class="orta"></div>
+      ${mom.skor>=0?`<div class="dolgu" style="left:50%;width:${Math.min(50,Math.abs(mom.skor)/2)}%;background:var(--sonar)"></div>`
+                   :`<div class="dolgu" style="right:50%;width:${Math.min(50,Math.abs(mom.skor)/2)}%;background:var(--alarm)"></div>`}</div>
+    <div class="mom-dipnot">özet gösterge · karar için sensörlere bak</div>`;
+  /* ordu noktalari: GERCEK defter derinligi oranindan (uydurma degil) */
+  const bid=+L.order_book_depth_bid_1pct||0, ask=+L.order_book_depth_ask_1pct||0;
+  const toplamN=36, birim=(bid+ask)/toplamN||1;
+  const kN=Math.max(1,Math.round(ask/birim)), yN=Math.max(1,Math.round(bid/birim));
+  let noktalar='';
+  for(let i=0;i<kN;i++){ // kirmizi: cephenin SOLU (direnc tarafi)
+    const x=(Math.random()*(oran*100-8)+3).toFixed(1), y=(Math.random()*78+12).toFixed(1);
+    noktalar+=`<div class="ordu-nokta kirmizi" style="left:${x}%;top:${y}%"></div>`;
+  }
+  for(let i=0;i<yN;i++){ // yesil: cephenin SAGI (destek tarafi)
+    const x=(oran*100+5+Math.random()*(94-oran*100-8)).toFixed(1), y=(Math.random()*78+12).toFixed(1);
+    noktalar+=`<div class="ordu-nokta yesil" style="left:${x}%;top:${y}%"></div>`;
+  }
+  $('cepheAlan').innerHTML=`
+    <div class="cephe-kenar sol"><div class="k">DİRENÇ ${ust?esc(ust.kaynak):''}</div>
+      <div class="f">$${tl(dirF)}</div><div class="k">satış ordusu ${usd(ask)}</div></div>
+    <div class="cephe-kenar sag"><div class="k">DESTEK ${alt?esc(alt.kaynak):''}</div>
+      <div class="f">$${tl(desF)}</div><div class="k">alış ordusu ${usd(bid)}</div></div>
+    ${noktalar}
+    <div class="cephe-cizgi" style="left:${solPct}%"></div>
+    <div class="cephe-fiyat" style="left:${solPct}%">$${tl(f)}</div>`;
+}
+
+/* v9.1 DAMLAYAN FEED: yeni dakika verisi gelince o dakikanin olaylarini
+   HEPSINI BIRDEN degil, ~850ms arayla ustten dusur (fade+slide). Ilk dolum
+   animasyonsuz. Damlatma bir sonraki 10sn yoklamasindan ONCE biter (aralik
+   olay sayisina gore kisilir); yeni tam-render gelirse eski zamanlayicilar
+   iptal edilir (cakisma yok). Feed max 15 satir. */
+let feedSeen=new Set(), feedList=[], feedTimers=[], feedIlkDolum=false;
+const feedKey=o=>o.z+'|'+o.html;
+function feedRender(){
+  const yap=(n)=>feedList.slice(0,n).map(o=>
+    `<div class="feed-satir${o._yeni?' feed-yeni':''}"><span class="z">${o.z}</span>${o.html}</div>`).join('');
+  const bos='<span class="neu" style="font-size:10.5px">son 60 dk sakin — dikkat çeken olay yok</span>';
+  const k=$('feedKart');      if(k) k.innerHTML=yap(5)||bos;
+  const b=$('savasFeedBuyuk');if(b) b.innerHTML=yap(15)||bos;
+}
+function feedGuncelle(events){            // events: en yeni once
+  feedTimers.forEach(clearTimeout); feedTimers=[];
+  const yeni=events.filter(o=>!feedSeen.has(feedKey(o)));
+  if(!feedIlkDolum){                       // ilk dolum: animasyonsuz (bos olsa bile)
+    feedIlkDolum=true;
+    events.slice(0,15).forEach(o=>feedSeen.add(feedKey(o)));
+    feedList=events.slice(0,15); feedRender(); return;
+  }
+  if(!yeni.length){ feedRender(); return; }   // konteynerler yeni render'da bosaldi — doldur
+  feedRender();                                // once mevcut liste geri basilir
+  const sira=[...yeni].reverse();              // en eski YENI once duser -> son durum dogru sirali
+  const aralik=Math.max(250, Math.min(900, Math.floor(8000/sira.length)));
+  sira.forEach((o,i)=>{ feedTimers.push(setTimeout(()=>{
+    feedSeen.add(feedKey(o)); o._yeni=true;
+    feedList.unshift(o); feedList=feedList.slice(0,15);
+    feedRender();
+    setTimeout(()=>{ o._yeni=false; },700);
+  }, 300+i*aralik)); });
+}
+
+/* sekme gecisi */
+function sekmeSec(hangi){
+  const komuta=hangi==='komuta';
+  $('gorunumKomuta').style.display=komuta?'':'none';
+  $('gorunumSavas').style.display=komuta?'none':'';
+  $('sekmeK').classList.toggle('aktif',komuta);
+  $('sekmeS').classList.toggle('aktif',!komuta);
+}
+
+/* ---------- ELLE SEVIYE (v4'ten AYNEN — dokunulmadi) ---------- */
+async function elleEkle(){
+  const f=parseFloat($('elleFiyat').value);
+  if(!f||f<=0){ elleDurumYaz('geçersiz fiyat','neg'); return; }
+  const notu=($('elleNot').value||'').trim().slice(0,24);
+  let mevcut=[];
+  try{
+    const {data}=await sb.from('balina_ayarlar').select('deger').eq('anahtar','swing_seviyeler_elle').limit(1);
+    if(data&&data[0]){const d=typeof data[0].deger==='string'?JSON.parse(data[0].deger):data[0].deger; mevcut=(d&&d.seviyeler)||[];}
+  }catch(e){}
+  if(mevcut.some(s=>Math.abs((s.fiyat||0)-f)<0.5)){ elleDurumYaz('bu seviye zaten var','warn'); return; }
+  mevcut.push({fiyat:f,not:notu||'elle'});
+  const {error}=await sb.from('balina_ayarlar')
+    .upsert({anahtar:'swing_seviyeler_elle',deger:{seviyeler:mevcut,guncelleme:new Date().toISOString()}},{onConflict:'anahtar'});
+  if(error){ elleDurumYaz('yazılamadı — Supabase RLS anon-write izni gerekli: '+esc(error.message),'neg'); }
+  else{ elleDurumYaz(`$${f.toLocaleString('tr-TR')} eklendi ✓ (motor ~10dk içinde işler)`,'pos');
+        $('elleFiyat').value='';$('elleNot').value=''; setTimeout(()=>yukle(true),600); }
+}
+async function elleSil(f){
+  let mevcut=[];
+  try{
+    const {data}=await sb.from('balina_ayarlar').select('deger').eq('anahtar','swing_seviyeler_elle').limit(1);
+    if(data&&data[0]){const d=typeof data[0].deger==='string'?JSON.parse(data[0].deger):data[0].deger; mevcut=(d&&d.seviyeler)||[];}
+  }catch(e){}
+  mevcut=mevcut.filter(s=>Math.abs((s.fiyat||0)-f)>=0.5);
+  const {error}=await sb.from('balina_ayarlar')
+    .upsert({anahtar:'swing_seviyeler_elle',deger:{seviyeler:mevcut,guncelleme:new Date().toISOString()}},{onConflict:'anahtar'});
+  if(error){ elleDurumYaz('silinemedi: '+esc(error.message),'neg'); }
+  else{ elleDurumYaz('silindi (motor ~10dk içinde günceller)','neu'); setTimeout(()=>yukle(true),600); }
+}
+function elleDurumYaz(m,c){ $('elleDurum').innerHTML=`<span class="${c}">${m}</span>`; }
+
+/* ---------- baslat ---------- */
+$('yenile').addEventListener('click',()=>yukle(true));
+$('ufuk').addEventListener('change',()=>yukle(true));
+$('elleEkle').addEventListener('click',elleEkle);
+$('elleFiyat').addEventListener('keydown',e=>{if(e.key==='Enter')elleEkle();});
+$('cekmeceTut').addEventListener('click',()=>$('cekmece').classList.toggle('acik'));
+yukle();
+/* v8.4 MOBIL: arka planda yoklama DURUR (pil/veri); one gelince aninda yenilenir */
+setInterval(()=>{ if(document.hidden){ console.log('[mobil] arka plan — yoklama duraklatıldı'); return; } yukle(); },10000);
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ console.log('[mobil] öne geldi — anında yenileme'); yukle(true); } });
+</script>
+<script>
+
+/* ================== v8.4 MOBIL EK KATMANI ==================
+   KURAL: veri sozlesmesi + yorum fonksiyonlari YUKARIDA masaustunden BIREBIR.
+   Bu katman yalniz SUNUM ekler: akordeon, ust serit, seviye kisaltma, kohort
+   tablosu (mevcut alanlarin dogrudan gosterimi — yeni hesap YOK). */
+
+/* --- akordeon (varsayilan acik: hukum + tasfiye; durum localStorage'da) --- */
+(function(){
+  const VARSAYILAN_ACIK=['hukum','tasfiye'];
+  let kayit={};
+  try{ kayit=JSON.parse(localStorage.getItem('kokpitMobilAkordeon')||'{}'); }catch(e){}
+  document.querySelectorAll('.akordeon').forEach(a=>{
+    const ad=a.dataset.ak;
+    const acik=(ad in kayit)?!!kayit[ad]:VARSAYILAN_ACIK.includes(ad);
+    a.classList.toggle('acik',acik);
+    a.querySelector('.ak-bas').addEventListener('click',()=>{
+      a.classList.toggle('acik');
+      kayit[ad]=a.classList.contains('acik');
+      try{ localStorage.setItem('kokpitMobilAkordeon',JSON.stringify(kayit)); }catch(e){}
+    });
+  });
+})();
+
+/* --- ust serit: fiyat + kademe rozeti (hukumKart sargisi; hesap masaustunden) --- */
+const KADEME_RENK={SINYAL:['rgba(47,245,200,.2)','var(--sonar)'],
+  HAZIRLAN:['rgba(255,138,61,.2)','var(--veto)'],
+  IZLE:['rgba(255,194,75,.15)','var(--amber)'],
+  YOK:['rgba(109,151,173,.15)','var(--mist)']};
+const _hukumKartMasa=hukumKart;
+hukumKart=function(L,k){
+  _hukumKartMasa(L,k);
+  $('mobilFiyat').textContent='$'+tl(+L.anlik_fiyat||0);
+  const kd=(k&&k.kademe)||'YOK';
+  const [bg,fg]=KADEME_RENK[kd]||KADEME_RENK.YOK;
+  const mk=$('mobilKademe');
+  mk.textContent=kd+((k&&k.yon)?' '+k.yon:'');
+  mk.style.background=bg; mk.style.color=fg;
+};
+
+/* --- bayat bandi (saatGuncelle sargisi; 180sn esigi masaustuyle AYNI) --- */
+const _saatMasa=saatGuncelle;
+saatGuncelle=function(){
+  _saatMasa();
+  const yas=sonKayitZamani?(Date.now()-new Date(sonKayitZamani).getTime())/1000:0;
+  const b=$('bayatBant');
+  if(yas>180){ b.textContent=`⚠ VERİ BAYAT — son kayıt ${(yas/60).toFixed(0)} dk önce`;
+               b.classList.add('gorunur'); }
+  else b.classList.remove('gorunur');
+};
+
+/* --- seviye haritasi kisaltma: en yakin 3 ust + 3 alt (HESAP AYNI, sunum kisa) --- */
+let sevTam=false;
+function mobilSeviyeKisalt(){
+  const kap=$('seviyeHarita');
+  const satirlar=[...kap.querySelectorAll('.sev-satir')];
+  const simdi=kap.querySelector('.sev-simdi');
+  const btn=$('sevTumu');
+  if(!satirlar.length){ btn.style.display='none'; return; }
+  satirlar.forEach(s=>s.style.display='');
+  if(sevTam || !simdi || satirlar.length<=6){ btn.style.display=satirlar.length>6?'':'none';
+    btn.textContent='kısalt (en yakın 6)'; return; }
+  const hepsi=[...kap.children];
+  const si=hepsi.indexOf(simdi);
+  let gizli=0;
+  hepsi.forEach((el,i)=>{
+    if(!el.classList.contains('sev-satir')) return;
+    const uzak=(i<si-3)||(i>si+3);
+    if(uzak){ el.style.display='none'; gizli++; }
+  });
+  btn.style.display=gizli>0?'':'none';
+  btn.textContent=`tümünü göster (+${gizli} seviye)`;
+}
+$('sevTumu').addEventListener('click',()=>{ sevTam=!sevTam; mobilSeviyeKisalt(); });
+const _seviyeMasa=seviyeHaritasi;
+seviyeHaritasi=function(...a){ _seviyeMasa(...a); mobilSeviyeKisalt(); };
+
+/* --- kohort istatistik karti: swing_kohort_istatistik + geri_test alanlarinin
+       DOGRUDAN gosterimi (hesap yok; motorun yazdigi sayilar) --- */
+const _sinyalKartMasa=sinyalKart;
+sinyalKart=function(k,ist,kohort,rows,grab){
+  _sinyalKartMasa(k,ist,kohort,rows,grab);
+  const kap=$('kohortMobilIc');
+  if(!ist||!ist.ufuklar){ kap.innerHTML='<span class="neu">henüz istatistik yok — sinyal birikiyor</span>'; return; }
+  const n=(ist.sinyal_sayisi??ist.olay_sayisi)||0;
+  let sat='';
+  for(const [et,b] of Object.entries(ist.ufuklar)){
+    sat+=`<tr><td>${esc(et)}</td><td>${b.n??'—'}</td><td>${b.win??'—'}</td><td>${b.loss??'—'}</td>
+      <td>${b.isabet==null?'—':b.isabet+'%'}</td><td>${b.ort_r==null?'—':b.ort_r+'R'}</td></tr>`;
+  }
+  kap.innerHTML=`<div style="font-size:12px;color:var(--mist);margin-bottom:6px">
+      kaydedilen SİNYAL: <b style="color:var(--foam)">${n}</b> · swing geri-testi (motor yazımı)</div>
+    <table class="kh-tablo"><thead><tr><th>ufuk</th><th>n</th><th>win</th><th>loss</th><th>isabet</th><th>ort R</th></tr></thead>
+    <tbody>${sat}</tbody></table>
+    <div class="expl">MEVCUT swing_kohort_istatistik alanları — panel hesap yapmaz</div>`;
+};
+
+</script>
+</body>
+</html>
