@@ -173,6 +173,21 @@ main{max-width:1860px;margin:0 auto;padding:20px 28px 30px;display:grid;gap:12px
 .emici-graf{height:78px;display:flex;align-items:center;gap:1px;background:rgba(0,0,0,.18);
   border-radius:6px;padding:3px}
 .emici-graf .b{flex:1;min-width:2px;border-radius:1px}
+/* v9.1: SIRT SIRTA CIFT SERIT */
+.emici-graf.ciftli{height:104px;position:relative;padding:3px 3px 3px 42px;gap:0;align-items:stretch}
+.serit-etiket{position:absolute;left:4px;top:3px;bottom:3px;width:34px;display:flex;
+  flex-direction:column;justify-content:space-between;font-size:8.5px;letter-spacing:.5px;
+  color:var(--dim);pointer-events:none}
+.serit-etiket .ust-et{padding-top:6px}
+.serit-etiket .alt-et{padding-bottom:6px}
+.cbg-wrap{flex:1;display:flex;align-items:stretch;gap:1px;min-width:0}
+.cbg{flex:1;min-width:2px;display:flex;flex-direction:column;height:100%}
+.cbg .yari{flex:1;display:flex;min-height:0}
+.cbg .yari.ust{align-items:flex-end}       /* spot: ortadan YUKARI */
+.cbg .yari.alt{align-items:flex-start}      /* vadeli: ortadan ASAGI (ayna) */
+.cbg .cb{width:100%;border-radius:1px}
+.cbg .cb.bos{height:6px;background:rgba(109,151,173,.22);align-self:center}
+.cbg .orta{height:1px;background:rgba(109,151,173,.32);flex:0 0 1px}
 .eksen{display:flex;justify-content:space-between;font-size:9px;color:var(--dim);margin-top:3px}
 .mg-eksen{display:flex;justify-content:space-between;font-size:8.5px;color:var(--dim);margin-top:2px;padding:0 2px}
 
@@ -851,20 +866,33 @@ function surecOi(surec,rows,L){
 function cekmeceIc(rows,L){
   const son60=rows.slice(-60);
   const egilimler=son60.map(r=>r.spot_egilim==null?null:+r.spot_egilim);
+  const perpEgilimler=son60.map(r=>r.perp_egilim==null?null:+r.perp_egilim);
   const olculen=egilimler.filter(e=>e!=null);
+  const perpOlculen=perpEgilimler.filter(e=>e!=null);
   const bidDk=olculen.filter(e=>e>=0.15).length;
+  const perpBidDk=perpOlculen.filter(e=>e>=0.15).length;
   const ortEg=olculen.length?olculen.reduce((a,b)=>a+b,0)/olculen.length:null;
+  const perpOrtEg=perpOlculen.length?perpOlculen.reduce((a,b)=>a+b,0)/perpOlculen.length:null;
   const fiyatlar=son60.map(r=>+r.anlik_fiyat||0).filter(v=>v>0);
   const fMin=Math.min(...fiyatlar,Infinity), fMax=Math.max(...fiyatlar,0);
   const aralikPct=fMin<Infinity&&fMin>0?((fMax-fMin)/fMin*100):null;
   let likTop=0,likSay=0;
   son60.forEach(r=>{const t=(+r.agg_long_liq||0)+(+r.agg_short_liq||0);
     likTop+=t/5; if(t>0)likSay++;});
-  const barlar=egilimler.map(e=>{
-    if(e==null) return `<div class="b" style="height:8%;background:rgba(109,151,173,.25)"></div>`;
-    const h=Math.max(8,Math.min(100,Math.abs(e)*100));
-    const renk=e>=0?'rgba(47,245,200,.8)':'rgba(255,84,112,.8)';
-    return `<div class="b" style="height:${h}%;background:${renk}"></div>`;
+  /* v9.1: SIRT SIRTA — ust=SPOT (envanter), alt=VADELI (kaldirac). Ayni dakika
+     ust uste; renk bid/ask, konum spot/perp. null = olculemedi -> ince gri (0 DEGIL). */
+  const cizBar=(e,ustMu)=>{
+    if(e==null) return `<div class="yari ${ustMu?'ust':'alt'}"><div class="cb bos"></div></div>`;
+    const h=Math.max(6,Math.min(100,Math.abs(e)*100));
+    const bid=e>=0;
+    const renk = bid
+      ? (ustMu?'linear-gradient(180deg,#2ff5c8,#1fd0aa)':'linear-gradient(0deg,#2ff5c8,#1fd0aa)')
+      : (ustMu?'linear-gradient(180deg,#ff5470,#e03a56)':'linear-gradient(0deg,#ff5470,#e03a56)');
+    return `<div class="yari ${ustMu?'ust':'alt'}"><div class="cb" style="height:${h}%;background:${renk}"></div></div>`;
+  };
+  const barlar=egilimler.map((e,i)=>{
+    const p=perpEgilimler[i];
+    return `<div class="cbg">${cizBar(e,true)}<div class="orta"></div>${cizBar(p,false)}</div>`;
   }).join('');
   /* --- KAYIT DEFTERI: son 60 dk, en yeni ustte --- */
   const enyeni=[...son60].reverse();
@@ -916,10 +944,10 @@ function cekmeceIc(rows,L){
     <div class="ozet4">
       <div class="oz"><div class="l">SPOT emici</div>
         <div class="v ${bidDk>30?'pos':'neu'}">${olculen.length?Math.round(bidDk/Math.max(olculen.length,1)*100)+'%':'—'}</div>
-        <div class="s">${bidDk}/${olculen.length||0} dk bid-ağır</div></div>
-      <div class="oz"><div class="l">Ort. eğilim</div>
-        <div class="v ${ortEg>0?'pos':ortEg<0?'neg':'neu'}">${ortEg==null?'—':(ortEg>0?'+':'')+ortEg.toFixed(2)}</div>
-        <div class="s">(bid−ask)/(bid+ask)</div></div>
+        <div class="s">${bidDk}/${olculen.length||0} dk bid-ağır · ${ortEg==null?'—':(ortEg>0?'+':'')+ortEg.toFixed(2)}</div></div>
+      <div class="oz"><div class="l">VADELİ emici</div>
+        <div class="v ${perpBidDk>30?'pos':'neu'}">${perpOlculen.length?Math.round(perpBidDk/Math.max(perpOlculen.length,1)*100)+'%':'—'}</div>
+        <div class="s">${perpBidDk}/${perpOlculen.length||0} dk bid-ağır · ${perpOrtEg==null?'—':(perpOrtEg>0?'+':'')+perpOrtEg.toFixed(2)}</div></div>
       <div class="oz"><div class="l">Fiyat aralığı</div>
         <div class="v">${fMin<Infinity?('$'+tl(fMin)+'–'+tl(fMax)):'—'}</div>
         <div class="s">${aralikPct!=null?'%'+aralikPct.toFixed(1)+' bant':''}</div></div>
@@ -927,8 +955,12 @@ function cekmeceIc(rows,L){
         <div class="v">${usd(likTop)}</div>
         <div class="s">${likSay} dk aktif · USD</div></div>
     </div>
-    <div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin-bottom:4px">DAKİKA DAKİKA SPOT EMİCİ — yeşil bid-ağır · kırmızı ask-ağır · yükseklik=|eğilim|</div>
-    <div class="emici-graf">${barlar}</div>
+    <div style="font-size:9px;color:var(--dim);letter-spacing:1px;margin-bottom:4px">
+      DAKİKA DAKİKA EMİCİ · <span style="color:#2ff5c8">yeşil=bid-ağır</span> · <span style="color:#ff5470">kırmızı=ask-ağır</span> · yükseklik=|eğilim|</div>
+    <div class="emici-graf ciftli">
+      <div class="serit-etiket"><span class="ust-et">SPOT</span><span class="alt-et">VADELİ</span></div>
+      <div class="cbg-wrap">${barlar}</div>
+    </div>
     <div class="eksen"><span>−60dk</span><span>şimdi</span></div>
     ${defter}`;
 }
