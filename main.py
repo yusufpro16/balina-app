@@ -497,20 +497,27 @@ class RenderKalkanHandler(BaseHTTPRequestHandler):
     v5.4 — Render sunucusu artik panelleri de servis ediyor.
     Rotalar:
       /            -> saglik kontrolu (Render'in uyanik tutmasi icin)
-      /mobil       -> telefon paneli (balina_mobil.html)
+      /mobil       -> swing kokpiti MOBIL (v8.4.1: kullanicinin telefonundaki
+                      mevcut kisayol bu adrese kayitli — yeni panel BURADAN servis
+                      edilir ki telefonda yeniden kurulum gerekmesin)
+      /mobil-eski  -> eski telefon paneli (balina_mobil.html — arsiv)
       /panel       -> masaustu paneli (v3balina_sonar_terminal.html)
       /kokpit      -> swing kokpiti (v4balina_swing_kokpit.html)
-      /kokpit-mobil-> swing kokpiti MOBIL (v4balina_swing_kokpit_mobil.html)
+      /kokpit-mobil-> /mobil ile ayni dosya (v8.4 adresi — yer imleri kirilmasin)
     Panel dosyalari main.py ile AYNI KLASORDE olmali (repo koku).
     Boylece GitHub Pages / ayri repo / dosya transferi gerekmez;
     tek link: https://<servis>.onrender.com/mobil
     """
 
     PANEL_DOSYALARI = {
-        "/mobil": "balina_mobil.html",
+        # v8.4.1: /mobil artik YENI mobil kokpiti acar — kullanicinin telefonundaki
+        # kisayol bu adrese kayitliydi; panel adres degistirmek yerine adresin
+        # icerigi degistirildi. Eski panel SILINMEDI: /mobil-eski'de arsiv.
+        "/mobil": "v4balina_swing_kokpit_mobil.html",
+        "/mobil-eski": "balina_mobil.html",
         "/panel": "v3balina_sonar_terminal.html",
         "/kokpit": "v4balina_swing_kokpit.html",   # v8.3: rotasiz paneldi -> 404 (denetim)
-        "/kokpit-mobil": "v4balina_swing_kokpit_mobil.html",   # v8.4: telefon icin yeniden tasarim
+        "/kokpit-mobil": "v4balina_swing_kokpit_mobil.html",   # v8.4 adresi (yer imi uyumu)
     }
 
     def _panel_gonder(self, dosya_adi):
@@ -565,10 +572,10 @@ class RenderKalkanHandler(BaseHTTPRequestHandler):
             b"border-radius:10px}</style></head><body>"
             b"<h2>&#128011; Balina Avcisi</h2>"
             b"<p style='color:#6d97ad'>Motor calisiyor 7/24</p>"
-            b"<a href='/mobil'>Mobil Panel</a>"
+            b"<a href='/mobil'>Mobil Kokpit</a>"
             b"<a href='/panel'>Masaustu Panel</a>"
             b"<a href='/kokpit'>Swing Kokpiti</a>"
-            b"<a href='/kokpit-mobil'>Swing Kokpiti (Mobil)</a>"
+            b"<a href='/mobil-eski'>Eski Mobil Panel (arsiv)</a>"
             b"</body></html>"
         )
 
