@@ -102,12 +102,25 @@ def check(ad,c,d=""):
 random.seed(73)
 V72_REJIMLER = ['NOTR','TEPE_DAGITIM','DIP_TOPLAMA','SHORT_SQUEEZE','LONG_TASFIYE',
                 'TAZE_ALIM','TAZE_SATIS']
-IZINLI = {'SHORT_SQUEEZE':{'SHORT_SQUEEZE','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS'},
-          'LONG_TASFIYE':{'LONG_TASFIYE','LONG_KAPITULASYON'},
-          # v7.4: DIP_TOPLAMA emilim-zenginlesmesi (izinli — skor/sinyal degismez)
-          'DIP_TOPLAMA':{'DIP_TOPLAMA','DIP_TOPLAMA_SPOT','DIP_TOPLAMA_TEYITSIZ','DIP_TOPLAMA_PERP'},
-          # v7.6: TEPE_DAGITIM emilim-zenginlesmesi (simetrik)
-          'TEPE_DAGITIM':{'TEPE_DAGITIM','TEPE_DAGITIM_SPOT','TEPE_DAGITIM_TEYITSIZ','TEPE_DAGITIM_PERP'}}
+# v8.3 (denetim): IZINLI gecis-sozlugu yerine AILE-NORMALIZE karsilastirma.
+# Eski sozluk yalniz v7.2->yeni yonunu taniyordu; taban ileride v7.5+ bir dosya
+# olursa tabanin kendi zenginlesmis etiketi (orn. DIP_TOPLAMA_TEYITSIZ) yeni kodun
+# DOGRU etiketine (DIP_TOPLAMA_PERP) "REJIM IHLALI" dedirtiyordu — davranis
+# (long,short,sinyal) birebirken. Iki etiket de baz ailesine indirger; ihlal
+# ancak AILE degisirse sayilir. (long,short,sinyal) kiyasi AYNEN sifir-tolerans.
+def _aile(rejim):
+    """Zenginlestirme son eklerini soyar: etiket karsilastirmasi aile bazinda.
+    (long,short,sinyal) zaten AYRICA birebir karsilastiriliyor; etiket testi
+    yalnizca 'aile degisti mi'yi sorgulamali — son ek surumler arasi degisebilir."""
+    r = str(rejim)
+    for son_ek in ('_SPOT', '_TEYITSIZ', '_PERP'):
+        if r.endswith(son_ek):
+            r = r[:-len(son_ek)]
+            break
+    # v7.3 yeniden adlandirmalari es-aileye coker (eski IZINLI mantigi korunur):
+    return {'SHORT_TASFIYE': 'SHORT_SQUEEZE',
+            'TASFIYE_SONRASI_DONUS': 'SHORT_SQUEEZE',
+            'LONG_KAPITULASYON': 'LONG_TASFIYE'}.get(r, r)
 farkli=0; rejim_zengin=0; dip_kapsama=0   # v7.4: DIP_TOPLAMA_* yoluna giren
 for i in range(500):
     esik_d = random.uniform(1e7, 1e8)
@@ -151,7 +164,7 @@ for i in range(500):
         farkli+=1
         if farkli<=3: print("  FARK:",e[:3],"vs",y[:3])
     if e[3]!=y[3]:
-        if y[3] in IZINLI.get(e[3],set()): rejim_zengin+=1
+        if _aile(e[3]) == _aile(y[3]): rejim_zengin+=1   # v8.3: aile ayni -> zenginlesme
         else:
             farkli+=1
             if farkli<=3: print("  REJIM IHLALI:",e[3],"->",y[3])
@@ -160,6 +173,13 @@ check("500 girdide skor+sinyal BIREBIR ayni", farkli==0, f"fark={farkli}, izinli
 # KAPSAMA (spec §8.2): sifirsa test BOS gecmistir -> gecersiz
 check("v7.4 DIP_TOPLAMA_* yolu GERCEKTEN calisti (kapsama>0)", dip_kapsama>0,
       f"dip_kapsama={dip_kapsama}/500")
+# v8.3 kaniti: taban v7.5+ olsa bile TEYITSIZ->PERP etiket gecisi ihlal sayilmaz
+# (denetimde tam bu yasandi: fark=0 ama 4 girdide etiket-artefakti kirmizi yakti)
+check("v8.3: aile-normalize — zenginlesme son ekleri ve es-aile adlari ihlal DEGIL",
+      _aile('DIP_TOPLAMA_TEYITSIZ')==_aile('DIP_TOPLAMA_PERP')=='DIP_TOPLAMA'
+      and _aile('TEPE_DAGITIM_SPOT')=='TEPE_DAGITIM'
+      and _aile('TASFIYE_SONRASI_DONUS')==_aile('SHORT_TASFIYE')=='SHORT_SQUEEZE'
+      and _aile('LONG_KAPITULASYON')=='LONG_TASFIYE' and _aile('NOTR')=='NOTR')
 
 # ---------- 2) AILE EŞLEME: yeni adlar es-aileleriyle ayni davranir ----------
 def skorla(ns, surec_rejim, fn='balina_skoru_hesapla'):
@@ -573,7 +593,9 @@ UF = YENI['SWING_UFUKLAR']
 _t0 = 2_000_000.0
 def _seri_yon(bas, adim, n=600):    # dogrusal fiyat serisi (dakikada 1)
     return [(_t0 + i*60, bas + i*adim) for i in range(n)]
-_z = _dt.datetime.utcfromtimestamp(_t0 + 60).isoformat()   # sinyal: 2. kayit
+# v8.3: utcfromtimestamp DeprecationWarning temizligi. replace(tzinfo=None) SART:
+# fixtur naive-UTC ISO bekler (SC7); tzinfo kalsa '+00:00' eki kiyaslari bozar.
+_z = _dt.datetime.fromtimestamp(_t0 + 60, _dt.timezone.utc).replace(tzinfo=None).isoformat()   # sinyal: 2. kayit
 # WIN: SHORT, fiyat DUSUYOR -> hedef 61000 once vurulur (stop 64000 hic)
 _win_seri = _seri_yon(63450, -15)         # dik dusus: 4s icinde 61000 vurulur
 _o_win = [{'zaman':_z,'yon':'SHORT','swing_hedef':61000.0,'stop':64000.0,'rr_swing':3.0}]
@@ -589,7 +611,7 @@ check("SC2: SHORT stop ONCE vuruldu -> LOSS + ort_r=-1",
       _r_loss['loss']==1 and _r_loss['win']==0 and _r_loss['isabet']==0.0 and _r_loss['ort_r']==-1.0,
       f"={_r_loss}")
 # ACIK: olay serinin SONUNA yakin -> uzun ufuk (3g) henuz dolmadi + hedef/stop uzak
-_z_yeni = _dt.datetime.utcfromtimestamp(_win_seri[-1][0]-120).isoformat()
+_z_yeni = _dt.datetime.fromtimestamp(_win_seri[-1][0]-120, _dt.timezone.utc).replace(tzinfo=None).isoformat()
 _o_acik = [{'zaman':_z_yeni,'yon':'LONG','swing_hedef':999999.0,'stop':1.0,'rr_swing':3.0}]
 _r_acik = bt(_o_acik, _win_seri, UF)
 check("SC3: cozulmemis olay -> ACIK (win/loss'a sayilmaz)",
