@@ -1281,8 +1281,18 @@ def coinalyze_guncelle():
             # Tek sembol (GRAB_MUM_SEMBOL): high/low GEOMETRISI coklu borsadan
             # karistirilmaz; anlik fiyatla ayni borsa (Binance perp).
             try:
+                # v9.1.1 (canli log 17 Tem): deploy aninda eski+yeni instance AYNI API
+                # anahtarini paylasir; ilk turun 3 ek kline cagrisi 429'u tetikliyordu
+                # ve ilk 429'dan sonra kalan kline cagrilari da bosuna atilip limiti
+                # daha da zorluyordu. Duzeltme: (a) ILK TUR kline cekilmez (60sn sonra
+                # gelir — deploy cakismasi penceresi kapanir), (b) tur icinde ilk
+                # 429'da kalan kline cagrilari O TUR icin birakilir. Kovalar
+                # isaretlenmedigi icin hicbir veri KAYBOLMAZ, yalniz ertelenir.
+                _ilk_tur = getattr(coinalyze_guncelle, '_kline_ilk_tur', True)
+                coinalyze_guncelle._kline_ilk_tur = False
+                _429 = False
                 _kova15 = simdi // 900
-                if _kova15 != getattr(coinalyze_guncelle, '_son_15dk_kova', 0):
+                if not _ilk_tur and _kova15 != getattr(coinalyze_guncelle, '_son_15dk_kova', 0):
                     time.sleep(0.4)
                     k_res = session.get(
                         f"{COINALYZE_BASE}/ohlcv-history?symbols={GRAB_MUM_SEMBOL}"
@@ -1299,13 +1309,18 @@ def coinalyze_guncelle():
                             if _kapali[-1]['t'] >= (_kova15 - 1) * 900:
                                 coinalyze_guncelle._son_15dk_kova = _kova15
                     else:
+                        _429 = k_res.status_code == 429
                         logging.warning(f"GRAB 15dk kline hatasi: {k_res.status_code} "
-                                        f"| {k_res.text[:120]}")
+                                        f"| {k_res.text[:120]}"
+                                        + (" — kalan kline cagrilari bu tur atlanacak" if _429 else ""))
                 _kova_s = simdi // 3600
-                if _kova_s != getattr(coinalyze_guncelle, '_son_saat_kova', 0):
+                if (not _ilk_tur and not _429
+                        and _kova_s != getattr(coinalyze_guncelle, '_son_saat_kova', 0)):
                     _pv = {}
                     for _iv, _per, _ad in (('1hour', 3600, 'pivotlar_1s'),
                                            ('4hour', 14400, 'pivotlar_4s')):
+                        if _429:
+                            break         # limit zaten asildi — kalanini sonraki tura birak
                         time.sleep(0.4)
                         p_res = session.get(
                             f"{COINALYZE_BASE}/ohlcv-history?symbols={GRAB_MUM_SEMBOL}"
@@ -1317,6 +1332,7 @@ def coinalyze_guncelle():
                                 if (isinstance(_veri, list) and _veri) else []
                             _pv[_ad] = _kline_pivotlar(_kline_kapali(_hist, simdi, _per))
                         else:
+                            _429 = p_res.status_code == 429
                             # sessiz kalirsa eksik COKZAMAN/EQ loglardan taniz edilemez
                             logging.warning(f"GRAB {_iv} kline hatasi: {p_res.status_code} "
                                             f"| {p_res.text[:120]}")
