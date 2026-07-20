@@ -236,6 +236,13 @@ class CanliDurum:
         # dakika satiri SINYAL'e UPDATE edildikten SONRA kohort olayini DUSUREMEZ;
         # tampon bir sonraki 15dk mumunda yeniden denenir (tasfiye kohortu kalibi).
         self.grab_kohort_bekleyen = []
+        # v8.8-C: N mumunda DEVAM/None siniflanan adaylar — N+1 kapanisinda olculur
+        # (GRAB_ADAY_N1). Tek mum omru; restart'ta bosalir (eksik > uydurma).
+        self.grab_n1_bekleyen = []
+        # v8.8-E: likidasyon donma tespiti (ayri alanlar; karar zincirine girmez)
+        self.lik_pencere_damgasi = None
+        self.lik_borsa_sayisi = None
+        self.lik_donma_sayaci = 0
         # Kohort tekrar-yazim korumasi (rising-edge):
         self.son_tasfiye_kohort_ts = {"LONG": 0.0, "SHORT": 0.0}
         # Kohort bekleyen-olay tamponu: Supabase gecici hatasi (503/timeout)
@@ -1125,16 +1132,33 @@ def coinalyze_guncelle():
             liq_res = session.get(liq_url, headers=headers, timeout=15)
             long_liq = 0.0
             short_liq = 0.0
+            lik_damga = None          # v8.8-E: pencere zaman damgasi (son veri noktasi)
+            lik_borsa = None          # v8.8-E: history donduren borsa sayisi
             if liq_res.status_code == 200:
                 data = liq_res.json()
                 if isinstance(data, list):
+                    lik_borsa = 0
                     for borsa in data:
-                        for nokta in borsa.get('history', []):
+                        hist = borsa.get('history', [])
+                        if hist:
+                            lik_borsa += 1
+                        for nokta in hist:
                             long_liq += float(nokta.get('l', 0) or 0)
                             short_liq += float(nokta.get('s', 0) or 0)
+                            _nt = nokta.get('t')
+                            if _nt:
+                                lik_damga = max(lik_damga or 0, int(_nt))
                     durum.coinalyze_saglikli = True
                     # v8: likidasyon tazelik damgasi — grab dakika izi bayatken None yazar
                     durum.coinalyze_liq_zaman = time.time()
+                    # v8.8-E: DONMA tespiti — deger + pencere damgasi ardisik turda
+                    # birebir ayniysa sayac artar. AYRI alan; lik_ok/karar zinciri
+                    # DEGISMEZ (spec E: mevcut alana None yazmak Faz 1 ihlali olurdu).
+                    _lik_simdiki = (long_liq, short_liq, lik_damga)
+                    coinalyze_guncelle._lik_donma = _lik_donma_guncelle(
+                        getattr(coinalyze_guncelle, '_lik_onceki', None), _lik_simdiki,
+                        getattr(coinalyze_guncelle, '_lik_donma', 0))
+                    coinalyze_guncelle._lik_onceki = _lik_simdiki
             elif liq_res.status_code == 429:
                 bekle = int(float(liq_res.headers.get('Retry-After', 20)))
                 logging.warning(f"Coinalyze rate-limit (429), {bekle}sn bekleniyor.")
@@ -1254,6 +1278,10 @@ def coinalyze_guncelle():
             with durum.lock:
                 durum.agg_liq_long = long_liq
                 durum.agg_liq_short = short_liq
+                # v8.8-E: donma teshis alanlari (kayit amacli; kapi DEGIL)
+                durum.lik_pencere_damgasi = lik_damga
+                durum.lik_borsa_sayisi = lik_borsa
+                durum.lik_donma_sayaci = getattr(coinalyze_guncelle, '_lik_donma', 0)
                 durum.agg_open_interest = agg_oi
                 durum.agg_funding = agg_fr
                 durum.agg_ls_ratio = agg_ls
@@ -2072,6 +2100,38 @@ def _swing_seviye_haritasi(anlik_fiyat, fiyat_seri, vol_pct, dipler, tepeler,
     return ham
 
 
+def _seviye_kalicilik(eski_liste, yeni_liste, vol_pct, simdi):
+    """
+    v8.8-A — SEVIYE KALICILIGI (SADECE KAYIT; kapi/esik DEGIL). SAF.
+    'durum.swing_seviyeler = _oto' haritayi komple degistiriyordu — 20 yenileme
+    ayakta kalan seviye ile bir kez gorunen ayirt edilemiyordu (olculen: 15.6
+    saatte 163 seviye, 331 degisim). Yeni liste eskisiyle eslestirilir:
+      * band: MEVCUT SEVIYE_KUMELEME_VOL x vol (yeni 'ayni seviye' tanimi YOK)
+      * eslesen  -> ilk_gorulme_ts korunur, yenileme_sayisi += 1
+      * yeni     -> ilk_gorulme_ts = simdi, yenileme_sayisi = 1
+      * donmeyen -> duser (mezarlik yok)
+    yeni_liste YERINDE zenginlesir ve dondurulur. SWING_SEVIYE_MIN_GUC filtresine
+    ve karar zincirine DOKUNMAZ (v8.8 mutlak kurali).
+    """
+    band = SEVIYE_KUMELEME_VOL * (vol_pct or 0.0)
+    for y in (yeni_liste or []):
+        es = None
+        for e in (eski_liste or []):
+            ef, yf = e.get('fiyat'), y.get('fiyat')
+            if not ef or not yf:
+                continue
+            if (band > 0 and abs(yf - ef) / ef * 100.0 <= band) or ef == yf:
+                if es is None or abs(yf - ef) < abs(yf - es.get('fiyat', 0)):
+                    es = e
+        if es is not None and es.get('ilk_gorulme_ts'):
+            y['ilk_gorulme_ts'] = es['ilk_gorulme_ts']
+            y['yenileme_sayisi'] = (es.get('yenileme_sayisi') or 0) + 1
+        else:
+            y['ilk_gorulme_ts'] = simdi
+            y['yenileme_sayisi'] = 1
+    return yeni_liste
+
+
 def _emici_yon(emilim):
     """
     v8.1 — Emilim dict'inden swing YON tahmini: 'LONG'|'SHORT'|None. SAF.
@@ -2367,7 +2427,9 @@ def _sweep_adayi(mum, seviye, guc, atr15, hacim_ort20, lik_pencere_toplam,
     h, l, c = mum.get('h') or 0, mum.get('l') or 0, mum.get('c') or 0
     if h <= 0 or l <= 0 or c <= 0:
         return None
-    delme_min = max(SWEEP_MIN_DELME_PCT * c, 0.2 * atr15)
+    pct_terim = SWEEP_MIN_DELME_PCT * c
+    atr_terim = 0.2 * atr15
+    delme_min = max(pct_terim, atr_terim)
     # Denetim (KESIN): delme sarti tek basina YETMEZ — mum araligi seviyeyi
     # GERCEKTEN kesmeli (l <= seviye <= h). Yoksa mumun cok altindaki/ustundeki
     # her guclu seviye "sweep" sayilir, sahte DEVAM adaylari gercek sinyali
@@ -2398,7 +2460,130 @@ def _sweep_adayi(mum, seviye, guc, atr15, hacim_ort20, lik_pencere_toplam,
             'kapanis_mesafe_pct': round(abs(c - seviye) / seviye * 100.0, 4),
             'mum_ts': mum.get('t'),
             'eslik': {'likidasyon': round(lik_pencere_toplam, 0) if lik_pencere_toplam is not None else None,
-                      'hacim_kat': round(hacim_kat, 2) if hacim_kat is not None else None}}
+                      'hacim_kat': round(hacim_kat, 2) if hacim_kat is not None else None},
+            # v8.8-B: delme esigi teshisi — SADECE KAYIT, karara girmez. Olculen:
+            # ATR terimi hic baglayici olmamisti (15dk 0/49) — esik fiilen sabit
+            # %0.08'di; hangi terimin kazandigi artik gorunur.
+            'teshis': {'delme_min_belirleyen': 'ATR' if atr_terim > pct_terim else 'PCT',
+                       'delme_min_pct_terim': round(pct_terim, 2),
+                       'delme_min_atr_terim': round(atr_terim, 2),
+                       'delme_atr_kati': round(delme / atr15, 2)}}
+
+
+def _grab_teshis(aday, seviye, pencere, pencere_kayitlari, med_long, med_short, simdi):
+    """
+    v8.8-B — ADAY TESHIS ALANLARI (SADECE KAYIT; hicbiri aday/sinyal kararina
+    girmez). SAF. Mevcut ciktilardan derler, IKIZ HESAP YAZMAZ:
+      * lik yogunluklari: pencere.lik_*_yog_max — bunlar ZATEN likidasyon_yogunlugu()
+        ciktilaridir (dakika izine skor_girdi'den yazilir). medyan yok/0 -> None
+        (likidasyon_yogunlugu medyansizken 0.0 dondurur — skor yolu davranisi
+        DEGISMEZ; teshis katmani 'olculemedi'yi medyani kontrol ederek ayirir).
+      * OI: pencere.d_oi_pct / d_oi_5dk_min_pct oldugu gibi; oi_kapisi_gecti =
+        _tasfiye_bayraklari (mevcut fonksiyon; _sweep_teyit'in DONUS ayagiyla
+        AYNI degerlendirme) — olculemiyorsa None.
+      * faz: fitil_ts = delmenin dakika izinde ILK gorunusu (dakika ornekleme
+        fitili kacirabilir -> None; uydurma yok). mum_ici_konum = 0..1.
+    """
+    sf = aday.get('sweep_seviye')
+    mts = aday.get('mum_ts')
+    syn = aday.get('yon')
+    # --- seviye kimligi (A'dan gelen kalicilik alanlariyla) ---
+    igt = (seviye or {}).get('ilk_gorulme_ts')
+    out = {'seviye_guc': (seviye or {}).get('guc'),
+           'seviye_kaynaklari': list((seviye or {}).get('kaynaklar') or []) or None,
+           'seviye_yasi_dk': round((simdi - igt) / 60.0, 1) if igt else None,
+           'seviye_yenileme_sayisi': (seviye or {}).get('yenileme_sayisi')}
+    # --- likidasyon teshisi (yon-esli; medyan yoksa None, sifir DEGIL) ---
+    yl = (pencere or {}).get('lik_long_yog_max')
+    ys = (pencere or {}).get('lik_short_yog_max')
+    yog_long = yl if (med_long and med_long > 0 and yl is not None) else None
+    yog_short = ys if (med_short and med_short > 0 and ys is not None) else None
+    out['lik_yog_yon'] = yog_short if syn == 'SHORT' else yog_long
+    out['lik_yog_ters'] = yog_long if syn == 'SHORT' else yog_short
+    out['lik_iki_tarafli'] = ((yog_long >= TASFIYE_DIKEN_CARPANI
+                               and yog_short >= TASFIYE_DIKEN_CARPANI)
+                              if (yog_long is not None and yog_short is not None)
+                              else None)
+    # --- OI teshisi (_sweep_teyit DONUS ayagiyla ayni degerlendirme; kayit amacli) ---
+    out['d_oi_pct'] = (pencere or {}).get('d_oi_pct')
+    out['d_oi_5dk_min_pct'] = (pencere or {}).get('d_oi_5dk_min_pct')
+    d5 = out['d_oi_5dk_min_pct']
+    if d5 is not None and not (yl is None and ys is None):
+        out['oi_kapisi_gecti'] = _tasfiye_bayraklari(yl or 0.0, ys or 0.0, d5)[0]
+    else:
+        out['oi_kapisi_gecti'] = None
+    # --- faz teshisi: delmenin dakika izindeki ilk gorunusu ---
+    fitil_ts = None
+    if sf and mts is not None:
+        for r in (pencere_kayitlari or []):
+            ts, f = r.get('ts'), r.get('fiyat')
+            if ts is None or not f or not (mts <= ts < mts + 900):
+                continue
+            if (syn == 'SHORT' and f > sf) or (syn == 'LONG' and f < sf):
+                fitil_ts = ts
+                break
+    out['fitil_ts'] = round(fitil_ts, 0) if fitil_ts is not None else None
+    out['mum_ici_konum'] = (round((fitil_ts - mts) / 900.0, 3)
+                           if (fitil_ts is not None and mts is not None) else None)
+    return out
+
+
+def _lik_donma_guncelle(onceki, simdiki, sayac):
+    """
+    v8.8-E — LIKIDASYON DONMA TESPITI (SADECE KAYIT; karar zincirine GIRMEZ).
+    Olculen: liquidation_pool_volume gunde 48 blokta 3+ dk birebir ayni kaldi —
+    Coinalyze 5dk penceresi yenilenmiyor. Donmus olcum "ayni kaldi" degil
+    "OLCULEMEDI"dir; ama mevcut alana None YAZILMAZ (spec E'nin tuzak uyarisi:
+    _sweep_adayi'nin lik_ok kapisi None'da False olur -> aday olumu -> Faz 1
+    ihlali). Donma bilgisi AYRI alana (sayac) gider; kapi karari Faz 2'de.
+    onceki/simdiki: (long, short, pencere_damgasi). Damga yoksa tespit
+    YAPILAMAZ -> 0 (sayac bir tespit sayacidir, olcum degil). SAF.
+    """
+    if not onceki or not simdiki:
+        return 0
+    if simdiki[2] is None or onceki[2] is None:
+        return 0
+    if onceki == simdiki:
+        return sayac + 1
+    return 0
+
+
+def _grab_n1_kayitlari(bekleyenler, mum, pencere):
+    """
+    v8.8-C — SONRAKI MUM SONUCU (GRAB_ADAY_N1): paralel kohort, SINYAL URETMEZ.
+    ADIM 3'un ayni-mum sarti kurulumlarin ~2/3'unu gorunmez birakiyordu (olculen:
+    ayni mumda donen 13 aday, sonraki mumda donen 28) ve gorunenler sistematik
+    olarak en hizli/sert olaylardi — mevcut kohort TARAFLI. Bu kayit, N mumunda
+    DEVAM/None siniflanan adayin N+1 kapanisini olcer:
+      * N+1 kapanis seviyenin DIGER tarafindaysa GRAB_ADAY_N1 kaydi acilir
+      * teyit MEVCUT _sweep_teyit ile, N+1 muminin penceresi verilerek (kopya yok)
+      * ust-duzey hedef/stop/rr/yon anahtari YOK (_swing_backtest sinyal sanmasin —
+        GRAB_ADAY kaydindaki korumanin aynisi)
+    Yalniz TAM bir onceki mumun (mum_ts == mum.t - 900) bekleyenleri islenir;
+    eskiler duser. Restart'ta liste bosalir — o mumun N1 olcumu kaybedilir,
+    kabul edilebilir (uydurma yerine eksik). SAF.
+    """
+    out = []
+    t = (mum or {}).get('t')
+    c = (mum or {}).get('c')
+    if t is None or not c or c <= 0:
+        return out
+    for b in (bekleyenler or []):
+        if b.get('mum_ts') != t - 900:
+            continue
+        sf, syn = b.get('seviye'), b.get('yon')
+        if not sf or syn not in ('SHORT', 'LONG'):
+            continue
+        donus = (c < sf) if syn == 'SHORT' else (c > sf)
+        if not donus:
+            continue
+        ham = dict(b.get('ham') or {})
+        ham['n1_kapanis'] = round(c, 1)
+        ham['n1_mum_ts'] = t
+        ham['n1_teyit'] = _sweep_teyit(syn, 'DONUS', pencere)
+        out.append({'tetik': 'GRAB_ADAY_N1', 'seviye': sf,
+                    'skor': ham.get('sweep_guc'), 'ham': ham})
+    return out
 
 
 def _grab_pencere_ozeti(seri, t0, t1):
@@ -2971,6 +3156,10 @@ def adaptif_esik_guncelle():
                     _oto = _swing_seviye_haritasi(
                         _af, fiyat_seri, vol_seviye, yeni_dipler, yeni_tepeler, _liq, _elle,
                         pivotlar_1s=_p1, pivotlar_4s=_p4)
+                    # v8.8-A: kalicilik izi — eski haritayla eslestir (ilk_gorulme_ts +
+                    # yenileme_sayisi tasinir). SADECE KAYIT; hicbir filtre degismez.
+                    _oto = _seviye_kalicilik(durum.swing_seviyeler, _oto,
+                                             vol_seviye, time.time())
                     durum.swing_seviyeler = _oto      # v8.1: ozet dongusu (dk) bunu okur
                     _gorunur = [s for s in _oto if not s.get('gizli')]
                     _ayarlar_yaz('swing_seviyeler_oto', {
@@ -4776,7 +4965,13 @@ def ozet_ve_analiz_dongusu():
                         _kademe = _swing_kademe(anlik_fiyat, _sw, esik_vol, _grab,
                                                 bool(tasfiye_a), emilim, funding_rate, d_oi_k)
                         _hedef = None
-                        if _kademe['kademe'] == 'SINYAL' and _kademe['yon']:
+                        # v8.8-D: _hedef HAZIRLAN'da da hesaplanir (SADECE KAYIT —
+                        # 934 satirin 933'unde swing_rr None'di; "R/R gecer miydi?"
+                        # geriye donuk cevapsizdi). SINYAL'e TERFI SARTI BIREBIR AYNI:
+                        # 4/4 (dort_dort) VE _hedef['gecerli']; R/R vetosu SINYAL'i
+                        # HAZIRLAN'a dusurme davranisi aynen korunur. HAZIRLAN'da
+                        # gecersiz R/R hicbir seyi degistirmez, yalnizca kaydedilir.
+                        if _kademe['kademe'] in ('HAZIRLAN', 'SINYAL') and _kademe['yon']:
                             # v8.7: 'gizli' filtresi KALDIRILDI — gizleme yalniz panel
                             # gosterimi icindir (A3 birlestirme); en yogun likidasyon
                             # kumesi bir HL/VP ile cakisti diye MIKNATIS olmaktan cikmaz.
@@ -4784,7 +4979,8 @@ def ozet_ve_analiz_dongusu():
                                        key=lambda s: s.get('hacim', 0), default=None)
                             _hedef = _swing_hedef_stop(_kademe['yon'], anlik_fiyat, _sw,
                                                        esik_vol, _mag['fiyat'] if _mag else None)
-                            if not _hedef['gecerli']:      # R/R vetosu -> SINYAL degil, HAZIRLAN
+                            if _kademe['kademe'] == 'SINYAL' and not _hedef['gecerli']:
+                                # R/R vetosu -> SINYAL degil, HAZIRLAN (davranis AYNI)
                                 _kademe['kademe'] = 'HAZIRLAN'
                                 _kademe['sebepler'].append(f"R/R yetersiz ({_hedef['sebep']})")
                         durum.swing_karar = {**_kademe, 'hedef_stop': _hedef}
@@ -4869,6 +5065,7 @@ def ozet_ve_analiz_dongusu():
                 # ISLENMEZ (durum.son_islenen_15dk_ts). Aday (ADIM 2) -> kapanis karari
                 # (ADIM 3, AYNI kapali mumda) -> order flow teyidi (ADIM 4) -> kagit ustu
                 # sinyal + kayit (ADIM 5). Scalp skor yoluna DOKUNMAZ; hata akisi kesmez.
+                _grab_teshis_dk = None   # v8.8-F: bu dakikada aday olustuysa teshisi (kolonlara)
                 if SWING_MOTOR_AKTIF:
                     try:
                         with durum.lock:
@@ -4885,6 +5082,9 @@ def ozet_ve_analiz_dongusu():
                             _h20 = [m['v'] for m in _onceki15[-20:] if m.get('v')]
                             _hacim_ort = (sum(_h20) / len(_h20)) if len(_h20) >= 20 else None
                             _poz = _grab_pencere_ozeti(seri_kopya, _mum15['t'], _mum15['t'] + 900)
+                            # v8.8-B: faz teshisi icin pencere kayitlari (ayni dilim)
+                            _pkayit = [r for r in seri_kopya
+                                       if _mum15['t'] <= (r.get('ts') or 0) < _mum15['t'] + 900]
                             _svl = durum.swing_seviyeler or []
                             for _k in list(durum.grab_cooldown):   # budama (2x cooldown)
                                 if _simdi_g - durum.grab_cooldown[_k] > SWEEP_COOLDOWN_DK * 120:
@@ -4915,15 +5115,35 @@ def ozet_ve_analiz_dongusu():
                                         durum.grab_cooldown[round(_sf)] = _simdi_g
                                     _aday['teyit'] = _sweep_teyit(_aday['yon'],
                                                                   _aday['kapanis_tipi'], _poz)
+                                    # v8.8-B: teshis alanlari (SADECE KAYIT — ham'a gider)
+                                    _aday['teshis'].update(_grab_teshis(
+                                        _aday, _s, _poz, _pkayit,
+                                        esik_lik_long_med, esik_lik_short_med, _simdi_g))
                                     _adaylar.append(_aday)
+                            if _adaylar:   # v8.8-F: kolonlara en guclu adayin teshisi gider
+                                _grab_teshis_dk = max(_adaylar,
+                                                      key=lambda a: a.get('sweep_guc') or 0)['teshis']
                             _fvg = _fvg_bul(_kapali15)   # G1: SADECE KAYIT — girisi degistirmez
+                            _mum_kapanis_iso = datetime.datetime.utcfromtimestamp(
+                                _mum15['t'] + 900).isoformat()
                             _yeni_olaylar = []
                             _sinyal_karti = None
+                            # ---- v8.8-C: onceki mumun DEVAM/None adaylari icin N+1
+                            # kapanis olcumu (paralel kohort; SINYAL URETMEZ, cooldown'a
+                            # DOKUNMAZ — ayni adaydan turer). Liste tek mum yasar.
+                            for _o in _grab_n1_kayitlari(durum.grab_n1_bekleyen, _mum15, _poz):
+                                _o['zaman'] = _mum_kapanis_iso
+                                _yeni_olaylar.append(_o)
+                            durum.grab_n1_bekleyen = []
                             if _adaylar:
-                                _mum_kapanis_iso = datetime.datetime.utcfromtimestamp(
-                                    _mum15['t'] + 900).isoformat()
                                 for _a in _adaylar:
                                     _a['fvg'] = _fvg     # ham'a gider (ham = aday dict'i)
+                                # v8.8-C: DEVAM/None siniflanan adaylar N+1 olcumune girer
+                                # (tek mum omru; DONUS zaten ayni mumda siniflandi)
+                                durum.grab_n1_bekleyen = [
+                                    {'seviye': a['sweep_seviye'], 'yon': a['yon'],
+                                     'mum_ts': a['mum_ts'], 'ham': a}
+                                    for a in _adaylar if a['kapanis_tipi'] != 'DONUS']
                                 _sinyalli = [a for a in _adaylar if a['teyit'].get('sonuc')]
                                 # ayni mumda birden cok teyitli aday olursa EN GUCLU seviye
                                 # sinyal olur; digerleri aday olarak kayda gecer
@@ -5045,6 +5265,33 @@ def ozet_ve_analiz_dongusu():
                                 _ayarlar_yaz('grab_aktif_sinyal', _sinyal_karti)
                     except Exception as e:
                         logging.warning(f"grab motoru hatasi (akis devam eder): {e}")
+
+                # ---- v8.8-F: TESHIS KOLONLARI (dakikalik; ayri UPDATE — mevcut swing
+                # arsiv deseninin aynisi: kolon yoksa ana insert ASLA olmez). seviye_*
+                # her dakika yakin seviyeden; aday-duzeyi alanlar yalniz o dakikada
+                # aday olustuysa dolar (yoksa NULL — sifir uydurulmaz). ----
+                if SWING_ARSIV_AKTIF and yeni_satir_id:
+                    try:
+                        _ys8 = (durum.swing_karar or {}).get('yakin_seviye') or {}
+                        _igt8 = _ys8.get('ilk_gorulme_ts')
+                        _td8 = _grab_teshis_dk or {}
+                        supabase.table("balina_avcisi_data").update({
+                            "seviye_guc": _ys8.get('guc'),
+                            "seviye_yasi_dk": (round((time.time() - _igt8) / 60.0, 1)
+                                               if _igt8 else None),
+                            "seviye_yenileme_sayisi": _ys8.get('yenileme_sayisi'),
+                            "delme_min_belirleyen": _td8.get('delme_min_belirleyen'),
+                            "delme_atr_kati": _td8.get('delme_atr_kati'),
+                            "lik_yog_yon": _td8.get('lik_yog_yon'),
+                            "lik_yog_ters": _td8.get('lik_yog_ters'),
+                            "lik_iki_tarafli": _td8.get('lik_iki_tarafli'),
+                            "mum_ici_konum": _td8.get('mum_ici_konum'),
+                            "lik_pencere_damgasi": durum.lik_pencere_damgasi,
+                            "lik_borsa_sayisi": durum.lik_borsa_sayisi,
+                            "lik_donma_sayaci": durum.lik_donma_sayaci,
+                        }).eq("id", yeni_satir_id).execute()
+                    except Exception as e:
+                        logging.warning(f"teshis kolonlari UPDATE hatasi (kolonlar ALTER edildi mi?): {e}")
 
                 if kalite['cvd_guvenilir'] and (tasfiye_a or supurme_yeni_onaylar):
                     olaylar = []

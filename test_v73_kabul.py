@@ -68,7 +68,10 @@ FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 '_kline_kapali','_kline_pivotlar','_atr15','_sweep_adayi',
                 '_grab_pencere_ozeti','_sweep_teyit','_grab_stop',
                 # v8 guclendiriciler (G1 FVG / G2 CHoCH / G3 EQ):
-                '_fvg_bul','_choch_bul','_choch_olgunlastir','_eq_kumeleri'}  # v7.4-v8
+                '_fvg_bul','_choch_bul','_choch_olgunlastir','_eq_kumeleri',
+                # v8.8 teshis enstrumantasyonu (SADECE KAYIT):
+                '_seviye_kalicilik','_grab_teshis','_grab_n1_kayitlari',
+                '_lik_donma_guncelle'}  # v7.4-v8.8
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -884,6 +887,72 @@ check("G3-2: ayni ekstrem 1s+4s'te (tek dokunus) -> EQ DEGIL (sahte kume yok)",
 _h56 = hst('SHORT', 59880.0, _sevA5, None, stop_zorla=59940.0, min_guc=40)
 check("A5-6: grab modunda vol_pct=None gecerli sinyali OLDURMEZ (stop_zorla hazir)",
       _h56['gecerli'] is True and abs(_h56['rr_kisa']-3.0)<0.01)
+
+# ---------- 14) v8.8: GRAB TESHIS ENSTRUMANTASYONU (SADECE KAYIT) ----------
+# H1 — DAVRANIS DEGISMEZLIGI (en kritik): teshis eklenen _sweep_adayi'nin KARAR
+# alanlari eski fixturlerle birebir (A2/A3 testleri de ayni fixturlerle kosuyor).
+_v88a = sad(_M(60100,59700,59880), _SEV, 80, _ATRV, 50.0, 1e6, None, 1e6)
+check("V88-H1a: karar alanlari birebir (yon/tip/fitil/kapanis) + teshis SADECE EK",
+      _v88a['yon']=='SHORT' and _v88a['kapanis_tipi']=='DONUS'
+      and _v88a['fitil_ucu']==60100.0 and _v88a['kapanis']==59880.0
+      and isinstance(_v88a.get('teshis'),dict))
+_src88 = open(os.path.join(REPO,'main.py')).read()
+check("V88-H1b: SINYAL dusurme sarti ve kohort esigi kaynak duzeyinde AYNEN duruyor",
+      "if _kademe['kademe'] == 'SINYAL' and not _hedef['gecerli']" in _src88
+      and "if (_kademe['kademe'] == 'SINYAL' and _hedef and _hedef.get('gecerli')" in _src88
+      and "in ('HAZIRLAN', 'SINYAL') and _kademe['yon']" in _src88)
+# H2 — A: seviye kaliciligi
+kal = YENI['_seviye_kalicilik']
+_k1 = kal([], [{'fiyat':60000.0}], 0.15, 1000.0)
+_k2 = kal(_k1, [{'fiyat':60010.0},{'fiyat':61500.0}], 0.15, 1600.0)
+_kA = [s for s in _k2 if s['fiyat']==60010.0][0]; _kB=[s for s in _k2 if s['fiyat']==61500.0][0]
+check("V88-H2: ayni seviye 2 yenilemede yenileme_sayisi=2 + ilk_gorulme korunur; band disi=1",
+      _kA['yenileme_sayisi']==2 and _kA['ilk_gorulme_ts']==1000.0
+      and _kB['yenileme_sayisi']==1 and _kB['ilk_gorulme_ts']==1600.0)
+# H3 — B: delme esigi belirleyeni
+_h3p = sad(_M(60100,59700,59880), _SEV, 80, 60.0, 50.0, 1e6, None, 1e6)
+_h3a = sad(_M(60100,59700,59880), _SEV, 80, 300.0, 50.0, 1e6, None, 1e6)
+check("V88-H3: normal girdide belirleyen PCT; ATR terimi buyukken ATR",
+      _h3p['teshis']['delme_min_belirleyen']=='PCT'
+      and _h3a['teshis']['delme_min_belirleyen']=='ATR')
+# H4 — B: medyan yok/0 -> lik_yog_yon None (sifir DEGIL)
+gts = YENI['_grab_teshis']
+_pz88 = {'lik_long_yog_max':2.0,'lik_short_yog_max':3.0,'d_oi_pct':-0.3,'d_oi_5dk_min_pct':-0.2}
+_sv88 = {'guc':80,'kaynaklar':['ELLE'],'ilk_gorulme_ts':899000.0,'yenileme_sayisi':4}
+_t0m = gts(_v88a,_sv88,_pz88,[],0.0,None,900900.0)
+_t1m = gts(_v88a,_sv88,_pz88,[],2e5,2e5,900900.0)
+check("V88-H4: medyan yok/0 -> lik_yog_yon None; medyan varken deger (SHORT->short yog)",
+      _t0m['lik_yog_yon'] is None and _t0m['lik_iki_tarafli'] is None
+      and _t1m['lik_yog_yon']==3.0 and _t1m['lik_yog_ters']==2.0)
+# H5 — C: N+1 kaydi + ust-duzey sinyal anahtari YOK
+n1f = YENI['_grab_n1_kayitlari']
+_bek = [{'seviye':60000.0,'yon':'SHORT','mum_ts':900000.0,
+         'ham':{'sweep_guc':70,'kapanis_tipi':'DEVAM'}}]
+_n1r = n1f(_bek, {'t':900900.0,'c':59900.0}, _P(d_oi_pct=-0.3, d_oi_5dk_min_pct=-0.2,
+                                                lik_long_yog_max=3.0, d_vadeli_cvd=-500.0))
+check("V88-H5: DEVAM adayi + N+1 diger tarafta kapanis -> GRAB_ADAY_N1 var; "
+      "ust-duzey hedef/stop/rr/yon YOK; ayni tarafta kayit YOK",
+      len(_n1r)==1 and _n1r[0]['tetik']=='GRAB_ADAY_N1'
+      and all(k not in _n1r[0] for k in ('yon','stop','swing_hedef','kisa_hedef','rr_swing'))
+      and _n1r[0]['ham']['n1_teyit']['sonuc']=='GRAB_DONUS'
+      and n1f(_bek, {'t':900900.0,'c':60100.0}, _P())==[])
+# H6 — D: 4/4 saglanmayan girdi HAZIRLAN kalir (dusurme yalniz SINYAL'de — kaynak
+# kaniti H1b'de; davranis kaniti: _swing_kademe hedef'ten bagimsiz HAZIRLAN doner)
+_h6 = kdm(61150,_sev,_vol,_g0,False,_emL,0.0001,0.0)
+check("V88-H6: 4/4 yokken kademe HAZIRLAN kalir (hedef hesabi karari degistirmez)",
+      _h6['kademe']=='HAZIRLAN')
+# H7 — E (spec ic celiskisi: H7 metni 'alana None yaz' diyordu, E maddesi bunu
+# ACIKCA yasaklar cunku lik_ok kapisini oldurur = Faz 1 ihlali. E kazanir:
+# donma AYRI sayaca yazilir, mevcut alan ve aday uretimi DEGISMEZ.)
+ldg = YENI['_lik_donma_guncelle']
+check("V88-H7: ayni deger+damga ardisik turda -> sayac 1,2; damga ilerleyince/olculemeyince 0; "
+      "aday uretimi (lik_ok yolu) DEGISMEDI",
+      ldg((100.0,50.0,1710000000),(100.0,50.0,1710000000),0)==1
+      and ldg((100.0,50.0,1710000000),(100.0,50.0,1710000000),1)==2
+      and ldg((100.0,50.0,1710000000),(100.0,50.0,1710000060),2)==0
+      and ldg((100.0,50.0,None),(100.0,50.0,None),3)==0
+      and "lik_ok = lik_pencere_toplam is not None and lik_pencere_toplam > 0" in _src88
+      and sad(_M(60100,59700,59880), _SEV, 80, _ATRV, 50.0, 1e6, None, 1e6) is not None)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
