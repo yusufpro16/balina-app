@@ -71,7 +71,9 @@ FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 '_fvg_bul','_choch_bul','_choch_olgunlastir','_eq_kumeleri',
                 # v8.8 teshis enstrumantasyonu (SADECE KAYIT):
                 '_seviye_kalicilik','_grab_teshis','_grab_n1_kayitlari',
-                '_lik_donma_guncelle'}  # v7.4-v8.8
+                '_lik_donma_guncelle',
+                # v8.9 cerrahi duzeltmeler (SADECE KAYIT):
+                '_lik_penceresi_ayristir'}  # v7.4-v8.9
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -953,6 +955,37 @@ check("V88-H7: ayni deger+damga ardisik turda -> sayac 1,2; damga ilerleyince/ol
       and ldg((100.0,50.0,None),(100.0,50.0,None),3)==0
       and "lik_ok = lik_pencere_toplam is not None and lik_pencere_toplam > 0" in _src88
       and sad(_M(60100,59700,59880), _SEV, 80, _ATRV, 50.0, 1e6, None, 1e6) is not None)
+
+# ---------- 15) v8.9: IKI CERRAHI DUZELTME (SADECE KAYIT) ----------
+# D1 — davranis degismezligi: hst ayni fixturlerle ayni gecerli/oranlar (SB8-12 +
+# A5 testleri zaten kosuyor); kapi kaynak-duzeyinde rr_swing'te kaldi
+check("V89-D1: kademe kapisi hala rr_swing (kaynak) + fark=0 korunuyor",
+      "gecerli = rr_swing >= SWING_MIN_RR" in _src88
+      and _src88.count("gecerli = rr_kisa >= SWING_MIN_RR")==1)   # yalniz grab modunda
+# D2 — rr_kisa != rr_swing ureten girdide DB sozlugu iki alani dogru esler
+_d2 = hst('SHORT',63450,_sev,_vol,magnet=60480.0)
+check("V89-D2: rr_kisa ve rr_swing FARKLI uretildi + arsiv satirlari dogru anahtarda",
+      _d2['rr_kisa']!=_d2['rr_swing']
+      and '"swing_rr": _hs.get(\'rr_swing\')' in _src88
+      and '"swing_rr_kisa": _hs.get(\'rr_kisa\')' in _src88)
+# D3 — rr_kisa<2 ama rr_swing>=2: KADEME yolu (grab degil) gecerli=True kalmali
+_d3 = hst('SHORT', 63450.0,
+          [{'fiyat':63500.0,'kaynak':'HL','gizli':False},    # stop kaynagi (en yakin ust)
+           {'fiyat':63400.0,'kaynak':'VP','gizli':False},    # kisa hedef COK yakin -> rr_kisa<2
+           {'fiyat':60000.0,'kaynak':'LIQ','gizli':False}],  # swing hedef uzak -> rr_swing>=2
+          _vol, magnet=60000.0)
+check("V89-D3: rr_kisa<2.0 iken kademe yolu gecerli=True (rr_kisa kapiyi ETKILEMIYOR)",
+      _d3['rr_kisa']<2.0 and _d3['rr_swing']>=2.0 and _d3['gecerli'] is True, f"={_d3}")
+# D4-D6 — lik_borsa sifir tuzagi
+lpa = YENI['_lik_penceresi_ayristir']
+check("V89-D4: liste var ama tum history bos -> lik_borsa None; agg toplamlari 0.0 DEGISMEDI",
+      lpa([{'history':[]},{'history':[]}])==(0.0,0.0,None,None))
+check("V89-D5: en az bir borsada history -> lik_borsa>=1 + toplam/damga dogru",
+      lpa([{'history':[{'t':1710000000,'l':100,'s':50},{'t':1710000060,'l':10,'s':5}]},
+           {'history':[]}])==(110.0,55.0,1710000060,1))
+check("V89-D6: 200-disi yolda lik_borsa None kalir (init if'ten ONCE — kaynak kaniti)",
+      "lik_borsa = None          # v8.8-E" in _src88
+      and "lik_borsa == 0" in _src88)   # sifir tuzagi kurali fonksiyonda
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")

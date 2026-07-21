@@ -1137,17 +1137,12 @@ def coinalyze_guncelle():
             if liq_res.status_code == 200:
                 data = liq_res.json()
                 if isinstance(data, list):
-                    lik_borsa = 0
-                    for borsa in data:
-                        hist = borsa.get('history', [])
-                        if hist:
-                            lik_borsa += 1
-                        for nokta in hist:
-                            long_liq += float(nokta.get('l', 0) or 0)
-                            short_liq += float(nokta.get('s', 0) or 0)
-                            _nt = nokta.get('t')
-                            if _nt:
-                                lik_damga = max(lik_damga or 0, int(_nt))
+                    # v8.9-B: ayristirma SAF fonksiyonda (parse birebir ayni; tek fark
+                    # sifir tuzagi — 0 borsa "olculemedi"dir, None doner)
+                    long_liq, short_liq, lik_damga, lik_borsa = _lik_penceresi_ayristir(data)
+                    if lik_borsa is None:
+                        logging.info("LIKIDASYON: API liste dondu ama hicbir borsada history yok "
+                                     "-> lik_borsa_sayisi=None (olculemedi)")
                     durum.coinalyze_saglikli = True
                     # v8: likidasyon tazelik damgasi — grab dakika izi bayatken None yazar
                     durum.coinalyze_liq_zaman = time.time()
@@ -2526,6 +2521,40 @@ def _grab_teshis(aday, seviye, pencere, pencere_kayitlari, med_long, med_short, 
     out['mum_ici_konum'] = (round((fitil_ts - mts) / 900.0, 3)
                            if (fitil_ts is not None and mts is not None) else None)
     return out
+
+
+def _lik_penceresi_ayristir(data):
+    """
+    v8.9-B — Coinalyze likidasyon cevabinin ayristirilmasi. SAF (D4-D6 testleri
+    dogrudan cagirir); parse mantigi v8.8-E'deki satirlarla BIREBIR (float
+    donusumu, damga max'i, borsa sayimi) — yalnizca sona SIFIR TUZAGI eklendi:
+    liste donup HICBIR borsada history yoksa lik_borsa None'dir ("0 borsa olctu"
+    degil "OLCULEMEDI"; olculen: 772 satirin 141'i = %32 boyle kordu ve korluk
+    'sifir likidasyon' diye kaydedilip TASFIYE'yi yapisal olarak imkansiz
+    kiliyordu — kohort sessizce kirleniyordu).
+    agg toplamlari DEGISMEZ (0.0 kalir): onlar karar zincirine girer
+    (lik_ok / likidasyon_yogunlugu / _tasfiye_bayraklari) — None yazmak sinyal
+    davranisini degistirirdi (v8.8-E'nin uyardigi tuzagin aynisi). Korluk
+    ISARETLENIR, veri DEGISTIRILMEZ; kapi karari Faz 2'de.
+    Donus: (long_liq, short_liq, lik_damga, lik_borsa).
+    """
+    long_liq = 0.0
+    short_liq = 0.0
+    lik_damga = None
+    lik_borsa = 0
+    for borsa in (data or []):
+        hist = borsa.get('history', [])
+        if hist:
+            lik_borsa += 1
+        for nokta in hist:
+            long_liq += float(nokta.get('l', 0) or 0)
+            short_liq += float(nokta.get('s', 0) or 0)
+            _nt = nokta.get('t')
+            if _nt:
+                lik_damga = max(lik_damga or 0, int(_nt))
+    if lik_borsa == 0:
+        lik_borsa = None
+    return long_liq, short_liq, lik_damga, lik_borsa
 
 
 def _lik_donma_guncelle(onceki, simdiki, sayac):
@@ -5012,6 +5041,7 @@ def ozet_ve_analiz_dongusu():
                                     "swing_uzun_hedef": _hs.get('swing_hedef'),
                                     "swing_stop": _hs.get('stop'),
                                     "swing_rr": _hs.get('rr_swing'),
+                                    "swing_rr_kisa": _hs.get('rr_kisa'),   # v8.9-A: SADECE KAYIT, kapi DEGIL
                                     "swing_tetik": _tetik,
                                 }).eq("id", yeni_satir_id).execute()
                             except Exception as e:
