@@ -987,6 +987,44 @@ check("V89-D6: 200-disi yolda lik_borsa None kalir (init if'ten ONCE — kaynak 
       "lik_borsa = None          # v8.8-E" in _src88
       and "lik_borsa == 0" in _src88)   # sifir tuzagi kurali fonksiyonda
 
+# ---------- 16) v9.0: HARITA OZETI (uc alan; SALT KAYIT) ----------
+# Testler GERCEK kod blogunu calistirir (marker ile cikarilir) — ikiz mantik YOK.
+import re as _re
+_m90 = _re.search(r"# v9\.0-A HESAP BASLA.*?\n(.*?)# v9\.0-A HESAP BITIR", _src88, _re.S)
+check("V90-D0: v9.0-A hesap blogu marker'lariyla mevcut", _m90 is not None)
+_blk90 = _ast.parse('if True:\n' + _m90.group(1)).body[0]
+_kod90 = compile(_ast.Module(body=[_blk90], type_ignores=[]), 'v90', 'exec')
+class _D90:
+    pass
+def _kos90(seviyeler, now=6000.0):
+    _d = _D90(); _d.swing_seviyeler = seviyeler
+    _ns = {'durum': _d, 'SWING_SEVIYE_MIN_GUC': YENI['SWING_SEVIYE_MIN_GUC'],
+           'time': type('T', (), {'time': staticmethod(lambda: now)})}
+    exec(_kod90, _ns)
+    return _ns['_hs_say'], _ns['_hm_yas'], _ns['_hg_uygun']
+_s2,_y2,_g2 = _kos90([{'fiyat':1,'gizli':False},{'fiyat':2,'gizli':False},
+                      {'fiyat':3,'gizli':False},{'fiyat':4,'gizli':True},{'fiyat':5,'gizli':True}])
+check("V90-D2: 3 gorunur + 2 gizli -> harita_seviye_sayisi=3", _s2==3)
+check("V90-D3: guc [80,45,20], MIN=40 -> harita_grab_uygun=2",
+      _kos90([{'fiyat':1,'guc':80},{'fiyat':2,'guc':45},{'fiyat':3,'guc':20}])[2]==2)
+check("V90-D4: gizli+guc=90 seviye grab_uygun'a GIRMEZ (5129 filtresiyle ayni)",
+      _kos90([{'fiyat':1,'guc':90,'gizli':True},{'fiyat':2,'guc':50}])[2]==1)
+_y5 = _kos90([{'fiyat':1,'ilk_gorulme_ts':6000-600},{'fiyat':2,'ilk_gorulme_ts':6000-1200},
+              {'fiyat':3,'ilk_gorulme_ts':6000-1800}])[1]
+check("V90-D5: yaslar 10/20/30 dk -> medyan ~20", abs(_y5-20.0)<0.01, f"={_y5}")
+check("V90-D6: hicbirinde ilk_gorulme_ts yok -> medyan None",
+      _kos90([{'fiyat':1},{'fiyat':2}])[1] is None)
+check("V90-D7: harita bos/None -> UC ALAN DA None (0 degil — sifir tuzagi)",
+      _kos90([])==(None,None,None) and _kos90(None)==(None,None,None))
+# D1 — davranis degismezligi: hesap bloklari yalniz KAYIT sozlugune akar;
+# uc alan hicbir kosulda okunmuyor (kaynak kaniti) + fark=0 zaten yukarida
+check("V90-D1: uc alan yalniz UPDATE sozlugunde 1'er kez (hicbir if/karar okumuyor)",
+      _src88.count('"harita_seviye_sayisi"')==1
+      and _src88.count('"harita_medyan_yas_dk"')==1
+      and _src88.count('"harita_grab_uygun"')==1
+      and 'if _hs_say' not in _src88 and 'if _hg_uygun' not in _src88
+      and 'if _hm_yas' not in _src88)
+
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
 sys.exit(1 if fails else 0)

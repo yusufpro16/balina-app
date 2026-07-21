@@ -5305,6 +5305,40 @@ def ozet_ve_analiz_dongusu():
                         _ys8 = (durum.swing_karar or {}).get('yakin_seviye') or {}
                         _igt8 = _ys8.get('ilk_gorulme_ts')
                         _td8 = _grab_teshis_dk or {}
+                        # ---- v9.0-B: acik tutarsizlik IZI (duzeltme YOK — sebep
+                        # bilinmeden duzeltmek olmayan hatayi duzeltmek olur).
+                        # seviye_guc NULL yazilirken swing_seviye doluysa logla;
+                        # bir gun sonra log okunur, sebep bulunur, spec ondan sonra.
+                        try:
+                            if _ys8 == {} and _ys.get('fiyat'):
+                                logging.info("TESHIS: yakin_seviye bos ama swing_seviye dolu "
+                                             f"(id={yeni_satir_id}) — v9.0-B izi")
+                        except NameError:
+                            pass   # _ys tanimsiz (kademe blogu erken dustu) — iz atlanir
+                        # ---- v9.0-A: HARITA OZETI (uc alan; SALT KAYIT, kapi DEGIL).
+                        # Dakikalik dongude durum.swing_seviyeler'den DOGRUDAN hesap
+                        # (yenileme aninda kopyalamak medyan yasi dondururdu). Harita
+                        # bos/None ise ucu de None — "sifir seviye var" degil "harita
+                        # henuz kurulmadi" (v8.9-B sifir tuzaginin aynisi).
+                        # v9.0-A HESAP BASLA (kabul testleri bu blogu marker'la calistirir)
+                        _sw9 = durum.swing_seviyeler
+                        _now9 = time.time()
+                        if _sw9:
+                            _g9 = [s for s in _sw9 if not s.get('gizli')]
+                            _hs_say = len(_g9)
+                            _yaslar9 = sorted((_now9 - s['ilk_gorulme_ts']) / 60.0
+                                              for s in _g9 if s.get('ilk_gorulme_ts'))
+                            _hm_yas = (round(_yaslar9[len(_yaslar9) // 2], 1)
+                                       if _yaslar9 else None)
+                            # grab filtresinin BIREBIR tersi (satir ~5129; sabit ayni sembol)
+                            _hg_uygun = sum(1 for s in _sw9
+                                            if not (s.get('gizli')
+                                                    or (s.get('guc') or 0) < SWING_SEVIYE_MIN_GUC))
+                        else:
+                            _hs_say = None
+                            _hm_yas = None
+                            _hg_uygun = None
+                        # v9.0-A HESAP BITIR
                         supabase.table("balina_avcisi_data").update({
                             "seviye_guc": _ys8.get('guc'),
                             "seviye_yasi_dk": (round((time.time() - _igt8) / 60.0, 1)
@@ -5319,6 +5353,9 @@ def ozet_ve_analiz_dongusu():
                             "lik_pencere_damgasi": durum.lik_pencere_damgasi,
                             "lik_borsa_sayisi": durum.lik_borsa_sayisi,
                             "lik_donma_sayaci": durum.lik_donma_sayaci,
+                            "harita_seviye_sayisi": _hs_say,    # v9.0-A: SALT KAYIT
+                            "harita_medyan_yas_dk": _hm_yas,
+                            "harita_grab_uygun": _hg_uygun,
                         }).eq("id", yeni_satir_id).execute()
                     except Exception as e:
                         logging.warning(f"teshis kolonlari UPDATE hatasi (kolonlar ALTER edildi mi?): {e}")
