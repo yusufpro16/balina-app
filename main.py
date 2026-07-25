@@ -383,8 +383,8 @@ SWING_MOTOR_AKTIF    = True         # swing motoru uretir + yazar (ayri anahtar)
 SCALP_SINYAL_AKTIF   = False        # scalp sinyali SUSTURULDU (kohort/skorlar KAYITTA KALIR;
                                     # yalniz DB'ye yazilan aktif sinyal_durumu susar)
 SWING_YAKINLIK_VOL   = 2.0          # fiyat seviyeye bu x vol yaklasinca IZLE kademesi
-SWING_MIN_RR         = 2.0          # v8: 1.5 -> 2.0. Grab motoru rr_kisa'yi, eski kademe
-                                    # yolu rr_swing'i bu esikle kapilar (tek tanim — GK-4)
+SWING_MIN_RR         = 2.0          # v8: 1.5 -> 2.0. v9.2: HER IKI yol (grab + kademe)
+                                    # rr_kisa'yi bu esikle kapilar (tek tanim — GK-4)
 SWING_STOP_TAMPON_VOL = 0.2         # stop = yapisal seviye +/- bu x vol (tampon)
 SWING_FUNDING_ASIRI  = 0.0005       # |funding| > bu -> kalabalik asiri (HAZIRLAN tetigi)
 SWING_YAPISAL = ('ELLE', 'VP', 'HL', 'SWING_PIVOT', 'LIQ')  # stop bunlardan (ROUND zayif, stop olmaz)
@@ -1174,50 +1174,62 @@ def coinalyze_guncelle():
 
             time.sleep(0.4)
 
-            fr_url = f"{COINALYZE_BASE}/funding-rate?symbols={sembol_param}"
-            fr_res = session.get(fr_url, headers=headers, timeout=15)
-            agg_fr = 0.0
-            if fr_res.status_code == 200:
-                data = fr_res.json()
-                if isinstance(data, list) and len(data) > 0:
-                    degerler = [float(b.get('value', 0) or 0) for b in data]
-                    # v8.5 BIRIM DUZELTMESI: Coinalyze funding 'value' YUZDE doner
-                    # (0.01 = %0.01), Binance lastFundingRate ise ONDALIK (0.0001 = %0.01).
-                    # Kod bunlari ayni sayiyordu -> agg_funding funding_rate'i EZERKEN
-                    # 100x sisiyordu (panel %1 gosteriyor, gercekte ~%0.01). Sonuc:
-                    # SWING_FUNDING_ASIRI + surec_takip_et funding esikleri SUREKLI
-                    # yaniliyordu (sahte "funding asiri" -> sahte HAZIRLAN). /100 ile
-                    # Binance ondalik birimine hizalanir. (Funding scalp SKORUNA girmez;
-                    # Faz 1 fark=0 etkilenmez.)
-                    agg_fr = (sum(degerler) / len(degerler)) / 100.0
+            # v9.2 KADANS: funding + L/S 5 turda BIR cekilir (2 cagri/dk -> 0.4).
+            # Canli veri (23-25 Tem dump): lik korlugu %48, 133 blok NEREDEYSE TUM
+            # saatlere yayilmis (medyan 6dk, max 64dk) -> kronik 429/kredi baskisi.
+            # Funding 8 saatte, L/S dakikalar icinde yavas degisir; dakikalik cekim
+            # israfti. Skip turunda None = "bu tur olculmedi" (sifir tuzagi, GK):
+            # lock blogu None'i YAZMAZ, son gercek olcum korunur. Binance funding
+            # (dakikalik, ayri thread) ve Binance L/S fallback zaten devrede.
+            coinalyze_guncelle._fr_ls_tur = getattr(coinalyze_guncelle, '_fr_ls_tur', -1) + 1
+            agg_fr = None
+            agg_ls = None
+            if coinalyze_guncelle._fr_ls_tur % 5 == 0:
+                fr_url = f"{COINALYZE_BASE}/funding-rate?symbols={sembol_param}"
+                fr_res = session.get(fr_url, headers=headers, timeout=15)
+                agg_fr = 0.0
+                if fr_res.status_code == 200:
+                    data = fr_res.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        degerler = [float(b.get('value', 0) or 0) for b in data]
+                        # v8.5 BIRIM DUZELTMESI: Coinalyze funding 'value' YUZDE doner
+                        # (0.01 = %0.01), Binance lastFundingRate ise ONDALIK (0.0001 = %0.01).
+                        # Kod bunlari ayni sayiyordu -> agg_funding funding_rate'i EZERKEN
+                        # 100x sisiyordu (panel %1 gosteriyor, gercekte ~%0.01). Sonuc:
+                        # SWING_FUNDING_ASIRI + surec_takip_et funding esikleri SUREKLI
+                        # yaniliyordu (sahte "funding asiri" -> sahte HAZIRLAN). /100 ile
+                        # Binance ondalik birimine hizalanir. (Funding scalp SKORUNA girmez;
+                        # Faz 1 fark=0 etkilenmez.)
+                        agg_fr = (sum(degerler) / len(degerler)) / 100.0
 
-            time.sleep(0.4)
+                time.sleep(0.4)
 
-            ls_url = (f"{COINALYZE_BASE}/long-short-ratio-history"
-                      f"?symbols={sembol_param}&interval=1min"
-                      f"&from={bes_dk_once}&to={simdi}")
-            ls_res = session.get(ls_url, headers=headers, timeout=15)
-            agg_ls = 0.0
-            if ls_res.status_code == 200:
-                data = ls_res.json()
-                if isinstance(data, list) and len(data) > 0:
-                    son_oranlar = []
-                    for borsa in data:
-                        hist = borsa.get('history', [])
-                        if hist:
-                            son_oranlar.append(float(hist[-1].get('r', 0) or 0))
-                    if son_oranlar:
-                        agg_ls = sum(son_oranlar) / len(son_oranlar)
-            if agg_ls <= 0:
-                # v8.6 TANI: L/S neden 0? (canli panel 'veri yok' gosteriyordu, sebep
-                # hic loglanmiyordu). 30 dongude bir logla — spam yapmadan Render
-                # loglarinda kok neden gorunur olsun (status/govde). Binance fallback
-                # devrede oldugundan metrik yine dolar.
-                coinalyze_guncelle._ls_diag = getattr(coinalyze_guncelle, '_ls_diag', 0) + 1
-                if coinalyze_guncelle._ls_diag % 30 == 1:
-                    logging.warning(
-                        f"Coinalyze L/S bos (status={ls_res.status_code}, "
-                        f"govde[:120]={ls_res.text[:120]!r}) — Binance fallback kullanilacak")
+                ls_url = (f"{COINALYZE_BASE}/long-short-ratio-history"
+                          f"?symbols={sembol_param}&interval=1min"
+                          f"&from={bes_dk_once}&to={simdi}")
+                ls_res = session.get(ls_url, headers=headers, timeout=15)
+                agg_ls = 0.0
+                if ls_res.status_code == 200:
+                    data = ls_res.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        son_oranlar = []
+                        for borsa in data:
+                            hist = borsa.get('history', [])
+                            if hist:
+                                son_oranlar.append(float(hist[-1].get('r', 0) or 0))
+                        if son_oranlar:
+                            agg_ls = sum(son_oranlar) / len(son_oranlar)
+                if agg_ls <= 0:
+                    # v8.6 TANI: L/S neden 0? (canli panel 'veri yok' gosteriyordu, sebep
+                    # hic loglanmiyordu). 30 dongude bir logla — spam yapmadan Render
+                    # loglarinda kok neden gorunur olsun (status/govde). Binance fallback
+                    # devrede oldugundan metrik yine dolar. (v9.2: sayac yalniz CEKIM
+                    # turlarinda isler — skip turu "bos" sayilmaz.)
+                    coinalyze_guncelle._ls_diag = getattr(coinalyze_guncelle, '_ls_diag', 0) + 1
+                    if coinalyze_guncelle._ls_diag % 30 == 1:
+                        logging.warning(
+                            f"Coinalyze L/S bos (status={ls_res.status_code}, "
+                            f"govde[:120]={ls_res.text[:120]!r}) — Binance fallback kullanilacak")
 
             time.sleep(0.4)
 
@@ -1278,8 +1290,11 @@ def coinalyze_guncelle():
                 durum.lik_borsa_sayisi = lik_borsa
                 durum.lik_donma_sayaci = getattr(coinalyze_guncelle, '_lik_donma', 0)
                 durum.agg_open_interest = agg_oi
-                durum.agg_funding = agg_fr
-                durum.agg_ls_ratio = agg_ls
+                # v9.2: kadans skip turunda (None) yazilmaz — son gercek olcum korunur
+                if agg_fr is not None:
+                    durum.agg_funding = agg_fr
+                if agg_ls is not None:
+                    durum.agg_ls_ratio = agg_ls
                 if vadeli_cvd_hesaplandi:
                     durum.agg_vadeli_cvd = yeni_vadeli_cvd
                     durum.coinalyze_cvd_saglikli = True
@@ -1292,7 +1307,9 @@ def coinalyze_guncelle():
             logging.info(
                 f"COINALYZE AGG ({len(semboller)}v/{len(spot_semboller)}s borsa) -> "
                 f"LongLiq: ${long_liq:,.0f} | ShortLiq: ${short_liq:,.0f} | "
-                f"OI: ${agg_oi:,.0f} | Funding: {agg_fr:.5f} | L/S: {agg_ls:.2f} | "
+                f"OI: ${agg_oi:,.0f} | "
+                f"Funding: {f'{agg_fr:.5f}' if agg_fr is not None else 'atlandi'} | "
+                f"L/S: {f'{agg_ls:.2f}' if agg_ls is not None else 'atlandi'} | "
                 f"VadeliCVD: {agg_vadeli_cvd_log:,.0f}{'(yeni)' if vadeli_cvd_hesaplandi else '(korunan)'} | "
                 f"SpotCVD: {agg_spot_cvd_log:,.0f}{'(yeni)' if spot_cvd_hesaplandi else '(korunan)'}"
             )
@@ -2229,7 +2246,9 @@ def _swing_hedef_stop(yon, giris, seviyeler, vol_pct, magnet=None,
     v8.1 — Hedef + stop YAPIDAN uretir (sabit %% ASLA). SAF fonksiyon.
     SHORT: kisa_hedef=bir alt seviye; swing_hedef=magnet (en yogun liq kumesi) ya da
     en uzak alt seviye; stop=bir UST YAPISAL seviye + SWING_STOP_TAMPON_VOL x vol.
-    LONG simetrik. rr_swing < SWING_MIN_RR -> gecerli=False (kotu R/R -> sinyal yok).
+    LONG simetrik. v9.2: R/R kapisi HER IKI modda rr_KISA uzerinden —
+    rr_kisa < SWING_MIN_RR -> gecerli=False (ilk seviyeye bile 2R yoksa sinyal yok;
+    rr_swing salt kayit).
 
     v8 GRAB MODU (ADIM 5; stop_zorla verilirse — mevcut fonksiyon GENISLETILDI,
     ikiz yazilmadi):
@@ -2293,12 +2312,13 @@ def _swing_hedef_stop(yon, giris, seviyeler, vol_pct, magnet=None,
         risk = giris - stop
         rr_kisa = (kisa - giris) / risk
         rr_swing = (swing - giris) / risk
-    if grab_modu:
-        gecerli = rr_kisa >= SWING_MIN_RR         # v8 ADIM 5: R/R kapisi KISA hedefe
-        sebep = 'ok' if gecerli else f'rr_kisa {round(rr_kisa, 2)} < {SWING_MIN_RR}'
-    else:
-        gecerli = rr_swing >= SWING_MIN_RR
-        sebep = 'ok' if gecerli else f'rr_swing {round(rr_swing, 2)} < {SWING_MIN_RR}'
+    # v9.2: R/R kapisi HER IKI modda rr_KISA uzerinden (birlesik kapi). Canli veri
+    # (23-25 Tem, n=85 HAZIRLAN kurulumu): rr_swing kapisi 77/85 geciriyordu
+    # (medyan 17.1 — uzak miknatis hedefi kapiyi lastik damgaya ceviriyor),
+    # rr_kisa kapisi 30/85 gecirir (gecenlerin medyani 3.6 — gercek 2R+ kalite).
+    # rr_swing KAYIT olarak kalir (kohort/arsiv/backtest), artik kapiya girmez.
+    gecerli = rr_kisa >= SWING_MIN_RR
+    sebep = 'ok' if gecerli else f'rr_kisa {round(rr_kisa, 2)} < {SWING_MIN_RR}'
     return {'kisa_hedef': round(kisa, 1), 'swing_hedef': round(swing, 1),
             'stop': round(stop, 1), 'rr_kisa': round(rr_kisa, 2),
             'rr_swing': round(rr_swing, 2), 'gecerli': gecerli, 'sebep': sebep}
@@ -5084,9 +5104,10 @@ def ozet_ve_analiz_dongusu():
                                 logging.warning(f"swing kohort yazma hatasi: {e}")
                         durum.swing_son_kademe = _kademe['kademe']
                         if _kademe['kademe'] in ('HAZIRLAN', 'SINYAL'):
+                            # v9.2: kapi artik rr_kisa — log her ikisini gosterir
                             logging.info(f"SWING {_kademe['kademe']} {_kademe['yon'] or ''} "
                                          f"skor={_kademe['kademe_skoru']} "
-                                         f"{'RR_swing=' + str(_hedef['rr_swing']) if _hedef else ''}")
+                                         f"{'RR_kisa=' + str(_hedef['rr_kisa']) + ' RR_swing=' + str(_hedef['rr_swing']) if _hedef else ''}")
                     except Exception as e:
                         logging.warning(f"swing motor hatasi (akis devam eder): {e}")
 

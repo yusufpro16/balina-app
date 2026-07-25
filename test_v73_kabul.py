@@ -957,25 +957,31 @@ check("V88-H7: ayni deger+damga ardisik turda -> sayac 1,2; damga ilerleyince/ol
       and sad(_M(60100,59700,59880), _SEV, 80, _ATRV, 50.0, 1e6, None, 1e6) is not None)
 
 # ---------- 15) v8.9: IKI CERRAHI DUZELTME (SADECE KAYIT) ----------
-# D1 — davranis degismezligi: hst ayni fixturlerle ayni gecerli/oranlar (SB8-12 +
-# A5 testleri zaten kosuyor); kapi kaynak-duzeyinde rr_swing'te kaldi
-check("V89-D1: kademe kapisi hala rr_swing (kaynak) + fark=0 korunuyor",
-      "gecerli = rr_swing >= SWING_MIN_RR" in _src88
-      and _src88.count("gecerli = rr_kisa >= SWING_MIN_RR")==1)   # yalniz grab modunda
+# D1 — v9.2'DE BILINCLI YENIDEN YAZILDI (kullanici emri: "rr kismina ayar cekmek
+# lazim"). Eski test kademe kapisinin rr_swing'te kaldigini KILITLIYORDU; canli
+# veri (n=85) rr_swing kapisinin lastik damga oldugunu gosterdi (77/85 gecti,
+# medyan 17.1). Yeni sozlesme: TEK birlesik kapi rr_kisa uzerinden, her iki modda.
+check("V89-D1(v9.2): kapi BIRLESIK — kaynakta tek 'rr_kisa >= SWING_MIN_RR', rr_swing kapisi YOK",
+      "gecerli = rr_swing >= SWING_MIN_RR" not in _src88
+      and _src88.count("gecerli = rr_kisa >= SWING_MIN_RR")==1)   # tek tanim, iki mod
 # D2 — rr_kisa != rr_swing ureten girdide DB sozlugu iki alani dogru esler
 _d2 = hst('SHORT',63450,_sev,_vol,magnet=60480.0)
 check("V89-D2: rr_kisa ve rr_swing FARKLI uretildi + arsiv satirlari dogru anahtarda",
       _d2['rr_kisa']!=_d2['rr_swing']
       and '"swing_rr": _hs.get(\'rr_swing\')' in _src88
       and '"swing_rr_kisa": _hs.get(\'rr_kisa\')' in _src88)
-# D3 — rr_kisa<2 ama rr_swing>=2: KADEME yolu (grab degil) gecerli=True kalmali
+# D3 — v9.2'DE BILINCLI YENIDEN YAZILDI (Faz-2 karari, kullanici emriyle).
+# Eski test "rr_kisa kapiyi etkilememeli"yi kilitliyordu; v9.2 tam tersini
+# SOZLESME yapar: ilk seviyeye bile 2R yoksa kurulum sinyal DEGILDIR —
+# rr_swing'in uzak miknatisla sisip kapiyi gecirmesi (lastik damga) biter.
 _d3 = hst('SHORT', 63450.0,
           [{'fiyat':63500.0,'kaynak':'HL','gizli':False},    # stop kaynagi (en yakin ust)
            {'fiyat':63400.0,'kaynak':'VP','gizli':False},    # kisa hedef COK yakin -> rr_kisa<2
            {'fiyat':60000.0,'kaynak':'LIQ','gizli':False}],  # swing hedef uzak -> rr_swing>=2
           _vol, magnet=60000.0)
-check("V89-D3: rr_kisa<2.0 iken kademe yolu gecerli=True (rr_kisa kapiyi ETKILEMIYOR)",
-      _d3['rr_kisa']<2.0 and _d3['rr_swing']>=2.0 and _d3['gecerli'] is True, f"={_d3}")
+check("V89-D3(v9.2): rr_kisa<2.0 -> KADEME yolu da gecerli=False (birlesik kapi) + sebep rr_kisa",
+      _d3['rr_kisa']<2.0 and _d3['rr_swing']>=2.0 and _d3['gecerli'] is False
+      and str(_d3['sebep']).startswith('rr_kisa'), f"={_d3}")
 # D4-D6 — lik_borsa sifir tuzagi
 lpa = YENI['_lik_penceresi_ayristir']
 check("V89-D4: liste var ama tum history bos -> lik_borsa None; agg toplamlari 0.0 DEGISMEDI",
@@ -1024,6 +1030,31 @@ check("V90-D1: uc alan yalniz UPDATE sozlugunde 1'er kez (hicbir if/karar okumuy
       and _src88.count('"harita_grab_uygun"')==1
       and 'if _hs_say' not in _src88 and 'if _hg_uygun' not in _src88
       and 'if _hm_yas' not in _src88)
+
+# ---------- 17) v9.2: BIRLESIK R/R KAPISI + COINALYZE KADANSI ----------
+# Kullanici emri ("rr kismina ayar cekmek lazim") + canli veri (23-25 Tem dump,
+# n=85 HAZIRLAN): rr_swing kapisi 77/85 geciriyordu (medyan 17.1 — lastik damga),
+# rr_kisa kapisi 30/85 gecirir (gecenlerin medyani 3.6). Kapi HER IKI modda rr_kisa;
+# rr_swing salt kayit (kohort/arsiv/backtest) olarak kalir.
+# V92-1 — davranissal simetri: kademe modunda gecerli birebir rr_kisa'yi izler
+_v92a = hst('SHORT',63450,_sev,_vol,magnet=60480.0)          # SB8 fixturu: rr_kisa ~21
+check("V92-1: kademe modu gecerli==rr_kisa kapisi (iyi kurulum GECER, kotu DUSER)",
+      _v92a['gecerli'] is True and _v92a['rr_kisa'] >= YENI['SWING_MIN_RR']
+      and _d3['gecerli'] is False and _d3['rr_kisa'] < YENI['SWING_MIN_RR'],
+      f"iyi={_v92a['rr_kisa']} kotu={_d3['rr_kisa']}")
+# V92-2 — kadans kaynak kaniti: funding+L/S 5 turda bir; skip turu None baslar
+# (sifir tuzagi: "olculmedi" != 0.0) ve lock blogu None'i YAZMAZ (son olcum korunur)
+check("V92-2: funding+L/S kadansi — 5 turda bir cekim + skip turu None",
+      "_fr_ls_tur % 5 == 0" in _src88
+      and "agg_fr = None" in _src88 and "agg_ls = None" in _src88)
+check("V92-3: skip turunda durum YAZILMAZ — lock blogunda kosullu yazim",
+      "if agg_fr is not None:\n                    durum.agg_funding = agg_fr" in _src88
+      and "if agg_ls is not None:\n                    durum.agg_ls_ratio = agg_ls" in _src88)
+# V92-4 — L/S bos-tani sayaci yalniz CEKIM turunda isler (skip "bos" sayilmaz):
+# diag artisi if-kadans blogunun ICINDE (girintisi cekim blogu seviyesinde)
+check("V92-4: L/S diag sayaci kadans blogunun icinde (skip turu diag'i sisirmez)",
+      "\n                if agg_ls <= 0:" in _src88
+      and "\n            if agg_ls <= 0:" not in _src88)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")

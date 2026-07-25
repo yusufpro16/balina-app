@@ -735,19 +735,19 @@ function sinyalKart(k,ist,kohort,rows,grab){
   }
   const R=k.yon==='SHORT'?'var(--alarm)':'var(--sonar)';
   kart.style.boxShadow=`0 0 0 1px ${k.yon==='SHORT'?'rgba(255,84,112,.4)':'rgba(47,245,200,.4)'},0 0 30px rgba(0,0,0,.3)`;
-  const rrRenk=hs.rr_swing>=3?'var(--sonar)':hs.rr_swing>=1.5?'var(--amber)':'var(--alarm)';
+  const rrRenk=hs.rr_kisa>=3?'var(--sonar)':hs.rr_kisa>=2?'var(--amber)':'var(--alarm)';   /* v9.2: kapi rr_kisa */
   $('sinyalIc').innerHTML=`
     <div class="sinyal-grid">
       <div class="sk"><div class="l">Yön</div><div class="v" style="color:${R}">${k.yon}</div></div>
       <div class="sk"><div class="l">Stop (yapısal)</div><div class="v neg">$${tl(hs.stop)}</div></div>
       <div class="sk"><div class="l">Kısa Hedef</div><div class="v">$${tl(hs.kisa_hedef)}</div></div>
-      <div class="sk"><div class="l">R / R</div><div class="v" style="color:${rrRenk}">${(hs.rr_swing||0).toFixed(1)}R</div></div>
+      <div class="sk"><div class="l">R/R (kısa · swing)</div><div class="v" style="color:${rrRenk}">${(hs.rr_kisa||0).toFixed(1)} · ${(hs.rr_swing||0).toFixed(1)}</div></div>
     </div>
     <div class="swing-hedef-satir">
       <span class="neu">🧲 swing hedef (mıknatıs)</span>
       <b class="pos" style="font-size:16px">$${tl(hs.swing_hedef)}</b>
     </div>
-    <div class="expl">skor ${k.kademe_skoru||0}/100 · kohort n=${kohortN} · stop hep yapıdan, R/R&lt;1.5 sinyal vermez</div>`;
+    <div class="expl">skor ${k.kademe_skoru||0}/100 · kohort n=${kohortN} · stop hep yapıdan, R/R(kısa)&lt;2 sinyal vermez</div>`;
 }
 
 /* ---------- SIRA 3a: CVD — spot & vadeli ayri mini bar ---------- */
