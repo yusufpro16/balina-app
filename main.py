@@ -3705,17 +3705,22 @@ def balina_skoru_hesapla(a, pencere, kalite):
     a: guncel degerler dict'i
     pencere: PENCERE_DK once ile simdi arasi degisimler (yoksa None)
     kalite: dict(cvd_guvenilir: bool, sebep: str) -- A maddesi
-    Donus: (long_skor, short_skor, sinyal, rejim, aciklama, emilim)  # v7.4: 6. eleman
+    Donus: (long_skor, short_skor, sinyal, rejim, aciklama, emilim,
+            golge_yon, golge_kapi, golge_skor)  # v7.4: 6. eleman; v9.3: 7-9 (golge)
     """
-    # v7.4: erken-donuslerde de emilim (bos) dondur — cagiran 6 eleman ACIYOR.
+    # v7.4: erken-donuslerde de emilim (bos) dondur — cagiran artik 9 eleman ACIYOR
+    # (v9.3). Erken donusler de 9'lu olmali: skor 0'da golge tanim geregi None
+    # (esik alti) — ayni None'lar burada da doner, arity ASLA degismez.
     _bos_emilim = {'emilim_esnekligi': None, 'emilim_borsasi': None,
                    'emilim_spot_pay': None, 'satici_tukenmesi': False,
                    'sonme_orani': None, 'esik_spot_neg': round(a.get('esik_spot_neg', -2000.0), 0)}
     # ---- A) VERİ KALİTE KAPISI: kotu veriyle ASLA skor uretme ----
     if not kalite['cvd_guvenilir']:
-        return 0.0, 0.0, "BEKLE", "VERI_GUVENSIZ", f"Kalite reddi: {kalite['sebep']}", _bos_emilim
+        return (0.0, 0.0, "BEKLE", "VERI_GUVENSIZ", f"Kalite reddi: {kalite['sebep']}",
+                _bos_emilim, None, None, None)
     if pencere is None:
-        return 0.0, 0.0, "BEKLE", "VERI_BEKLENIYOR", "Pencere dolmadi", _bos_emilim
+        return (0.0, 0.0, "BEKLE", "VERI_BEKLENIYOR", "Pencere dolmadi",
+                _bos_emilim, None, None, None)
 
     d_fiyat = pencere['d_fiyat_pct']       # % fiyat degisimi (pencere)
     d_vadeli = pencere['d_vadeli_cvd']     # vadeli CVD degisimi (KATMAN 2)
@@ -4080,6 +4085,30 @@ def balina_skoru_hesapla(a, pencere, kalite):
             kapali.append("surec")
         ve_kapisi_log = f" VE-RED:{','.join(kapali) if kapali else 'marj'}"
 
+    # ---- v9.3 GOLGE (spec adi "v9.1 golge sinyal gorunurluk"; v9.1 etiketi repoda
+    # panel seridinde kullanildigi icin kod etiketi v9.3): "skor esigi gecti ama
+    # kapi reddetti" bilgisi SALT KAYIT olarak turetilir. MUTLAK KURAL: yukaridaki
+    # nihai karar (sinyal) DEGISMEZ; golge asla sinyale donusmez, hicbir kosul
+    # golge_* okumaz. KRITIK UYARI (spec F): golge = kapinin REDDETTIGI kurulum —
+    # istatistiksel olarak zayiftir; VERIDIR, islem cagrisi DEGILDIR. ----
+    # v9.3-GOLGE BASLA (kabul testleri bu blogu marker'la calistirir)
+    golge_yon = None
+    golge_kapi = None
+    golge_skor = None
+    if sinyal == "BEKLE" and max(long_skor, short_skor) >= SINYAL_ESIGI:
+        # marj da gecmisse gercek golge var; marj gecmediyse flip-flop bolgesi —
+        # golge bile degil, None kalir (sifir tuzagi: uydurma yok)
+        if long_skor >= short_skor and (long_skor - short_skor) >= SINYAL_MARJI:
+            golge_yon = "LONG"
+        elif short_skor > long_skor and (short_skor - long_skor) >= SINYAL_MARJI:
+            golge_yon = "SHORT"
+        if golge_yon:
+            # kapali listesi yukarida ZATEN hesaplandi (ayni kosul altinda) —
+            # yeniden hesap yok, mevcut degisken okunur (spec A)
+            golge_kapi = ",".join(kapali) if kapali else None
+            golge_skor = max(long_skor, short_skor)
+    # v9.3-GOLGE BITIR
+
     duvar_durum = "teyitli" if (duvar_teyitli_long > 0 or duvar_teyitli_short > 0) else "teyitsiz"
     # v7.4: emilim metrikleri aciklamaya (log'da her dakika gorunur, §3/§5)
     emilim_log = ""
@@ -4095,7 +4124,10 @@ def balina_skoru_hesapla(a, pencere, kalite):
                 f"iraksama={iraksama:+.2f} borsa={aktif_borsa} "
                 f"duvar={duvar_durum} rejim={rejim}{ve_kapisi_log}{emilim_log}")
 
-    return long_skor, short_skor, sinyal, rejim, aciklama, emilim
+    # v9.3: donus 6 -> 9 eleman (tek cagri yeri var, dogrulandi). Ilk 6 BIREBIR
+    # ayni sirada — 500-esdegerlik testi e[0..3]/y[0..3] kiyasi etkilenmez.
+    return (long_skor, short_skor, sinyal, rejim, aciklama, emilim,
+            golge_yon, golge_kapi, golge_skor)
 
 
 # =========================================================================
@@ -4783,7 +4815,10 @@ def ozet_ve_analiz_dongusu():
             skor_girdi['perp_bid_agir_sayi'] = perp_bid_agir_sayi
             skor_girdi['perp_ask_agir_sayi'] = perp_ask_agir_sayi
 
-            long_skor, short_skor, sinyal, rejim, aciklama, emilim = balina_skoru_hesapla(
+            # v9.3 GOLGE: donus 9 eleman (golge_* SALT KAYIT — asagida yalniz
+            # teshis UPDATE'ine yazilir, hicbir karar okumaz)
+            (long_skor, short_skor, sinyal, rejim, aciklama, emilim,
+             golge_yon, golge_kapi, golge_skor) = balina_skoru_hesapla(
                 skor_girdi, pencere, kalite)
 
             # ---- v8: GRAB TEYIT PENCERESI icin dakikalik iz ----
@@ -5380,6 +5415,26 @@ def ozet_ve_analiz_dongusu():
                         }).eq("id", yeni_satir_id).execute()
                     except Exception as e:
                         logging.warning(f"teshis kolonlari UPDATE hatasi (kolonlar ALTER edildi mi?): {e}")
+
+                # ---- v9.3 GOLGE: AYRI best-effort UPDATE. BILINCLI SPEC SAPMASI:
+                # spec C "ayni try icinde" diyordu; ama PostgREST bilinmeyen TEK
+                # kolonda TUM update'i reddeder — ayni cagriya koymak, ALTER
+                # kosulana kadar 15 mevcut teshis kolonunu da bosaltirdi (v8.8-F
+                # deployunda birebir yasandi). Ayri cagri: golge kolonlari henuz
+                # yoksa YALNIZ golge kaybolur, teshis akisi surer. Golge cogu
+                # dakika None — yalniz golge VARKEN yazilir (NULL zaten varsayilan;
+                # bos dakikada ek DB cagrisi israf, v9.2 kadans ilkesiyle ayni). ----
+                if SWING_ARSIV_AKTIF and yeni_satir_id and golge_yon is not None:
+                    try:
+                        supabase.table("balina_avcisi_data").update({
+                            "golge_yon": golge_yon,      # v9.3 GOLGE: SALT KAYIT —
+                            "golge_kapi": golge_kapi,    # reddedilmis ikiz; islem
+                            "golge_skor": golge_skor,    # cagrisi DEGIL (spec F)
+                        }).eq("id", yeni_satir_id).execute()
+                        logging.info(f"GOLGE SINYAL: {golge_yon} skor={golge_skor} "
+                                     f"kapi={golge_kapi} (kayit; islem DEGIL)")
+                    except Exception as e:
+                        logging.warning(f"golge kolonlari UPDATE hatasi (ALTER edildi mi?): {e}")
 
                 if kalite['cvd_guvenilir'] and (tasfiye_a or supurme_yeni_onaylar):
                     olaylar = []

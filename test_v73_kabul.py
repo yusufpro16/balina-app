@@ -312,7 +312,7 @@ a_g1 = {'fiyat':60000,'bid_d':6e7,'ask_d':3e7,'bnb_delta':.1,'byb_delta':.1,
         'tasfiye_long_yogunluk':8.0,'tasfiye_short_yogunluk':0.0,'esik_volatilite':0.11}
 p_g1 = {'d_fiyat_pct':0.15,'d_oi_pct':-0.35,'d_vadeli_cvd':-9e5,'d_spot_cvd':-3e6,
         'cvd_iraksama':0.5}
-Lg,Sg,sigg,rejg,_,_ = YENI['balina_skoru_hesapla'](dict(a_g1),dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
+Lg,Sg,sigg,rejg,*_ = YENI['balina_skoru_hesapla'](dict(a_g1),dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})   # v9.3: donus 9'lu, yildizli unpack (assert AYNI)
 check("G1a: kanonik geri-alim bari SHORT_SQUEEZE DEGIL", rejg!='SHORT_SQUEEZE', f"rejim={rejg}")
 check("G1a2: dogru etiket TASFIYE_SONRASI_DONUS", rejg=='TASFIYE_SONRASI_DONUS')
 # G1b: GERCEK kod yolu (_tasfiye_bayraklari) dogru hucreyi secmeli — totoloji degil,
@@ -328,12 +328,12 @@ FAZ2 = yukle(yeni_kaynak, {'fn':FONKSIYONLAR,'sabit':SABITLER})
 FAZ2['TASFIYE_AYRIMI_AKTIF'] = True
 for sr in ('NOTR','SHORT_TASFIYE','TASFIYE_SONRASI_DONUS'):
     a = dict(a_g1); a['surec_rejim']=sr
-    L2,S2,sig2,rej2,_,_ = FAZ2['balina_skoru_hesapla'](a,dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
+    L2,S2,sig2,rej2,*_ = FAZ2['balina_skoru_hesapla'](a,dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})   # v9.3: yildizli unpack
     check(f"G2: FAZ2 surec_rejim={sr} -> LONG (NO-OP degil)", sig2=='LONG',
           f"long={L2:.1f} sinyal={sig2}")
 # G2-negatif: FAZ 2'de bile GONULLU squeeze (diken yok) veto + aile korunur
 a_n = dict(a_g1); a_n['tasfiye_long_yogunluk']=0.0; a_n['surec_rejim']='SHORT_SQUEEZE'
-L3,S3,sig3,rej3,_,_ = FAZ2['balina_skoru_hesapla'](a_n,dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})
+L3,S3,sig3,rej3,*_ = FAZ2['balina_skoru_hesapla'](a_n,dict(p_g1),{'cvd_guvenilir':True,'sebep':'ok'})   # v9.3: yildizli unpack
 check("G2n: FAZ2'de gonullu SHORT_SQUEEZE hala vetolu (BEKLE)", sig3=='BEKLE' and rej3=='SHORT_SQUEEZE',
       f"long={L3:.1f} sinyal={sig3} rejim={rej3}")
 
@@ -382,7 +382,7 @@ a_v2 = {'fiyat':60000,'bid_d':8e7,'ask_d':2e7,'bnb_delta':.1,'byb_delta':.1,'okx
         'tasfiye_short_yogunluk':0.0,'esik_volatilite':E_VOL,'esik_spot_neg':E_S,
         'satici_tukenmesi':False,'sonme_orani':0.94}
 p_v2 = {'d_fiyat_pct':0.01,'d_vadeli_cvd':-6e5,'d_spot_cvd':-2e6,'d_oi_pct':0.0,'cvd_iraksama':0.5}
-L2,S2,sig2,rej2,ac2,em2 = YENI['balina_skoru_hesapla'](dict(a_v2),dict(p_v2),{'cvd_guvenilir':True,'sebep':'ok'})
+L2,S2,sig2,rej2,ac2,em2,*_ = YENI['balina_skoru_hesapla'](dict(a_v2),dict(p_v2),{'cvd_guvenilir':True,'sebep':'ok'})
 check("V2: satis sonmeyen guclu emilim -> DIP_TOPLAMA_TEYITSIZ (SISTEM 'BELIRSIZ' DER)",
       rej2=='DIP_TOPLAMA_TEYITSIZ', f"rejim={rej2} esneklik={em2['emilim_esnekligi']}")
 e_v2b = ESKI['balina_skoru_hesapla'](dict(a_v2),dict(p_v2),{'cvd_guvenilir':True,'sebep':'ok'})
@@ -400,7 +400,7 @@ a_t = {'fiyat':60000,'bid_d':2e7,'ask_d':8e7,'bnb_delta':-.1,'byb_delta':-.1,'ok
        'tasfiye_short_yogunluk':0.0,'esik_volatilite':E_VOL,'esik_spot_neg':E_S,
        'alici_tukenmesi':False,'alici_sonme_orani':0.94}
 p_t = {'d_fiyat_pct':-0.01,'d_vadeli_cvd':6e5,'d_spot_cvd':2e6,'d_oi_pct':0.0,'cvd_iraksama':0.5}
-Lt,St,sigt,rejt,act,emt = YENI['balina_skoru_hesapla'](dict(a_t),dict(p_t),{'cvd_guvenilir':True,'sebep':'ok'})
+Lt,St,sigt,rejt,act,emt,*_ = YENI['balina_skoru_hesapla'](dict(a_t),dict(p_t),{'cvd_guvenilir':True,'sebep':'ok'})
 check("V2T: alici tukenmeyen guclu emilim -> TEPE_DAGITIM_TEYITSIZ (simetri)",
       rejt=='TEPE_DAGITIM_TEYITSIZ', f"rejim={rejt} esneklik={emt['emilim_esnekligi']}")
 e_tb = ESKI['balina_skoru_hesapla'](dict(a_t),dict(p_t),{'cvd_guvenilir':True,'sebep':'ok'})
@@ -409,14 +409,14 @@ check("V2Tb: (long,short,sinyal) v7.2 ile BIREBIR (TEPE_DAGITIM_* es-aile)",
 # alici_tuk VAR + spot ASK-agir taze defter -> _SPOT (gercek dagitim, alici tukeniyor)
 a_ts = dict(a_t); a_ts.update({'alici_tukenmesi':True,'spot_bid_d':2e6,'spot_ask_d':8e6,
                                'spot_ob_yasi_sn':30})
-_,_,_,rej_ts,_,_ = YENI['balina_skoru_hesapla'](dict(a_ts),dict(p_t),{'cvd_guvenilir':True,'sebep':'ok'})
+_,_,_,rej_ts,*_ = YENI['balina_skoru_hesapla'](dict(a_ts),dict(p_t),{'cvd_guvenilir':True,'sebep':'ok'})   # v9.3: yildizli unpack
 check("V2Ts: alici tukendi + spot ASK-agir taze defter -> TEPE_DAGITIM_SPOT",
       rej_ts=='TEPE_DAGITIM_SPOT', f"rejim={rej_ts}")
 
 # VAKA 2P — v7.7: PERP mutabakati emilim dict'ine YANSIR ama skoru ETKILEMEZ.
 # Perp defteri zaten 3 borsa toplaniyordu; simetrik mutabakat sayaci eklendi.
 a_p = dict(a_v2); a_p.update({'perp_borsa_sayisi':3,'perp_bid_agir_sayi':2,'perp_ask_agir_sayi':0})
-Lp,Sp,sigp,rejp,acp,emp = YENI['balina_skoru_hesapla'](dict(a_p),dict(p_v2),{'cvd_guvenilir':True,'sebep':'ok'})
+Lp,Sp,sigp,rejp,acp,emp,*_ = YENI['balina_skoru_hesapla'](dict(a_p),dict(p_v2),{'cvd_guvenilir':True,'sebep':'ok'})
 check("V2P: perp mutabakati emilim dict'ine yansir (3 borsa, 2 bid-agir)",
       emp['perp_borsa_sayisi']==3 and emp['perp_bid_agir_sayi']==2 and emp['perp_ask_agir_sayi']==0,
       f"={emp['perp_borsa_sayisi']}/{emp['perp_bid_agir_sayi']}/{emp['perp_ask_agir_sayi']}")
@@ -1055,6 +1055,119 @@ check("V92-3: skip turunda durum YAZILMAZ — lock blogunda kosullu yazim",
 check("V92-4: L/S diag sayaci kadans blogunun icinde (skip turu diag'i sisirmez)",
       "\n                if agg_ls <= 0:" in _src88
       and "\n            if agg_ls <= 0:" not in _src88)
+
+# ---------- 18) v9.3 GOLGE: golge sinyal gorunurlugu (SALT KAYIT) ----------
+# Spec adi "v9.1 golge sinyal gorunurluk" — v9.1 etiketi repoda panelde kullanildigi
+# icin kod/test etiketi v9.3. MUTLAK KURAL: sinyal karari degismez (500-esdegerlik
+# fark=0 yukarida zaten kosuyor); golge_* yalniz teshis UPDATE'ine yazilir.
+# V93-0 — donus 9 eleman + marker blogu mevcut
+_v93y = skorla(YENI, 'NOTR')
+check("V93-0: balina_skoru_hesapla donusu 9 eleman + v9.3-GOLGE marker blogu var",
+      len(_v93y) == 9 and "# v9.3-GOLGE BASLA" in _src88 and "# v9.3-GOLGE BITIR" in _src88)
+# V93-1 — UCTAN UCA pozitif golge: FAZ2+a_g1 LONG uretir (G2 kaniti); hedef
+# kapisini kapat (ask duvari %0.05 otede < MALIYET_CITASI_PCT %0.30) ->
+# sinyal BEKLE'ye duser AMA golge LONG'u gorunur kilar (kapi: hedef)
+_a93 = dict(a_g1); _a93['en_yakin_ask_fiyat'] = 60030.0   # 60000'in %0.05 ustu
+_g93 = FAZ2['balina_skoru_hesapla'](_a93, dict(p_g1), {'cvd_guvenilir': True, 'sebep': 'ok'})
+check("V93-1: hedef kapisi sinyali kesti -> BEKLE + golge_yon=LONG + kapi 'hedef' + skor esik ustu",
+      _g93[2] == 'BEKLE' and _g93[6] == 'LONG'
+      and 'hedef' in str(_g93[7]).split(',')
+      and _g93[8] == max(_g93[0], _g93[1]) >= YENI['SINYAL_ESIGI'],
+      f"sinyal={_g93[2]} golge={_g93[6]}/{_g93[7]}/{_g93[8]}")
+# V93-2 — gercek sinyal oldugunda golge YOK (ayni fixtur, kapi acik)
+_s93 = FAZ2['balina_skoru_hesapla'](dict(a_g1), dict(p_g1), {'cvd_guvenilir': True, 'sebep': 'ok'})
+check("V93-2: gercek LONG sinyalinde golge_* uclusu None (golge sinyalin reddedilmis IKIZI)",
+      _s93[2] == 'LONG' and _s93[6] is None and _s93[7] is None and _s93[8] is None)
+# V93-3 — esik alti skor: golge bile degil. NOTR + tamamen notr girdi (delta yok,
+# duvar yok, CVD yok) esik altinda kalir — uctan uca dusuk-skor vakasi
+_a0 = {'fiyat': 60000, 'bid_d': 0, 'ask_d': 0, 'bnb_delta': 0, 'byb_delta': 0,
+       'okx_delta': 0, 'aktif_borsa': 3, 'vadeli_cvd': 0, 'spot_cvd': 0,
+       'oi': 1.2e10, 'funding': 0.0, 'bid_yas': 0, 'ask_yas': 0, 'likid': 0,
+       'esik_d': 4.5e7, 'esik_l': 2e5, 'esik_c_neg': -3e5, 'esik_c_poz': 3e5,
+       'surec_rejim': 'NOTR', 'surec_tukenme': 0, 'en_yakin_ask_fiyat': 0,
+       'en_yakin_bid_fiyat': 0, 'tasfiye_long_yogunluk': 0.0,
+       'tasfiye_short_yogunluk': 0.0, 'esik_volatilite': 0.1}
+_p0 = {'d_fiyat_pct': 0.0, 'd_vadeli_cvd': 0.0, 'd_spot_cvd': 0.0,
+       'd_oi_pct': 0.0, 'cvd_iraksama': 0.0}
+_v93z = YENI['balina_skoru_hesapla'](_a0, _p0, {'cvd_guvenilir': True, 'sebep': 'ok'})
+check("V93-3: skor esik altindayken golge None (notr girdi, uctan uca) [spec D4]",
+      max(_v93z[0], _v93z[1]) < YENI['SINYAL_ESIGI'] and _v93z[2] == 'BEKLE'
+      and _v93z[6] is None and _v93z[7] is None and _v93z[8] is None,
+      f"max_skor={max(_v93z[0], _v93z[1])}")
+# V93-4 — marker blogu GERCEK kodla vaka vaka (ikiz mantik yok)
+_m93 = _re.search(r"# v9\.3-GOLGE BASLA.*?\n(.*?)# v9\.3-GOLGE BITIR", _src88, _re.S)
+_blk93 = _ast.parse('if True:\n' + _m93.group(1)).body[0]
+_kod93 = compile(_ast.Module(body=[_blk93], type_ignores=[]), 'v93', 'exec')
+def _kos93(sinyal, L, S, kapali=None):
+    _ns = {'sinyal': sinyal, 'long_skor': L, 'short_skor': S, 'kapali': kapali,
+           'SINYAL_ESIGI': YENI['SINYAL_ESIGI'], 'SINYAL_MARJI': YENI['SINYAL_MARJI']}
+    exec(_kod93, _ns)
+    return _ns['golge_yon'], _ns['golge_kapi'], _ns['golge_skor']
+check("V93-4a: BEKLE + S=95/L=60 + kapali=['surec'] -> ('SHORT','surec',95) [spec D2]",
+      _kos93('BEKLE', 60.0, 95.0, ['surec']) == ('SHORT', 'surec', 95.0))
+check("V93-4b: marj yetersiz (95/80) -> golge None [spec D5 — marj golgede de uygulanir]",
+      _kos93('BEKLE', 95.0, 80.0, ['duvar']) == (None, None, None))
+check("V93-4c: esik alti (88) -> golge None [spec D4]",
+      _kos93('BEKLE', 88.0, 40.0) == (None, None, None))
+check("V93-4d: gercek sinyal (SHORT) -> golge None [spec D3]",
+      _kos93('SHORT', 60.0, 95.0) == (None, None, None))
+check("V93-4e: coklu kapi virgullu birlesir; bos kapali -> golge_kapi None (uydurma yok)",
+      _kos93('BEKLE', 95.0, 60.0, ['islem', 'duvar']) == ('LONG', 'islem,duvar', 95.0)
+      and _kos93('BEKLE', 95.0, 60.0, []) == ('LONG', None, 95.0))
+# V93-5 — kaynak kanitlari: golge_* hicbir karari beslemez; yalniz UPDATE'e yazilir
+check("V93-5: golge kolonlari teshis UPDATE'inde 1'er kez + marker blogu sinyal'e YAZMIYOR",
+      _src88.count('"golge_yon"') == 1 and _src88.count('"golge_kapi"') == 1
+      and _src88.count('"golge_skor"') == 1
+      # blok sinyal'e ATAMA yapmaz ('sinyal ==' karsilastirmasi serbest — regex
+      # atama arar: satir basi 'sinyal =' ve ardindan '=' olmayan karakter)
+      and _re.search(r"^\s*sinyal\s*=[^=]", _m93.group(1), _re.M) is None
+      and 'kapali.append' not in _m93.group(1))    # kapali hesabina dokunmaz
+# V93-6 — 300 rastgele girdide DAVRANIS INVARIANTLARI (tohumlu, tekrarlanabilir)
+_r93 = random.Random(93); _ihlal93 = 0; _golge_gorulen = 0
+for _i in range(300):
+    _ed = _r93.uniform(1e7, 1e8)
+    _ag = {'fiyat': _r93.uniform(50000, 70000), 'bid_d': _r93.uniform(0, _ed*2),
+           'ask_d': _r93.uniform(0, _ed*2), 'bnb_delta': _r93.uniform(-.5, .5),
+           'byb_delta': _r93.uniform(-.5, .5), 'okx_delta': _r93.uniform(-.5, .5),
+           'aktif_borsa': _r93.choice([1, 2, 3]), 'vadeli_cvd': _r93.uniform(-5e5, 5e5),
+           'spot_cvd': _r93.uniform(-3e6, 3e6), 'oi': _r93.uniform(1e9, 2e10),
+           'funding': _r93.uniform(-.001, .001), 'bid_yas': _r93.uniform(0, 600),
+           'ask_yas': _r93.uniform(0, 600), 'likid': _r93.uniform(0, 5e6),
+           'esik_d': _ed, 'esik_l': _r93.uniform(1e5, 1e6),
+           'esik_c_neg': -_r93.uniform(1e5, 6e5), 'esik_c_poz': _r93.uniform(1e5, 6e5),
+           'surec_rejim': _r93.choice(V72_REJIMLER), 'surec_tukenme': _r93.randint(0, 4),
+           'en_yakin_ask_fiyat': _r93.choice([0, _r93.uniform(60000, 70500)]),
+           'en_yakin_bid_fiyat': _r93.choice([0, _r93.uniform(49500, 60000)]),
+           'tasfiye_long_yogunluk': _r93.choice([0.0, 1.0, 3.5, 8.0]),
+           'tasfiye_short_yogunluk': _r93.choice([0.0, 1.0, 3.5, 8.0]),
+           'esik_volatilite': _r93.uniform(0.02, 0.4)}
+    _pg = {'d_fiyat_pct': _r93.uniform(-.6, .6), 'd_vadeli_cvd': _r93.uniform(-1.5e6, 1.5e6),
+           'd_spot_cvd': _r93.uniform(-5e6, 5e6), 'd_oi_pct': _r93.uniform(-.6, .6),
+           'cvd_iraksama': _r93.uniform(-1, 1)}
+    _yg = YENI['balina_skoru_hesapla'](_ag, _pg, {'cvd_guvenilir': True, 'sebep': 'test'})
+    if _yg[6] is not None:
+        _golge_gorulen += 1
+        if not (_yg[2] == 'BEKLE' and _yg[8] == max(_yg[0], _yg[1]) >= YENI['SINYAL_ESIGI']
+                and abs(_yg[0] - _yg[1]) >= YENI['SINYAL_MARJI']):
+            _ihlal93 += 1
+    else:
+        if _yg[7] is not None or _yg[8] is not None:
+            _ihlal93 += 1
+    if _yg[2] != 'BEKLE' and _yg[6] is not None:
+        _ihlal93 += 1
+check("V93-6: 300 rastgele girdide golge invariantlari ihlalsiz "
+      "(golge -> BEKLE+esik+marj; golge yoksa kapi/skor da None)",
+      _ihlal93 == 0, f"ihlal={_ihlal93}, golge_gorulen={_golge_gorulen}")
+# V93-7 — ERKEN DONUSLER de 9 eleman (denetimde yakalanan gercek hata: kalite
+# reddi ve pencere-yok yollari 6'li kalmisti -> baslangicta pencere dolana kadar
+# cagiran her dakika ValueError'la olurdu; testler indeksledigi icin gormuyordu)
+_e93a = YENI['balina_skoru_hesapla'](_a0, _p0, {'cvd_guvenilir': False, 'sebep': 'test'})
+_e93b = YENI['balina_skoru_hesapla'](_a0, None, {'cvd_guvenilir': True, 'sebep': 'ok'})
+check("V93-7: kalite-reddi ve pencere-yok erken donusleri de 9'lu + golge None",
+      len(_e93a) == 9 and len(_e93b) == 9
+      and _e93a[6] is None and _e93a[7] is None and _e93a[8] is None
+      and _e93b[6] is None and _e93b[7] is None and _e93b[8] is None
+      and _e93a[3] == 'VERI_GUVENSIZ' and _e93b[3] == 'VERI_BEKLENIYOR')
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
