@@ -1358,6 +1358,83 @@ check("V95-9: kisa taraf DEGISMEDI — UFUKLAR [15,30,60,240], is_win 15dk, kisa
       and 'istatistik = {"guncelleme": simdi.isoformat(), "ufuklar": {}}' in _src88
       and "UZUN_UFUKLAR_DK = [1440, 2880, 4320, 5760]" in _src88)
 
+# ---------- 21) v9.6: ORDER BOOK DEGER OLCUMU (SALT OLCUM) ----------
+# Kullanici hipotezi ("OB copluk") kesip atmadan once veriyle test edilir.
+_m96 = _re.search(r"# v9\.6-OB BASLA.*?\n(.*?)# v9\.6-OB BITIR", _src88, _re.S)
+check("V96-0: v9.6-OB marker blogu mevcut + uzun sorgu OB/golge kolonlarini ceker",
+      _m96 is not None
+      and "order_book_depth_bid_1pct,order_book_depth_ask_1pct," in _src88
+      and '"golge_yon,golge_kapi"' in _src88)
+_kod96 = compile(_ast.Module(body=[_ast.parse('if True:\n' + _m96.group(1)).body[0]],
+                             type_ignores=[]), 'v96', 'exec')
+def _ob_kos(uzun_zamanli, uzun_hesapla=True, g=None, istatistik=None):
+    usf, _ = _v95_yardimcilar(uzun_zamanli)
+    ns = {'uzun_hesapla': uzun_hesapla, 'uzun_zamanli': uzun_zamanli,
+          'istatistik': {} if istatistik is None else istatistik,
+          'LEAN_MARJI': 10.0, 'MALIYET_PCT': 0.10,
+          'simdi': _T95 + _dt95.timedelta(days=6),
+          '_uzun_sonraki_fiyat': usf, 'geri_test_dongusu': _G95() if g is None else g}
+    # _uzun_ozet: v9.5 OLCUM blogunun tanimladigi GERCEK fonksiyon (ayni ns'te
+    # OLCUM blogu calistirilarak alinir — test-ici ikiz yazilmadi)
+    ns2 = dict(ns); ns2.update({'UZUN_UFUKLAR_DK': [1440], '_trend_yonu': lambda t, f: None,
+                                'istatistik': {}, 'uzun_hesapla': True,
+                                'geri_test_dongusu': _G95()})   # ana ns'in cache'ine dokunma
+    exec(_kod95o, ns2)
+    ns['_uzun_ozet'] = ns2['_uzun_ozet']
+    exec(_kod96, ns)
+    return ns
+# fixtur: yukselen fiyat (+1/dk esdeğeri). Satir tipleri (10dk kadans):
+#  i%4==0: LONG kanaat + bid>ask (duvar lehte, getiri +)
+#  i%4==1: LONG kanaat + ask>bid (duvar aleyhte, getiri +)
+#  i%4==2: golge LONG, kapi 'islem,duvar' (golge_duvar; + getiri)
+#  i%4==3: golge SHORT, kapi 'surec' (golge_diger; - getiri) + kanaatsiz + esit derinlik
+def _s96(i):
+    s = {'anlik_fiyat': 60000.0 + i * 10, 'long_skor': 0, 'short_skor': 0,
+         'order_book_depth_bid_1pct': 0, 'order_book_depth_ask_1pct': 0,
+         'golge_yon': None, 'golge_kapi': None}
+    m = i % 4
+    if m == 0: s.update(long_skor=50, order_book_depth_bid_1pct=5e7, order_book_depth_ask_1pct=3e7)
+    if m == 1: s.update(long_skor=50, order_book_depth_bid_1pct=3e7, order_book_depth_ask_1pct=5e7)
+    if m == 2: s.update(golge_yon='LONG', golge_kapi='islem,duvar')
+    if m == 3: s.update(golge_yon='SHORT', golge_kapi='surec',
+                        order_book_depth_bid_1pct=4e7, order_book_depth_ask_1pct=4e7)
+    return s
+_fx96 = sorted(((_T95 + _dt95.timedelta(minutes=i * 10), _s96(i)) for i in range(864)),
+               key=lambda x: x[0])
+_ob = _ob_kos(_fx96)['istatistik']['ob_olcum']
+_o240 = _ob['240dk']
+check("V96-1: dilimleme dogru — lehte/aleyhte YALNIZ kanaatli+derinlikli satirlar; "
+      "yukselen fiyatta LONG kanaat iki dilimde de %100 (ayni getiri, farkli duvar)",
+      sorted(_ob.keys()) == ['1440dk', '240dk', '60dk']
+      and _o240['duvar_lehte']['n'] > 0 and _o240['duvar_aleyhte']['n'] > 0
+      and _o240['duvar_lehte']['isabet'] == 100.0 and _o240['duvar_aleyhte']['isabet'] == 100.0,
+      f"240dk={_o240}")
+check("V96-2: golge dilimi — 'duvar' iceren kapi golge_duvar'a, digeri golge_diger'e; "
+      "yukselen fiyatta golge LONG %100, golge SHORT %0",
+      _o240['golge_duvar']['isabet'] == 100.0 and _o240['golge_duvar']['n'] > 0
+      and _o240['golge_diger']['isabet'] == 0.0 and _o240['golge_diger']['n'] > 0)
+check("V96-3: esit/0 derinlik dilime GIRMEZ (sifir tuzagi) — m3 satirlari kanaatsiz+esit, "
+      "lehte+aleyhte toplami yalniz m0+m1 satirlarindan",
+      _o240['duvar_lehte']['n'] + _o240['duvar_aleyhte']['n']
+      <= sum(1 for (_t, s) in _fx96 if (s['long_skor'] or 0) >= 10))
+# V96-4 — kadans cache (v9.5 ile ayni ilke; _son_ob ayri anahtar)
+_g96 = _G95()
+_a96 = _ob_kos(_fx96, uzun_hesapla=True, g=_g96)
+_ilk96 = _a96['istatistik']['ob_olcum']
+_b96 = _ob_kos(_fx96, uzun_hesapla=False, g=_g96)
+_c96 = _ob_kos(_fx96, uzun_hesapla=False, g=_G95())
+check("V96-4: hesap turu cache'ler; skip turu geri koyar; cache yokken uydurmaz",
+      getattr(_g96, '_son_ob', None) == _ilk96
+      and _b96['istatistik'].get('ob_olcum') == _ilk96
+      and 'ob_olcum' not in _c96['istatistik'])
+# V96-5 — kaynak kilitleri: karar yolu degismedi (OB blogu yalniz istatistik yazar;
+# kapilarda/skorlarda v9.6 izi YOK) + _uzun_ozet yeniden tanimlanmadi (ikiz yok)
+check("V96-5: OB blogu salt olcum — tek asil yazim + cache geri koyma; ikiz ozet yok",
+      _src88.count('istatistik["ob_olcum"] = ob_ist') == 1
+      and _src88.count('istatistik["ob_olcum"] = geri_test_dongusu._son_ob') == 1
+      and "def _uzun_ozet" in _m95o.group(1) and "def _uzun_ozet" not in _m96.group(1)
+      and "OB_UFUKLAR_DK = [60, 240, 1440]" in _src88)
+
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
 sys.exit(1 if fails else 0)

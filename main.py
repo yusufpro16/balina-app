@@ -5687,7 +5687,10 @@ def geri_test_dongusu():
                     minutes=max(UZUN_UFUKLAR_DK) + 60)).isoformat()
                 try:
                     res_uzun = (supabase.table("balina_avcisi_data")
-                        .select("id,kayit_zamani,anlik_fiyat,long_skor,short_skor")
+                        .select("id,kayit_zamani,anlik_fiyat,long_skor,short_skor,"
+                                # v9.6: OB olcumu icin — duvar dilimi + golge dilimi
+                                "order_book_depth_bid_1pct,order_book_depth_ask_1pct,"
+                                "golge_yon,golge_kapi")
                         .gte("kayit_zamani", uzun_pencere_bas)
                         .order("kayit_zamani", desc=False)
                         .limit(10000)
@@ -5930,6 +5933,82 @@ def geri_test_dongusu():
             # v9.5-OLCUM BITIR
             # ======================================================================
 
+            # ================= v9.6: ORDER BOOK DEGER OLCUMU (SALT OLCUM) =================
+            # Kullanici hipotezi: "60sn'lik REST snapshot'i copluk — order book'u
+            # kaldiralim". Ev disiplini: KESMEDEN ONCE OLC. Iki dilim:
+            #  (a) DUVAR UYUM: yonlu kanaat, o anki 1% derinlik dengesiyle ayni
+            #      yondaysa 'duvar_lehte', tersse 'duvar_aleyhte'. Isabetler ESITSE
+            #      order book kanaate bilgi KATMIYOR demektir (cop hipotezi lehine);
+            #      lehte belirgin iyiyse duvar verisi is goruyor demektir.
+            #  (b) GOLGE-DUVAR: 'duvar' kapisinin susturdugu golgeler ileride ne
+            #      getirdi? (net>0 ise kapi HAKSIZ susturuyor -> gevsetme adayi;
+            #      net<0 ise kapi dogru calisiyor.)
+            # Karar yoluna, kapilara, skora DOKUNMAZ. v9.5 kadansini paylasir.
+            # v9.6-OB BASLA (kabul testleri bu blogu marker'la calistirir)
+            if uzun_hesapla and uzun_zamanli:
+                OB_UFUKLAR_DK = [60, 240, 1440]   # v9.6: OB olcum ufuklari (dk)
+                ob_ist = {}
+                for ufuk in OB_UFUKLAR_DK:
+                    kovalar_ob = {
+                        'duvar_lehte':    {'d': 0, 'n': 0, 'g': []},
+                        'duvar_aleyhte':  {'d': 0, 'n': 0, 'g': []},
+                        'golge_duvar':    {'d': 0, 'n': 0, 'g': []},
+                        'golge_diger':    {'d': 0, 'n': 0, 'g': []},
+                    }
+                    for (t, s) in uzun_zamanli:
+                        if (simdi - t).total_seconds() / 60.0 < ufuk:
+                            continue
+                        f0 = float(s.get('anlik_fiyat') or 0)
+                        if f0 <= 0:
+                            continue
+                        f1 = _uzun_sonraki_fiyat(t, ufuk)
+                        if not f1:
+                            continue
+                        # (a) duvar uyum dilimi — yonlu kanaat + gecerli iki derinlik
+                        ls = float(s.get('long_skor') or 0)
+                        ss = float(s.get('short_skor') or 0)
+                        if abs(ls - ss) >= LEAN_MARJI:
+                            bid_d = float(s.get('order_book_depth_bid_1pct') or 0)
+                            ask_d = float(s.get('order_book_depth_ask_1pct') or 0)
+                            # sifir tuzagi: derinlik olculememis (0/None) ya da esitse
+                            # dilime SOKMA — uydurma yon yok
+                            if bid_d > 0 and ask_d > 0 and bid_d != ask_d:
+                                lean = 1 if ls > ss else -1
+                                duvar_yon = 1 if bid_d > ask_d else -1
+                                kova_ad = ('duvar_lehte' if lean == duvar_yon
+                                           else 'duvar_aleyhte')
+                                getiri = (f1 / f0 - 1) * 100 * lean
+                                k = kovalar_ob[kova_ad]
+                                k['n'] += 1
+                                k['g'].append(getiri)
+                                if getiri > 0:
+                                    k['d'] += 1
+                        # (b) golge-duvar dilimi — golge yonunde ileri getiri
+                        g_yon = s.get('golge_yon')
+                        if g_yon in ('LONG', 'SHORT'):
+                            yon = 1 if g_yon == 'LONG' else -1
+                            getiri = (f1 / f0 - 1) * 100 * yon
+                            kova_ad = ('golge_duvar'
+                                       if 'duvar' in str(s.get('golge_kapi') or '')
+                                       else 'golge_diger')
+                            k = kovalar_ob[kova_ad]
+                            k['n'] += 1
+                            k['g'].append(getiri)
+                            if getiri > 0:
+                                k['d'] += 1
+                    ob_ist[f"{ufuk}dk"] = {
+                        ad: _uzun_ozet(k['d'], k['n'], k['g'])
+                        for ad, k in kovalar_ob.items()
+                    }
+                istatistik["ob_olcum"] = ob_ist
+            # kadans cache (v9.5 ile ayni ilke: skip turu son olcumu korur)
+            if uzun_hesapla and "ob_olcum" in istatistik:
+                geri_test_dongusu._son_ob = istatistik["ob_olcum"]
+            elif hasattr(geri_test_dongusu, "_son_ob"):
+                istatistik["ob_olcum"] = geri_test_dongusu._son_ob
+            # v9.6-OB BITIR
+            # ======================================================================
+
             # ---- 3) BV FİLTRE İSTATİSTİĞİ (veri kalitesi kaniti) ----
             with durum.lock:
                 bv_ist = {
@@ -5981,6 +6060,16 @@ def geri_test_dongusu():
                             f"net {tum.get('net_getiri'):+.3f}%)")
                 if parcalar_u:
                     logging.info("GERI TEST UZUN UFUK -> " + " | ".join(parcalar_u))
+                # v9.6: OB deger olcumu ozeti (duvar bilgi katiyor mu? kapi hakli mi?)
+                ob_st = (istatistik.get("ob_olcum") or {}).get("240dk") or {}
+                _le, _al = ob_st.get('duvar_lehte') or {}, ob_st.get('duvar_aleyhte') or {}
+                _gd = ob_st.get('golge_duvar') or {}
+                if _le.get('n', 0) > 3 and _al.get('n', 0) > 3:
+                    logging.info(
+                        f"OB OLCUM 240dk -> duvar_lehte %{_le.get('isabet')} (n={_le['n']}) "
+                        f"vs aleyhte %{_al.get('isabet')} (n={_al['n']})"
+                        + (f" | golge_duvar net {_gd.get('net_getiri'):+.3f}% (n={_gd['n']})"
+                           if _gd.get('n', 0) > 3 else ""))
                 if bv_ist["toplam_tur"] > 0:
                     logging.info(
                         f"BV-FILTRE ISTATISTIK -> {bv_ist['dislanan_tur']}/{bv_ist['toplam_tur']} "
