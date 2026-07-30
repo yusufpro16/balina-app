@@ -1,6 +1,7 @@
 import json
 import time
 import os
+import bisect   # v9.5: uzun ufuk ileri-fiyat aramasi (sirali listede O(log n))
 import threading
 import logging
 import datetime
@@ -5634,7 +5635,13 @@ def geri_test_dongusu():
     """
     time.sleep(120)
     LEAN_MARJI = 10.0        # long/short farki bu kadarsa "yonlu" sayilir
-    UFUKLAR = [15, 30, 60, 240]   # dakika
+    UFUKLAR = [15, 30, 60, 240]   # dakika — MEVCUT (is_win + kohort BUNU kullanir, DEGISMEZ)
+    UZUN_UFUKLAR_DK = [1440, 2880, 4320, 5760]   # v9.5: 1/2/3/4 gun (dakika)
+    # NOT: UFUKLAR (kisa) ve UZUN_UFUKLAR_DK bilerek AYRI. is_win + tasfiye kohortu
+    # yalniz UFUKLAR'a baglidir; birlestirme YOK (E2: _kohort_ileri_olc'a uzun ufuk
+    # gecilirse olaylar kisa pencere disinda kalip KALICI 'olculemez' isaretlenir).
+    # (Spec adi "v9.4 uzun ufuk" — v9.4 etiketi repoda kohort korumasinda
+    # kullanildigi icin kod etiketi v9.5.)
     MALIYET_PCT = 0.10       # komisyon+spread+slippage tahmini (gidis-donus)
 
     while True:
@@ -5666,6 +5673,53 @@ def geri_test_dongusu():
                     continue
             zamanli.sort(key=lambda x: x[0])
 
+            # ================= v9.5: UZUN UFUK — kadans + ayri sorgu =================
+            # Kadans: uzun ufuk sonuclari dakikalar icinde degismez; 4 gunluk ~6000
+            # satiri her 180sn'de cekmek israf. 10 turda bir (~30dk) hesapla.
+            # (Desen: coinalyze_guncelle._fr_ls_tur, v9.2.)
+            geri_test_dongusu._uzun_tur = getattr(geri_test_dongusu, '_uzun_tur', -1) + 1
+            uzun_hesapla = (geri_test_dongusu._uzun_tur % 10 == 0)
+            uzun_zamanli = []
+            if uzun_hesapla:
+                # 4 gun (5760dk) + 60dk pay geriye. Limit: 4 gun ~5760 dk-kaydi;
+                # yeniden baslama/cakisma dakikada >1 kayit yazabilir -> limit(10000).
+                uzun_pencere_bas = (simdi - datetime.timedelta(
+                    minutes=max(UZUN_UFUKLAR_DK) + 60)).isoformat()
+                try:
+                    res_uzun = (supabase.table("balina_avcisi_data")
+                        .select("id,kayit_zamani,anlik_fiyat,long_skor,short_skor")
+                        .gte("kayit_zamani", uzun_pencere_bas)
+                        .order("kayit_zamani", desc=False)
+                        .limit(10000)
+                        .execute())
+                    uzun_satirlar = res_uzun.data or []
+                except Exception as e:
+                    logging.warning(f"UZUN UFUK sorgu hatasi: {e}")
+                    uzun_satirlar = []
+                    uzun_hesapla = False
+                # LIMIT ASIMI KORUMASI: 10000 dolduysa Supabase SESSIZCE ilk 10000'i
+                # doner -> eksik pencere -> yanlis "kar" sonucu. Eksik > yanlis.
+                if uzun_hesapla and len(uzun_satirlar) >= 10000:
+                    logging.warning("UZUN UFUK: limit(10000) DOLU — pencere eksik "
+                                    "olabilir, sayfalama gerekebilir. Bu tur ATLANIYOR.")
+                    uzun_hesapla = False
+                # Az-veri korumasi (kisa taraftaki 'len<20' esdegeri). Uzun ufuk zaten
+                # az orneklem; 20 altinda hic olcme.
+                if uzun_hesapla and len(uzun_satirlar) < 20:
+                    uzun_hesapla = False
+                if uzun_hesapla:
+                    for s in uzun_satirlar:
+                        try:
+                            t = datetime.datetime.fromisoformat(
+                                s['kayit_zamani'].replace('Z', '+00:00')).replace(tzinfo=None)
+                            uzun_zamanli.append((t, s))
+                        except Exception:
+                            continue
+                    uzun_zamanli.sort(key=lambda x: x[0])
+            # bisect icin paralel zaman listesi (uzun_zamanli sirali — ayni sirada)
+            uzun_ts = [t for (t, _s) in uzun_zamanli]
+            # ======================================================================
+
             # Ufuk sonrasi fiyati bulan yardimci
             def sonraki_fiyat(t0, ufuk_dk):
                 hedef = t0 + datetime.timedelta(minutes=ufuk_dk)
@@ -5674,6 +5728,46 @@ def geri_test_dongusu():
                         f = float(s2.get('anlik_fiyat') or 0)
                         return f if f > 0 else None
                 return None
+
+            # v9.5-YARDIMCI BASLA (kabul testleri bu blogu marker'la calistirir)
+            # v9.5: uzun ufuk icin AYRI ileri-fiyat — 'zamanli'ya DEGIL 'uzun_zamanli'ya
+            # bakar. SPEC SAPMASI (belgeli): spec lineer tarama veriyordu; ~4300 olay x
+            # ~5760 satir lineer tarama GIL'i onlarca saniye kilitleyip WS thread'lerini
+            # ac birakirdi. bisect ile O(log n) — SEMANTIK BIREBIR AYNI: 'hedef'ten
+            # buyuk-esit ILK satir alinir, fiyati gecersizse None (ileri taranmaz).
+            # Esdegerlik kabul testinde lineer referansla kanitlanir.
+            def _uzun_sonraki_fiyat(t0, ufuk_dk):
+                hedef = t0 + datetime.timedelta(minutes=ufuk_dk)
+                i = bisect.bisect_left(uzun_ts, hedef)
+                if i >= len(uzun_zamanli):
+                    return None
+                f = float(uzun_zamanli[i][1].get('anlik_fiyat') or 0)
+                return f if f > 0 else None
+
+            # v9.5: trend yonu — SADECE t0'dan ONCEKI veri (look-ahead YOK).
+            # t0 fiyati (f0) DISARIDAN gecilir; uzun_zamanli'da yeniden aranmaz.
+            # Referans: (t0 - geri_saat) anindan ONCEKI son gecerli fiyat.
+            # bisect: hedef'e kucuk-esit son indeks; gecersiz fiyatta geriye yuru
+            # (lineer referansla ayni sonuc — 'son f>0' semantigi korunur).
+            def _trend_yonu(t0, f0, geri_saat=6):
+                hedef = t0 - datetime.timedelta(hours=geri_saat)
+                i = bisect.bisect_right(uzun_ts, hedef) - 1
+                ref_f = None
+                while i >= 0:
+                    f = float(uzun_zamanli[i][1].get('anlik_fiyat') or 0)
+                    if f > 0:
+                        ref_f = f
+                        break
+                    i -= 1
+                if ref_f is None or f0 <= 0:
+                    return None
+                fark_pct = (f0 / ref_f - 1) * 100
+                if fark_pct > 0.5:
+                    return 'YUKARI'
+                if fark_pct < -0.5:
+                    return 'ASAGI'
+                return None   # yatay (+-%0.5) — dilime sokma (belirsiz trend olculmez)
+            # v9.5-YARDIMCI BITIR
 
             # ---- 1) is_win kolonu (15dk, geriye uyumluluk) ----
             guncellenen = 0
@@ -5760,6 +5854,82 @@ def geri_test_dongusu():
                     "sinyal": ozet(sinyal_dogru, sinyal_top, sinyal_getiri),
                 }
 
+            # ================= v9.5: UZUN UFUK + REJIM DILIMLI OLCUM =================
+            # SALT OLCUM — sinyal davranisina, is_win'e, kisa 'ufuklar' ciktisina
+            # dokunmaz. Rejim sorusu: kanaat trend yonunde miydi, karsisinda miydi?
+            # (trend_yonunde karli + trend_karsisinda zararli ise sistem trendi
+            # odunc aliyor demektir — Faz 2 kurali oradan dogar.)
+            # v9.5-OLCUM BASLA (kabul testleri bu blogu marker'la calistirir)
+            if uzun_hesapla and uzun_zamanli:
+                def _uzun_ozet(dogru, top, getiriler):
+                    if top == 0:
+                        return {"n": 0}
+                    ort = sum(getiriler) / len(getiriler)
+                    net = ort - MALIYET_PCT
+                    return {
+                        "n": top,
+                        "isabet": round(100.0 * dogru / top, 1),
+                        "ort_getiri": round(ort, 4),
+                        "net_getiri": round(net, 4),
+                        "karli_mi": bool(net > 0),
+                        # orneklem guveni — n<30 "isaret"tir, "kanit" DEGIL
+                        "guvenilir": bool(top >= 30),
+                    }
+                uzun_ist = {}
+                for ufuk in UZUN_UFUKLAR_DK:
+                    kovalar = {
+                        'tum':               {'d': 0, 'n': 0, 'g': []},
+                        'trend_yonunde':     {'d': 0, 'n': 0, 'g': []},
+                        'trend_karsisinda':  {'d': 0, 'n': 0, 'g': []},
+                    }
+                    for (t, s) in uzun_zamanli:
+                        if (simdi - t).total_seconds() / 60.0 < ufuk:
+                            continue   # ufuk henuz dolmadi
+                        ls = float(s.get('long_skor') or 0)
+                        ss = float(s.get('short_skor') or 0)
+                        if abs(ls - ss) < LEAN_MARJI:
+                            continue   # yonsuz — olcme
+                        f0 = float(s.get('anlik_fiyat') or 0)
+                        if f0 <= 0:
+                            continue
+                        f1 = _uzun_sonraki_fiyat(t, ufuk)
+                        if not f1:
+                            continue
+                        lean = 1 if ls > ss else -1
+                        getiri = (f1 / f0 - 1) * 100 * lean
+                        # 'tum' kovasi (dilimlemesiz)
+                        k = kovalar['tum']
+                        k['n'] += 1
+                        k['g'].append(getiri)
+                        if getiri > 0:
+                            k['d'] += 1
+                        # rejim kovasi (trend belirliyse; yatay yalniz 'tum'da)
+                        trend = _trend_yonu(t, f0)
+                        if trend is not None:
+                            kanaat_yon = 'YUKARI' if lean > 0 else 'ASAGI'
+                            kova_ad = ('trend_yonunde' if kanaat_yon == trend
+                                       else 'trend_karsisinda')
+                            k = kovalar[kova_ad]
+                            k['n'] += 1
+                            k['g'].append(getiri)
+                            if getiri > 0:
+                                k['d'] += 1
+                    uzun_ist[f"{ufuk // 1440}g"] = {
+                        ad: _uzun_ozet(k['d'], k['n'], k['g'])
+                        for ad, k in kovalar.items()
+                    }
+                istatistik["uzun_ufuklar"] = uzun_ist
+            # KRITIK: _ayarlar_yaz TUM sozlugu yazar ve 'istatistik' her tur SIFIRDAN
+            # kurulur — skip turunda 'uzun_ufuklar' sozluge geri konmazsa DB'deki son
+            # uzun olcum SILINIR. Cozum: son olcumu cache'le, skip turunda geri koy
+            # (v9.2 kadans ilkesi: skip turu son gercek olcumu korur).
+            if uzun_hesapla and "uzun_ufuklar" in istatistik:
+                geri_test_dongusu._son_uzun = istatistik["uzun_ufuklar"]
+            elif hasattr(geri_test_dongusu, "_son_uzun"):
+                istatistik["uzun_ufuklar"] = geri_test_dongusu._son_uzun
+            # v9.5-OLCUM BITIR
+            # ======================================================================
+
             # ---- 3) BV FİLTRE İSTATİSTİĞİ (veri kalitesi kaniti) ----
             with durum.lock:
                 bv_ist = {
@@ -5778,6 +5948,11 @@ def geri_test_dongusu():
                 logging.warning(f"Istatistik yazma hatasi: {e}")
 
             # ---- v7.3: TASFIYE KOHORTU ILERI OLCUMU (2x2 + MAE/stop) ----
+            # v9.5 KILIT: kohort KISA ufuk sistemidir (kisa 'zamanli' penceresine
+            # bagli). UZUN ufuk BURAYA GIRMEZ — UZUN_UFUKLAR_DK gecilirse olaylar
+            # kisa pencere disinda kalip KALICI 'olculemez' isaretlenir ve
+            # tasfiye_kohortu persist state'i bozulur (bkz. _kohort_ileri_olc
+            # icindeki kesinti korumasi). Bu cagri DAIMA UFUKLAR (kisa) alir.
             kohort_ozet = _kohort_ileri_olc(zamanli, simdi, UFUKLAR, MALIYET_PCT)
 
             # Ozet log (her turda degil, 15 dakikada bir yeter)
@@ -5794,6 +5969,18 @@ def geri_test_dongusu():
                         )
                 if parcalar:
                     logging.info("GERI TEST COKLU UFUK -> " + " | ".join(parcalar))
+                # v9.5: uzun ufuk kanaat ozeti (varsa; salt gozlem)
+                uzun_st = istatistik.get("uzun_ufuklar") or {}
+                parcalar_u = []
+                for ad, kv in uzun_st.items():
+                    tum = kv.get('tum') or {}
+                    if tum.get('n', 0) > 3:
+                        g = "OK" if tum.get('guvenilir') else "az-n"
+                        parcalar_u.append(
+                            f"{ad}: %{tum.get('isabet')} (n={tum['n']},{g}, "
+                            f"net {tum.get('net_getiri'):+.3f}%)")
+                if parcalar_u:
+                    logging.info("GERI TEST UZUN UFUK -> " + " | ".join(parcalar_u))
                 if bv_ist["toplam_tur"] > 0:
                     logging.info(
                         f"BV-FILTRE ISTATISTIK -> {bv_ist['dislanan_tur']}/{bv_ist['toplam_tur']} "

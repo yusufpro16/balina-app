@@ -1213,6 +1213,151 @@ check("V94-6: iki swing budamasi da _kohort_buda; naive dilim yalniz tasfiye yol
       and _src88.count("_kohort_buda(_oly, KOHORT_AZAMI_KAYIT)") == 1
       and _src88.count("olaylar = olaylar[-KOHORT_AZAMI_KAYIT:]") == 1)
 
+# ---------- 20) v9.5: UZUN UFUK + REJIM DILIMLI GERI-TEST (spec "v9.4") ----------
+# Spec adi v9.4'tu; repo v9.4'u kohort korumasina kullandigi icin kod etiketi v9.5.
+# Marker-exec: gercek nested fonksiyonlar/olcum blogu calistirilir (ikiz mantik yok;
+# YALNIZ esdegerlik referanslari test-ici lineer kopyadir — bilerek).
+import datetime as _dt95
+import bisect as _bisect95
+_m95y = _re.search(r"# v9\.5-YARDIMCI BASLA.*?\n(.*?)# v9\.5-YARDIMCI BITIR", _src88, _re.S)
+_m95o = _re.search(r"# v9\.5-OLCUM BASLA.*?\n(.*?)# v9\.5-OLCUM BITIR", _src88, _re.S)
+check("V95-0: v9.5 marker bloklari mevcut (YARDIMCI + OLCUM)",
+      _m95y is not None and _m95o is not None)
+_kod95y = compile(_ast.Module(body=[_ast.parse('if True:\n' + _m95y.group(1)).body[0]],
+                              type_ignores=[]), 'v95y', 'exec')
+_kod95o = compile(_ast.Module(body=[_ast.parse('if True:\n' + _m95o.group(1)).body[0]],
+                              type_ignores=[]), 'v95o', 'exec')
+
+def _v95_yardimcilar(uzun_zamanli):
+    ns = {'uzun_zamanli': uzun_zamanli, 'uzun_ts': [t for (t, _s) in uzun_zamanli],
+          'datetime': _dt95, 'bisect': _bisect95}
+    exec(_kod95y, ns)
+    return ns['_uzun_sonraki_fiyat'], ns['_trend_yonu']
+
+_T95 = _dt95.datetime(2026, 7, 1)
+def _rows95(dakikalar_fiyat_skorlar):
+    # [(dk, fiyat, ls, ss), ...] -> sirali uzun_zamanli
+    return sorted(((_T95 + _dt95.timedelta(minutes=dk),
+                    {'anlik_fiyat': f, 'long_skor': ls, 'short_skor': ss})
+                   for dk, f, ls, ss in dakikalar_fiyat_skorlar), key=lambda x: x[0])
+
+# V95-1 — bisect esdegerligi: gecersiz fiyatlar (0) serpilmis fixtur, lineer referansla birebir
+_fx1 = _rows95([(i * 10, (0 if i % 7 == 3 else 60000 + i * 5), 50, 0) for i in range(200)])
+_usf, _ty = _v95_yardimcilar(_fx1)
+def _lin_sonraki(t0, ufuk_dk):
+    hedef = t0 + _dt95.timedelta(minutes=ufuk_dk)
+    for (t2, s2) in _fx1:
+        if t2 >= hedef:
+            f = float(s2.get('anlik_fiyat') or 0)
+            return f if f > 0 else None
+    return None
+def _lin_trend(t0, f0, geri_saat=6):
+    hedef = t0 - _dt95.timedelta(hours=geri_saat)
+    ref_f = None
+    for (t2, s2) in _fx1:
+        if t2 <= hedef:
+            f = float(s2.get('anlik_fiyat') or 0)
+            if f > 0:
+                ref_f = f
+        else:
+            break
+    if ref_f is None or f0 <= 0:
+        return None
+    fark = (f0 / ref_f - 1) * 100
+    return 'YUKARI' if fark > 0.5 else ('ASAGI' if fark < -0.5 else None)
+_es1 = all(_usf(t, u) == _lin_sonraki(t, u)
+           for (t, _s) in _fx1[::7] for u in (15, 240, 1440, 5760, 99999))
+_es2 = all(_ty(t, 61000.0) == _lin_trend(t, 61000.0) for (t, _s) in _fx1[::5])
+check("V95-1: bisect surumu lineer spec referansiyla BIREBIR (ileri-fiyat + trend)",
+      _es1 and _es2)
+
+# V95-2 — look-ahead YOK: t0 SONRASI fiyatlari boz -> _trend_yonu degismez
+_t0 = _T95 + _dt95.timedelta(minutes=800)
+_once = _ty(_t0, 61000.0)
+_fx2 = [(t, dict(s, anlik_fiyat=(999999 if t > _t0 else s['anlik_fiyat'])))
+        for (t, s) in _fx1]
+_usf2, _ty2 = _v95_yardimcilar(_fx2)
+check("V95-2: t0 sonrasi veri degisince trend AYNI (look-ahead yok) + ref 6s oncesinden",
+      _ty2(_t0, 61000.0) == _once and _once is not None)
+
+# V95-3 — trend siniflamasi: +%1 YUKARI / -%1 ASAGI / +-%0.3 yatay None
+def _tek_trend(ref_f, f0):
+    fx = _rows95([(0, ref_f, 0, 0), (720, f0, 0, 0)])   # ref tam 12s once; t0=720dk
+    _, ty = _v95_yardimcilar(fx)
+    return ty(_T95 + _dt95.timedelta(minutes=720), f0, geri_saat=6)
+check("V95-3: trend +%1->YUKARI, -%1->ASAGI, +%0.3->None (yatay dilimlenmez)",
+      _tek_trend(60000, 60600) == 'YUKARI' and _tek_trend(60000, 59400) == 'ASAGI'
+      and _tek_trend(60000, 60180) is None)
+
+# V95-4/5/6 — OLCUM blogu uctan uca: 6 gunluk YUKARI trend, 10dk kadans
+class _G95:
+    pass
+def _olcum_kos(uzun_zamanli, uzun_hesapla=True, g=None, istatistik=None):
+    usf, ty = _v95_yardimcilar(uzun_zamanli)
+    ns = {'uzun_hesapla': uzun_hesapla, 'uzun_zamanli': uzun_zamanli,
+          'istatistik': {"ufuklar": {}} if istatistik is None else istatistik,
+          'UZUN_UFUKLAR_DK': [1440, 2880, 4320, 5760], 'LEAN_MARJI': 10.0,
+          'MALIYET_PCT': 0.10, 'simdi': _T95 + _dt95.timedelta(days=6),
+          '_uzun_sonraki_fiyat': usf, '_trend_yonu': ty,
+          'geri_test_dongusu': _G95() if g is None else g}
+    exec(_kod95o, ns)
+    return ns
+# yukselen trend: dakikada +1 USD; LONG satirlar (cogunluk) + her 20.de SHORT
+_fx3 = _rows95([(i * 10, 60000.0 + i * 10, (0 if i % 20 == 5 else 50), (50 if i % 20 == 5 else 0))
+                for i in range(864)])
+_ns3 = _olcum_kos(_fx3)
+_u3 = _ns3['istatistik']['uzun_ufuklar']
+_g1 = _u3['1g']
+# ilk 6 saatin satirlari (36 adet @10dk) trend referanssiz (None) -> YALNIZ 'tum'da
+# sayilir; rejim kovalari toplami tum'dan tam 36 eksiktir (tasarim geregi)
+check("V95-4: dort ufuk anahtari (1g..4g) + YUKARI trendde LONG=trend_yonunde %100 isabet, "
+      "SHORT=trend_karsisinda %0 + tum = yonunde+karsisinda+trendsiz(36)",
+      sorted(_u3.keys()) == ['1g', '2g', '3g', '4g']
+      and _g1['trend_yonunde']['isabet'] == 100.0 and _g1['trend_yonunde']['karli_mi'] is True
+      and _g1['trend_karsisinda']['isabet'] == 0.0
+      and _g1['tum']['n'] == _g1['trend_yonunde']['n'] + _g1['trend_karsisinda']['n'] + 36,
+      f"1g={_g1}")
+# buyuk kova: 1g trend_yonunde (n=650) -> True; kucuk kova: 4g'de olculebilir pencere
+# yalniz ilk ~2 gun -> SHORT sayisi ~13 (<30) -> False
+check("V95-5: orneklem etiketi — n>=30 kova guvenilir=True, n<30 kova False",
+      _g1['trend_yonunde']['n'] >= 30 and _g1['trend_yonunde']['guvenilir'] is True
+      and 0 < _u3['4g']['trend_karsisinda']['n'] < 30
+      and _u3['4g']['trend_karsisinda']['guvenilir'] is False,
+      f"4g_karsi={_u3['4g']['trend_karsisinda']}")
+# yatay fixtur: sabit fiyat -> trend None -> rejim kovalari BOS, yalniz 'tum'
+_fx4 = _rows95([(i * 10, 60000.0, 50, 0) for i in range(864)])
+_u4 = _olcum_kos(_fx4)['istatistik']['uzun_ufuklar']
+check("V95-6: yatay piyasada rejim kovalari n=0, 'tum' dolu (yatay dilime sokulmaz)",
+      _u4['1g']['trend_yonunde'] == {"n": 0} and _u4['1g']['trend_karsisinda'] == {"n": 0}
+      and _u4['1g']['tum']['n'] > 0)
+
+# V95-7 — kadans cache: skip turunda onceki olcum sozluge GERI konur (DB'de silinmez)
+_g = _G95()
+_ns_a = _olcum_kos(_fx3, uzun_hesapla=True, g=_g)
+_ilk_olcum = _ns_a['istatistik']['uzun_ufuklar']
+check("V95-7a: hesap turunda cache guncellenir (_son_uzun == cikti)",
+      getattr(_g, '_son_uzun', None) == _ilk_olcum)
+_ns_b = _olcum_kos(_fx3, uzun_hesapla=False, g=_g)
+check("V95-7b: skip turunda 'uzun_ufuklar' cache'ten GERI konur (kayip yok)",
+      _ns_b['istatistik'].get('uzun_ufuklar') == _ilk_olcum)
+_ns_c = _olcum_kos(_fx3, uzun_hesapla=False, g=_G95())
+check("V95-7c: cache yokken skip turu anahtar YAZMAZ (uydurmaz)",
+      'uzun_ufuklar' not in _ns_c['istatistik'])
+
+# V95-8 — kaynak kanitlari: kadans/limit/az-veri korumalar + kohort izolasyonu +
+# kisa taraf DEGISMEDI (is_win 15dk cagrisi + kisa UFUKLAR listesi + kisa istatistik kurulumu)
+check("V95-8: kadans %10 + limit(10000) korumasi + az-veri(<20) + kohort DAIMA kisa UFUKLAR",
+      "geri_test_dongusu._uzun_tur % 10 == 0" in _src88
+      and "len(uzun_satirlar) >= 10000" in _src88
+      and "len(uzun_satirlar) < 20" in _src88
+      and "_kohort_ileri_olc(zamanli, simdi, UFUKLAR, MALIYET_PCT)" in _src88
+      and "_kohort_ileri_olc(zamanli, simdi, UZUN" not in _src88)
+check("V95-9: kisa taraf DEGISMEDI — UFUKLAR [15,30,60,240], is_win 15dk, kisa istatistik kurulumu",
+      "UFUKLAR = [15, 30, 60, 240]" in _src88
+      and "f1 = sonraki_fiyat(t, 15)" in _src88
+      and 'istatistik = {"guncelleme": simdi.isoformat(), "ufuklar": {}}' in _src88
+      and "UZUN_UFUKLAR_DK = [1440, 2880, 4320, 5760]" in _src88)
+
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
 sys.exit(1 if fails else 0)
