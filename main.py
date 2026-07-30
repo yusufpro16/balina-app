@@ -2904,6 +2904,31 @@ def _eq_kumeleri(pivotlar):
     return out
 
 
+def _kohort_buda(olaylar, azami):
+    """
+    v9.4 — Kohort budamasi GERCEK SINYALLERI korur. SAF fonksiyon.
+    Eski budama son-N dilimiydi: gunde ~96 GRAB_ADAY/N1 teshis kaydi 500'luk
+    pencereyi ~5 gunde tur attirip NADIR gercek sinyalleri siliyordu (canli
+    kanit: 22 Tem GRAB_DONUS sinyali silindi — 30 Tem dumpinda kohortun 500
+    kaydinin 500'u ADAY/N1 cikti, tek gercek sinyal kayipti).
+    Kural: limit asilirsa once ADAY kayitlari (tetik 'GRAB_ADAY' ile baslar)
+    ESKIDEN yeniye atilir; gercek sinyaller (kademe SINYAL + GRAB_DONUS/DEVAM)
+    ancak tek baslarina limiti asarsa (teorik) en eskiden kesilir. Sira korunur.
+    tasfiye_kohortu BU YOLU KULLANMAZ (orada aday seli yok — davranisi degismez).
+    """
+    if len(olaylar) <= azami:
+        return olaylar
+    fazla = len(olaylar) - azami
+    atilan = 0
+    yeni = []
+    for o in olaylar:
+        if atilan < fazla and str((o or {}).get('tetik') or '').startswith('GRAB_ADAY'):
+            atilan += 1
+            continue
+        yeni.append(o)
+    return yeni[-azami:]   # aday yetmediyse (teorik: sinyal>azami) en eskiden kes
+
+
 def _swing_backtest(olaylar, fiyat_seri, ufuklar):
     """
     v8.2 — SWING kohortu geri-testi. SAF fonksiyon (deterministik; "simdi" fiyat
@@ -5127,8 +5152,8 @@ def ozet_ve_analiz_dongusu():
                                     'stop': _hs.get('stop'), 'rr_swing': _hs.get('rr_swing'),
                                     'skor': _kademe['kademe_skoru'], 'seviye': _ys.get('fiyat'),
                                     'tetik': _tetik})
-                                if len(_olylar) > KOHORT_AZAMI_KAYIT:
-                                    _olylar = _olylar[-KOHORT_AZAMI_KAYIT:]
+                                # v9.4: budama gercek sinyalleri korur (once ADAY atilir)
+                                _olylar = _kohort_buda(_olylar, KOHORT_AZAMI_KAYIT)
                                 _ayarlar_yaz('swing_kohortu', {
                                     'guncelleme': datetime.datetime.utcnow().isoformat(),
                                     'olaylar': _olylar})
@@ -5337,8 +5362,8 @@ def ozet_ve_analiz_dongusu():
                             _choch_degisti = _choch_olgunlastir(_oly, _kapali15, _mum15['t'])
                             _oly.extend(_tum_yeni)
                             if _choch_degisti or _tum_yeni:
-                                if len(_oly) > KOHORT_AZAMI_KAYIT:
-                                    _oly = _oly[-KOHORT_AZAMI_KAYIT:]
+                                # v9.4: budama gercek sinyalleri korur (once ADAY atilir)
+                                _oly = _kohort_buda(_oly, KOHORT_AZAMI_KAYIT)
                                 durum.grab_kohort_bekleyen = _tum_yeni   # yazim oncesi koru
                                 _ayarlar_yaz('swing_kohortu', {
                                     'guncelleme': datetime.datetime.utcnow().isoformat(),

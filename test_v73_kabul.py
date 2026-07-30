@@ -73,7 +73,7 @@ FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 '_seviye_kalicilik','_grab_teshis','_grab_n1_kayitlari',
                 '_lik_donma_guncelle',
                 # v8.9 cerrahi duzeltmeler (SADECE KAYIT):
-                '_lik_penceresi_ayristir'}  # v7.4-v8.9
+                '_lik_penceresi_ayristir','_kohort_buda'}  # v7.4-v9.4
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -1168,6 +1168,50 @@ check("V93-7: kalite-reddi ve pencere-yok erken donusleri de 9'lu + golge None",
       and _e93a[6] is None and _e93a[7] is None and _e93a[8] is None
       and _e93b[6] is None and _e93b[7] is None and _e93b[8] is None
       and _e93a[3] == 'VERI_GUVENSIZ' and _e93b[3] == 'VERI_BEKLENIYOR')
+
+# ---------- 19) v9.4: KOHORT BUDAMASI GERCEK SINYALLERI KORUR ----------
+# Canli kanit (30 Tem dump): 22 Tem GRAB_DONUS sinyali, gunde ~96 ADAY/N1
+# kaydinin 500'luk pencereyi ~5 gunde tur attirmasiyla silinmisti (500/500 ADAY).
+kb = YENI['_kohort_buda']
+def _ev(i, tetik):
+    return {'zaman': f'2026-07-{10 + i // 100:02d}T{(i // 10) % 24:02d}:{i % 60:02d}:00',
+            'tetik': tetik, 'sira': i}
+# V94-1 — 505 kayit (10 sinyal serpilmis): 5 EN ESKI aday atilir, 10 sinyal SAGLAM, sira korunur
+_giris94 = [_ev(i, 'GRAB_DONUS' if i % 50 == 25 else ('GRAB_ADAY_N1' if i % 3 == 0 else 'GRAB_ADAY'))
+            for i in range(505)]
+_sinyaller = [o['sira'] for o in _giris94 if o['tetik'] == 'GRAB_DONUS']
+_adaylar_eski5 = [o['sira'] for o in _giris94 if o['tetik'] != 'GRAB_DONUS'][:5]
+_beklenen94 = [o for o in _giris94 if o['sira'] not in _adaylar_eski5]
+_cikis94 = kb(list(_giris94), 500)
+check("V94-1: 505 kayit -> 5 EN ESKI aday atildi, 10 gercek sinyalin 10'u korundu, sira birebir",
+      _cikis94 == _beklenen94 and len(_cikis94) == 500
+      and [o['sira'] for o in _cikis94 if o['tetik'] == 'GRAB_DONUS'] == _sinyaller,
+      f"len={len(_cikis94)}")
+# V94-2 — yalniz aday: eski davranisla AYNI (son 500)
+_hepsi_aday = [_ev(i, 'GRAB_ADAY') for i in range(600)]
+check("V94-2: yalniz ADAY listesinde davranis eski dilimle AYNI (son 500)",
+      kb(list(_hepsi_aday), 500) == _hepsi_aday[-500:])
+# V94-3 — limit asilmadiysa dokunulmaz (kimlik)
+_kucuk = [_ev(i, 'GRAB_ADAY') for i in range(400)]
+check("V94-3: limit asilmamissa liste AYNEN doner", kb(list(_kucuk), 500) == _kucuk)
+# V94-4 — teorik: sinyaller tek basina limiti asarsa en eskiden kesilir (sonsuz sisme yok)
+_hepsi_sinyal = [_ev(i, 'GRAB_DEVAM') for i in range(501)]
+check("V94-4: yalniz-sinyal tasmasi en eskiden kesilir (501->500, ilk kayit atildi)",
+      kb(list(_hepsi_sinyal), 500) == _hepsi_sinyal[1:])
+# V94-5 — kademe SINYAL kayitlari (tetik 'SEVIYE+GRAB' gibi) ADAY SAYILMAZ (korunur);
+# tetik'siz/bozuk kayit da ADAY sayilmaz (silme tarafina dusmez — veri korunur)
+_karisik = ([_ev(i, 'GRAB_ADAY') for i in range(502)]
+            + [_ev(900, 'SEVIYE+GRAB+TASFIYE'), {'zaman': 'x', 'sira': 901}])
+_ck = kb(list(_karisik), 500)
+check("V94-5: kademe tetigi + tetik'siz kayit korunur; fazlalik ADAY'dan kesilir",
+      len(_ck) == 500 and _ck[-2]['tetik'] == 'SEVIYE+GRAB+TASFIYE'
+      and _ck[-1].get('sira') == 901 and _ck[0] == _karisik[4])   # 504-500=4 eski aday atilir
+# V94-6 — kaynak kaniti: swing_kohortu'nun IKI yazim yolu da _kohort_buda kullanir;
+# naive dilim YALNIZ tasfiye_kohortu yolunda kaldi (o yolda aday seli yok)
+check("V94-6: iki swing budamasi da _kohort_buda; naive dilim yalniz tasfiye yolunda (1 adet)",
+      _src88.count("_kohort_buda(_olylar, KOHORT_AZAMI_KAYIT)") == 1
+      and _src88.count("_kohort_buda(_oly, KOHORT_AZAMI_KAYIT)") == 1
+      and _src88.count("olaylar = olaylar[-KOHORT_AZAMI_KAYIT:]") == 1)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
