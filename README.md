@@ -38,9 +38,11 @@ Her şey Supabase'e yazılır; sistem kendi sinyalini geriye dönük ölçer (se
 - **Katman 4 — OI/FUNDING** → kırılganlık vetosu (squeeze/tasfiye rejiminde keser)
 
 Sinyal şartı: skor ≥ **90** + taraflar arası marj ≥ **25** + VE-kapıları
-(`islem/direnc/duvar`) + süreç ailesi + maliyet çıtası (`hedef`). Skor eşiği
-geçip kapıya takılanlar **gölge sinyal** olarak kaydedilir (v9.3 —
-`golge_yon/golge_kapi/golge_skor`; VERİDİR, işlem çağrısı değildir).
+(`islem/direnc`) + süreç ailesi. **v9.7 (kullanıcı kararı — Faz 2):** `duvar` ve
+`hedef` (maliyet çıtası) kapıları **kaldırıldı** — order book 60sn REST
+fotoğrafıdır, hiçbir karara girmez; toplama/kayıt/panel ve `ob_olcum` hakemleri
+yaşar. Skor eşiği geçip kapıya takılanlar **gölge sinyal** olarak kaydedilir
+(v9.3 — `golge_yon/golge_kapi/golge_skor`; VERİDİR, işlem çağrısı değildir).
 Scalp aktif sinyali susturulmuştur (`SCALP_SINYAL_AKTIF=False`) — skorlar ve
 kayıt akışı sürer.
 
@@ -55,7 +57,9 @@ Boru hattı, hepsi **15dk kapalı mum** disipliniyle (`son_islenen_15dk_ts`):
    seviyeyi gerçekten kesmesi + likidasyon eşliği + seviye başına 90dk cooldown.
 3. **Kapanış kararı** — aynı kapalı mumda `DONUS` (fitilli tuzak) / `DEVAM`
    (gerçek kırılım) / belirsiz.
-4. **Order-flow teyidi** — DONUS: 2/3 (OI zorunlu); DEVAM: 3/3; ters emici iptali.
+4. **Order-flow teyidi** — DONUS: 2/3 (OI zorunlu); DEVAM: 3/3. v9.7: emici
+   kanıtının defter-eğilim izi karar dışı; CVD tabanlı parça (rejim+tükenme) kanıt.
+   Kademe SINYAL şartı 3/3 (emici şartı ve yön uzlaşısı karar dışı, kayıtta).
 5. **Sinyal** — stop: fitil ucu / kırılan seviye ± `max(0.0005×fiyat, 0.1×ATR15)`;
    kısa hedef: yönde ilk güçlü seviye; swing hedef: karşı likidite havuzu.
    **R/R kapısı (v9.2, birleşik): `rr_kisa ≥ 2.0`** — grab ve kademe yolunun
@@ -158,5 +162,8 @@ Sağlık kontrolü `/` rotasıdır.
 | v9.2 | **Birleşik R/R kapısı (`rr_kisa≥2`)** + Coinalyze funding/L-S kadansı |
 | v9.3 | Gölge sinyal görünürlüğü (3 kolon, salt kayıt) |
 | v9.4 | Kohort budaması gerçek sinyalleri korur |
+| v9.5 | Uzun ufuk (1-4 gün) + rejim dilimli geri-test (salt ölçüm) |
+| v9.6 | Order book değer ölçümü — duvar-uyum + gölge-duvar hakemleri |
+| v9.7 | **Order book karardan çıkarıldı** (duvar/hedef kapıları + emici şartı; kayıt yaşar) |
 
 `yedek/` klasöründe tarihli veri anlık görüntüleri tutulur.

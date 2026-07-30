@@ -2172,7 +2172,8 @@ def _swing_kademe(anlik_fiyat, seviyeler, vol_pct, grab, tasfiye_var, emilim,
       YOK      : yakin seviye yok / veri yok
       IZLE     : fiyat bir seviyeye SWING_YAKINLIK_VOL x vol yaklasti
       HAZIRLAN : IZLE + (grab basladi VEYA funding asiri VEYA emici yon verdi)
-      SINYAL   : 4/4 -> seviye + grab TAMAM + tasfiye teyidi + emici YON (uzlasili)
+      SINYAL   : 3/3 -> seviye + grab TAMAM + tasfiye teyidi (v9.7: emici YON
+                 sarti karardan cikti — kaynagi defter egilimi; kayitta yasar)
 
     grab: {'yon':'LONG'|'SHORT'|None, 'baslad':bool, 'tamam':bool} (supurme ozeti).
     emilim: emilim dict; funding/d_oi: kalabalik baglami.
@@ -2198,7 +2199,12 @@ def _swing_kademe(anlik_fiyat, seviyeler, vol_pct, grab, tasfiye_var, emilim,
     # supuruldugunu zaten kodluyor; emici emilim yonunu verir. Ikisi CELISIRSE sinyal yok.
     emici = _emici_yon(emilim)
     gyon = grab.get('yon') if grab else None
-    yonler = [y for y in (gyon, emici) if y]
+    # v9.7 (KULLANICI KARARI — Faz 2): emici, YON UZLASISINDAN da cikti. Yarim
+    # cikarma tutarsiz olurdu: OB izli emici sinyal URETEMIYORSA IPTAL de
+    # EDEMEMELI (celiski vetosu bir karar etkisiydi). Yon artik yalniz grab'dan;
+    # celiski tek kaynakla olusamaz (kod korunur — ileride kaynak eklenirse
+    # yeniden devreye girer). emici KAYIT/sebep/rozet olarak yasar.
+    yonler = [y for y in (gyon,) if y]
     celiski = len(set(yonler)) > 1
     yon = None if celiski else (yonler[0] if yonler else None)
 
@@ -2229,7 +2235,12 @@ def _swing_kademe(anlik_fiyat, seviyeler, vol_pct, grab, tasfiye_var, emilim,
     if celiski:
         sebepler.append(f"YON CELISKISI {sorted(set(yonler))} -> sinyal yok")
 
-    dort_dort = (grab_tamam and bool(tasfiye_var) and emici_var
+    # v9.7 (KULLANICI KARARI — Faz 2): 'emici yon' SARTI karardan cikti — emici
+    # yonu spot/perp defter EGILIMINDEN besleniyordu (60sn REST fotografi; order
+    # book karara girmez). SINYAL artik 3/3: seviye(yakinlik) + grab TAMAM +
+    # tasfiye. emici OLCULMEYE ve sartlar/sebepler KAYDINA girmeye devam eder
+    # (panel rozeti yasar); HAZIRLAN tetigi olarak da kalir (kayit kademesi).
+    dort_dort = (grab_tamam and bool(tasfiye_var)
                  and not celiski and yon is not None)
     if dort_dort:
         kademe = 'SINYAL'
@@ -2742,12 +2753,15 @@ def _sweep_teyit(sweep_yon, kapanis_tipi, pencere):
         if d_cvd is not None:
             delta_k = (d_cvd < 0) if sweep_yon == 'SHORT' else (d_cvd > 0)
         # Tukenme yalniz OLCULMUS True ise kanit sayilir (None kanit degildir)
+        # v9.7: emici_yonler IZI karardan cikti (kaynagi defter EGILIMI — 60sn
+        # REST fotografi; kullanici karari: order book karara girmez). Kriterin
+        # CVD tabanli parcalari (rejim ailesi + tukenme) AYNEN kanittir.
         if sweep_yon == 'SHORT':
             emici_k = (any(r in DAGITIM_AILESI for r in rejimler)
-                       or pencere.get('alici_tuk') is True or ('SHORT' in emici_yonler))
+                       or pencere.get('alici_tuk') is True)
         else:
             emici_k = (any(r in TOPLAMA_AILESI for r in rejimler)
-                       or pencere.get('satici_tuk') is True or ('LONG' in emici_yonler))
+                       or pencere.get('satici_tuk') is True)
         say = sum(1 for k in (oi_k, delta_k, emici_k) if k is True)
         sonuc = 'GRAB_DONUS' if (oi_k is True and say >= 2) else None
         return {'oi': oi_k, 'delta': delta_k, 'emici': emici_k, 'sonuc': sonuc}
@@ -2762,8 +2776,10 @@ def _sweep_teyit(sweep_yon, kapanis_tipi, pencere):
     ters_aile = DAGITIM_AILESI if kir_yon == 'LONG' else TOPLAMA_AILESI
     ters_tuk = pencere.get('alici_tuk') if kir_yon == 'LONG' else pencere.get('satici_tuk')
     # ters_tuk None = olculemedi -> karsit KANIT uydurulmaz (is True)
-    emici_k = not ((ters_yon in emici_yonler)
-                   or any(r in ters_aile for r in rejimler) or ters_tuk is True)
+    # v9.7: ters-emici iptalinin defter-egilimi parcasi (emici_yonler) karardan
+    # cikti; CVD tabanli ters kanitlar (rejim ailesi + tukenme) iptal etmeye
+    # devam eder (kullanici karari: order book karara girmez).
+    emici_k = not (any(r in ters_aile for r in rejimler) or ters_tuk is True)
     sonuc = 'GRAB_DEVAM' if (oi_k is True and delta_k is True and emici_k is True) else None
     return {'oi': oi_k, 'delta': delta_k, 'emici': emici_k, 'sonuc': sonuc}
 
@@ -4031,15 +4047,20 @@ def balina_skoru_hesapla(a, pencere, kalite):
     ve_kapisi_log = ""
 
     # -- VE-KAPISI 1: her kritik katman kendi minimumunu GEÇMELİ --
+    # v9.7 (KULLANICI KARARI — Faz 2): 'duvar' kapisi KALDIRILDI. Gerekce:
+    # duvar verisi 60sn'lik REST derinlik FOTOGRAFI — emir defteri milisaniyede
+    # degisir, fotograf spoof'a/guruleye acik; gercek zamanli L2 imkanimiz yok.
+    # Order book artik HICBIR karari etkilemez; toplama/kayit/panel YASAR
+    # (duvar_teyitli skor bileseni KAYITTIR — skorlar birebir korunur, fark=0
+    # skor kiyasi yasar). ob_olcum hakemleri (v9.6) dolmaya devam eder —
+    # "geri acalim mi" sorusu ileride kanitla cevaplanabilir.
     long_kapilar = {
         "islem": satis_yogunlugu >= VE_ISLEM_MIN,
         "direnc": fiyat_direnci_long >= VE_DIRENC_MIN,
-        "duvar": duvar_teyitli_long >= VE_DUVAR_MIN,
     }
     short_kapilar = {
         "islem": alis_yogunlugu >= VE_ISLEM_MIN,
         "direnc": fiyat_zayifligi_short >= VE_DIRENC_MIN,
-        "duvar": duvar_teyitli_short >= VE_DUVAR_MIN,
     }
     long_ve = all(long_kapilar.values())
     short_ve = all(short_kapilar.values())
@@ -4089,22 +4110,22 @@ def balina_skoru_hesapla(a, pencere, kalite):
         if 0 < en_yakin_bid < fiyat:
             hedef_var_short = ((fiyat - en_yakin_bid) / fiyat * 100) >= MALIYET_CITASI_PCT
 
-    # -- NİHAİ KARAR: skor + marj + VE-kapıları + hedef --
+    # -- NİHAİ KARAR: skor + marj + VE-kapıları --
+    # v9.7: 'hedef' (maliyet citasi) sarti KALDIRILDI — en_yakin_ask/bid duvar
+    # mesafesi ayni 60sn REST fotografindan geliyordu (kullanici karari: order
+    # book karara girmez). hedef_var_* hesabi KAYIT olarak yukarida durur.
     if (long_skor >= SINYAL_ESIGI and (long_skor - short_skor) >= SINYAL_MARJI
-            and long_ve and hedef_var_long):
+            and long_ve):
         sinyal = "LONG"
     elif (short_skor >= SINYAL_ESIGI and (short_skor - long_skor) >= SINYAL_MARJI
-            and short_ve and hedef_var_short):
+            and short_ve):
         sinyal = "SHORT"
 
     # Log için hangi kapının kapalı olduğunu kaydet (öğrenmek için)
+    # v9.7: 'duvar' ve 'hedef' artik kapi degil — kapali listesine giremezler
     if sinyal == "BEKLE" and max(long_skor, short_skor) >= SINYAL_ESIGI:
         taraf = long_kapilar if long_skor > short_skor else short_kapilar
         kapali = [k for k, v in taraf.items() if not v]
-        if long_skor > short_skor and not hedef_var_long:
-            kapali.append("hedef")
-        if short_skor > long_skor and not hedef_var_short:
-            kapali.append("hedef")
         if (long_skor > short_skor and dagitim_ailesi and surec_tukenme < 3):
             kapali.append("surec")
         if (short_skor > long_skor and toplama_ailesi and surec_tukenme < 3):

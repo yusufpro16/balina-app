@@ -127,6 +127,7 @@ def _aile(rejim):
             'TASFIYE_SONRASI_DONUS': 'SHORT_SQUEEZE',
             'LONG_KAPITULASYON': 'LONG_TASFIYE'}.get(r, r)
 farkli=0; rejim_zengin=0; dip_kapsama=0   # v7.4: DIP_TOPLAMA_* yoluna giren
+kapi_serbest=0   # v9.7: duvar/hedef kalkinca serbestlesen sinyaller (izinli fark)
 for i in range(500):
     esik_d = random.uniform(1e7, 1e8)
     a = {
@@ -165,16 +166,30 @@ for i in range(500):
     kalite = {'cvd_guvenilir': random.random()>0.1, 'sebep':'test'}
     e = ESKI['balina_skoru_hesapla'](dict(a), dict(pencere) if pencere else None, dict(kalite))
     y = YENI['balina_skoru_hesapla'](dict(a), dict(pencere) if pencere else None, dict(kalite))
-    if (round(e[0],6),round(e[1],6),e[2]) != (round(y[0],6),round(y[1],6),y[2]):
+    # v9.7'DE BILINCLI YENIDEN YAZILDI (KULLANICI KARARI — Faz 2): duvar+hedef
+    # kapilari kaldirildi (order book karara girmez). SKORLAR hala BIREBIR;
+    # sinyal farki YALNIZ 'taban kapi reddetmisti -> simdi serbest' yonunde
+    # OLABILIR (kapilar AND idi: kaldirmak sinyal SILEMEZ, sadece acabilir) ve
+    # yeni sinyal skor yonu+esik+marjla tutarli olmali. Baska her fark HATADIR.
+    if (round(e[0],6),round(e[1],6)) != (round(y[0],6),round(y[1],6)):
         farkli+=1
-        if farkli<=3: print("  FARK:",e[:3],"vs",y[:3])
+        if farkli<=3: print("  SKOR FARKI:",e[:2],"vs",y[:2])
+    if e[2] != y[2]:
+        if (e[2] == 'BEKLE' and y[2] in ('LONG','SHORT')
+                and ((y[2]=='LONG' and y[0]>y[1] and y[0]>=90 and (y[0]-y[1])>=25)
+                     or (y[2]=='SHORT' and y[1]>y[0] and y[1]>=90 and (y[1]-y[0])>=25))):
+            kapi_serbest += 1
+        else:
+            farkli+=1
+            if farkli<=3: print("  SINYAL FARKI (izinsiz):",e[2],"vs",y[2])
     if e[3]!=y[3]:
         if _aile(e[3]) == _aile(y[3]): rejim_zengin+=1   # v8.3: aile ayni -> zenginlesme
         else:
             farkli+=1
             if farkli<=3: print("  REJIM IHLALI:",e[3],"->",y[3])
     if str(y[3]).startswith('DIP_TOPLAMA_'): dip_kapsama+=1
-check("500 girdide skor+sinyal BIREBIR ayni", farkli==0, f"fark={farkli}, izinli rejim zenginlesmesi={rejim_zengin}")
+check("500 girdide SKORLAR BIREBIR + sinyal farki yalniz kapi-serbestlesme yonunde (v9.7)",
+      farkli==0, f"fark={farkli}, kapi_serbest={kapi_serbest}, izinli rejim zenginlesmesi={rejim_zengin}")
 # KAPSAMA (spec §8.2): sifirsa test BOS gecmistir -> gecersiz
 check("v7.4 DIP_TOPLAMA_* yolu GERCEKTEN calisti (kapsama>0)", dip_kapsama>0,
       f"dip_kapsama={dip_kapsama}/500")
@@ -536,19 +551,24 @@ check("SB1: seviye yok -> kademe YOK", kdm(62000,[],_vol,{},False,{},0.0001,0.0)
 _izle=kdm(61150,_sev,_vol,_g0,False,{},0.0001,0.0)
 check("SB2: seviyeye 2xvol yakin, sensor yok -> IZLE (skor 25)",
       _izle['kademe']=='IZLE' and _izle['kademe_skoru']==25, f"={_izle['kademe']}/{_izle['kademe_skoru']}")
+# SB3 — v9.7'DE BILINCLI YENIDEN YAZILDI: emici HAZIRLAN'i hala tetikler (kayit
+# kademesi) ama YON artik VEREMEZ (yon yalniz grab'dan; OB izli emici karar disi)
 _haz=kdm(61150,_sev,_vol,_g0,False,_emL,0.0001,0.0)
-check("SB3: + emici basladi -> HAZIRLAN", _haz['kademe']=='HAZIRLAN' and _haz['yon']=='LONG')
+check("SB3(v9.7): emici basladi -> HAZIRLAN ama yon=None (emici yon VEREMEZ)",
+      _haz['kademe']=='HAZIRLAN' and _haz['yon'] is None)
 _sinL=kdm(61150,_sev,_vol,_gL,True,_emL,0.0001,0.0)
 check("SB4: 4/4 (seviye+grab+tasfiye+emici) uyumlu -> SINYAL LONG skor 100",
       _sinL['kademe']=='SINYAL' and _sinL['yon']=='LONG' and _sinL['kademe_skoru']==100,
       f"={_sinL['kademe']}/{_sinL['yon']}/{_sinL['kademe_skoru']}")
 _sinS=kdm(63450,_sev,_vol,_gS,True,_emS,0.0001,0.0)
 check("SB5: direnc altinda 4/4 SHORT -> SINYAL SHORT", _sinS['kademe']=='SINYAL' and _sinS['yon']=='SHORT')
-# YON CELISKISI: grab LONG ama emici SHORT (gercek yonlu sensorler celisir) -> SINYAL YOK.
-# (v8.4: seviye_yon yon uzlasisindan cikarildi; celiski artik SADECE grab<->emici'den.)
+# SB6 — v9.7'DE BILINCLI YENIDEN YAZILDI (KULLANICI KARARI — Faz 2): emici yon
+# uzlasisindan da cikti (yarim cikarma tutarsizdi: OB izli emici sinyal
+# uretemiyorsa IPTAL de edememeli). Ayni fikstur (grab LONG + emici SHORT)
+# artik CELISKI degil -> yon grab'dan LONG -> 3/3 tamamsa SINYAL LONG.
 _cel=kdm(61150,_sev,_vol,_gL,True,_emS,0.0001,0.0)
-check("SB6: grab<->emici yon celiskisi -> SINYAL DEGIL (yon=None)",
-      _cel['kademe']!='SINYAL' and _cel['yon'] is None, f"={_cel['kademe']}/{_cel['yon']}")
+check("SB6(v9.7): grab LONG + emici SHORT -> celiski YOK, SINYAL LONG (emici karar disi)",
+      _cel['kademe']=='SINYAL' and _cel['yon']=='LONG', f"={_cel['kademe']}/{_cel['yon']}")
 # UZLASMA: grab SHORT + emici SHORT, seviye altta (eski seviye_yon LONG olurdu) ->
 # artik seviye_yon karismaz -> SHORT SINYAL (eski kod bunu YANLISLIKLA bloklardi)
 _uzl=kdm(61150,_sev,_vol,_gS,True,_emS,0.0001,0.0)
@@ -759,11 +779,17 @@ _r42c = st_('SHORT','DONUS',_P(d_oi_pct=-0.5, d_oi_5dk_min_pct=-0.4,
                                d_vadeli_cvd=-500.0))
 check("A4-2b: 5dk dilimde esik asilmadi -> oi False; diken izi olculemedi -> oi None",
       _r42b['oi'] is False and _r42c['oi'] is None and _r42c['sonuc'] is None)
+# A4-3 — v9.7'DE BILINCLI YENIDEN YAZILDI: defter-egilim izi (emici_yonler)
+# ARTIK IPTAL EDEMEZ (OB karar disi); CVD tabanli ters kanit (tukenme/rejim)
+# iptal etmeye DEVAM EDER — koruma kaybolmadi, kaynagi degisti.
 _r43 = st_('SHORT','DEVAM',_P(d_oi_pct=+0.4, d_vadeli_cvd=+800.0, emici_yonler=['SHORT']))
 _r43b = st_('SHORT','DEVAM',_P(d_oi_pct=+0.4, d_vadeli_cvd=+800.0))
-check("A4-3: DEVAM + OI artti + delta ayni + emici TERS -> iptal (tersi yoksa GRAB_DEVAM)",
-      _r43['sonuc'] is None and _r43['emici'] is False and _r43b['sonuc']=='GRAB_DEVAM',
-      f"ters={_r43['sonuc']} temiz={_r43b['sonuc']}")
+_r43c = st_('SHORT','DEVAM',_P(d_oi_pct=+0.4, d_vadeli_cvd=+800.0, alici_tuk=True))
+check("A4-3(v9.7): OB izli ters emici iptal ETMEZ (GRAB_DEVAM); CVD ters kaniti (alici_tuk) HALA iptal EDER",
+      _r43['sonuc']=='GRAB_DEVAM' and _r43['emici'] is True
+      and _r43b['sonuc']=='GRAB_DEVAM'
+      and _r43c['sonuc'] is None and _r43c['emici'] is False,
+      f"ob_izi={_r43['sonuc']} temiz={_r43b['sonuc']} cvd_ters={_r43c['sonuc']}")
 _r44 = st_('SHORT','DONUS',_P(eksik=True, d_oi_pct=-0.5, lik_long_yog_max=3.0))
 check("A4-4: pencere verisi eksik -> teyit None, cokme yok",
       _r44=={'oi':None,'delta':None,'emici':None,'sonuc':None})
@@ -1064,14 +1090,15 @@ check("V92-4: L/S diag sayaci kadans blogunun icinde (skip turu diag'i sisirmez)
 _v93y = skorla(YENI, 'NOTR')
 check("V93-0: balina_skoru_hesapla donusu 9 eleman + v9.3-GOLGE marker blogu var",
       len(_v93y) == 9 and "# v9.3-GOLGE BASLA" in _src88 and "# v9.3-GOLGE BITIR" in _src88)
-# V93-1 — UCTAN UCA pozitif golge: FAZ2+a_g1 LONG uretir (G2 kaniti); hedef
-# kapisini kapat (ask duvari %0.05 otede < MALIYET_CITASI_PCT %0.30) ->
-# sinyal BEKLE'ye duser AMA golge LONG'u gorunur kilar (kapi: hedef)
-_a93 = dict(a_g1); _a93['en_yakin_ask_fiyat'] = 60030.0   # 60000'in %0.05 ustu
+# V93-1 — v9.7'DE BILINCLI YENIDEN YAZILDI: eski fikstur 'hedef' kapisiyla golge
+# uretiyordu; v9.7 duvar+hedef kapilarini kaldirdi (OB karar disi) -> ayni fikstur
+# artik LONG uretir (bu POZITIF kanit V97-2'de). Golge artik OB'siz kapilardan
+# uretilir: 'surec' (dagitim ailesi) LONG'u keser -> golge LONG / kapi 'surec'.
+_a93 = dict(a_g1); _a93['surec_rejim'] = 'TEPE_DAGITIM'; _a93['surec_tukenme'] = 0
 _g93 = FAZ2['balina_skoru_hesapla'](_a93, dict(p_g1), {'cvd_guvenilir': True, 'sebep': 'ok'})
-check("V93-1: hedef kapisi sinyali kesti -> BEKLE + golge_yon=LONG + kapi 'hedef' + skor esik ustu",
+check("V93-1(v9.7): surec kapisi sinyali kesti -> BEKLE + golge_yon=LONG + kapi 'surec' + skor esik ustu",
       _g93[2] == 'BEKLE' and _g93[6] == 'LONG'
-      and 'hedef' in str(_g93[7]).split(',')
+      and 'surec' in str(_g93[7]).split(',')
       and _g93[8] == max(_g93[0], _g93[1]) >= YENI['SINYAL_ESIGI'],
       f"sinyal={_g93[2]} golge={_g93[6]}/{_g93[7]}/{_g93[8]}")
 # V93-2 — gercek sinyal oldugunda golge YOK (ayni fixtur, kapi acik)
@@ -1434,6 +1461,44 @@ check("V96-5: OB blogu salt olcum — tek asil yazim + cache geri koyma; ikiz oz
       and _src88.count('istatistik["ob_olcum"] = geri_test_dongusu._son_ob') == 1
       and "def _uzun_ozet" in _m95o.group(1) and "def _uzun_ozet" not in _m96.group(1)
       and "OB_UFUKLAR_DK = [60, 240, 1440]" in _src88)
+
+# ---------- 22) v9.7: ORDER BOOK KARARDAN CIKARILDI (KULLANICI KARARI — Faz 2) ----------
+# Gerekce: derinlik 60sn REST fotografi (defter ms'de degisir; gercek zamanli L2
+# imkani yok). OB artik HICBIR karari etkilemez; toplama/kayit/panel/olcum YASAR.
+# V97-1 — kaynak kilitleri: duvar kapisi yok, hedef sarti yok, kapali'ya hedef girmez
+check("V97-1: kaynakta duvar/hedef kapilari YOK; skor bilesenleri (duvar_teyitli) KAYIT olarak DURUYOR",
+      '"duvar": duvar_teyitli_long' not in _src88
+      and '"duvar": duvar_teyitli_short' not in _src88
+      and "and long_ve and hedef_var_long" not in _src88
+      and "and short_ve and hedef_var_short" not in _src88
+      and 'kapali.append("hedef")' not in _src88
+      and "duvar_teyitli_long = duvar_ham_long" in _src88     # skor kaydi yasar
+      and "hedef_var_long = " in _src88)                      # olcum yasar
+# V97-2 — POZITIF kanit: eski V93-1 fiksturu (ask duvari %0.05 otede) artik
+# sinyali KESEMEZ -> LONG cikar (duvar/hedef kapilari gercekten oldu)
+_a97 = dict(a_g1); _a97['en_yakin_ask_fiyat'] = 60030.0
+_s97 = FAZ2['balina_skoru_hesapla'](_a97, dict(p_g1), {'cvd_guvenilir': True, 'sebep': 'ok'})
+check("V97-2: yakin ask duvari sinyali ARTIK kesemiyor -> LONG (eski 'hedef' golge fiksturu)",
+      _s97[2] == 'LONG' and _s97[6] is None, f"sinyal={_s97[2]}")
+# V97-3 — kademe 3/3: grab TAMAM + tasfiye, emici HIC YOK -> SINYAL (emici sartsiz)
+_v97k = kdm(61150,_sev,_vol,_gL,True,{},0.0001,0.0)
+check("V97-3: emici tamamen yokken 3/3 -> SINYAL LONG (emici sarti karar disi)",
+      _v97k['kademe']=='SINYAL' and _v97k['yon']=='LONG'
+      and _v97k['sartlar'].get('emici_yon') is False,   # KAYIT alani yasiyor
+      f"={_v97k['kademe']}/{_v97k['yon']}")
+# V97-4 — teyit kaynak kilidi: emici_yonler karar ifadelerinde YOK; kayit alani
+# ('emici') donuste DURUYOR; DONUS rejim/tukenme kaniti yasiyor
+check("V97-4: teyitte emici_yonler karar disi + rejim/tukenme kaniti ve kayit alani yasiyor",
+      "('SHORT' in emici_yonler)" not in _src88
+      and "('LONG' in emici_yonler)" not in _src88
+      and "(ters_yon in emici_yonler)" not in _src88
+      and "any(r in DAGITIM_AILESI for r in rejimler)" in _src88
+      and "'emici': emici_k" in _src88)
+# V97-5 — yon uzlasisi yalniz grab'dan (emici iptal de EDEMEZ — SB6 davranis kaniti
+# yukarida; burada kaynak kilidi)
+check("V97-5: yon uzlasisi yalniz grab'dan (emici uretemez de iptal de edemez)",
+      "yonler = [y for y in (gyon,) if y]" in _src88
+      and "yonler = [y for y in (gyon, emici) if y]" not in _src88)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")

@@ -534,7 +534,7 @@ function hukumKart(L,k){
   const ys=k.yakin_seviye;
   const uzak = (ys&&ys.fiyat&&f>0)?Math.abs(ys.fiyat-f):null;
   const cumleler={
-    SINYAL:`4/4 koşul sağlandı — motor ${yon||''} kurulumu onayladı. Hedef/stop yapıdan üretildi.`,
+    SINYAL:`3/3 koşul sağlandı — motor ${yon||''} kurulumu onayladı. Hedef/stop yapıdan üretildi.`,
     HAZIRLAN:'Kurulum oluşuyor: seviye yakın + en az bir sensör (grab/funding/emici) tetikte. Henüz işlem sinyali DEĞİL.',
     IZLE:'Fiyat bir seviyeye yaklaştı; sensörler sakin. İzlemedeyiz.',
     YOK:'Yakın seviye yok — piyasa haritanın ortasında. Sermaye korunuyor.'};
@@ -559,7 +559,7 @@ function avKart(k){
   $('avIc').innerHTML = (k&&k.kademe)
     ? liste.map(([kk,ad])=>`<div class="sart ${s[kk]?'dolu':'bos'}">
         <span class="im">${s[kk]?'✓':'—'}</span><span class="ad">${ad}</span></div>`).join('')
-      +`<div class="expl">Motorun kendi 4/4 kapısı (swing_karar.sartlar) — panel hesabı değil.</div>`
+      +`<div class="expl">Motorun kendi 3/3 kapısı (swing_karar.sartlar) — emici rozeti kayıttır, karara girmez (v9.7).</div>`
     : '<span class="neu">veri yok</span>';
 }
 
@@ -729,7 +729,7 @@ function sinyalKart(k,ist,kohort,rows,grab){
           </div>`;}).join('');
     }
     $('sinyalIc').innerHTML=`<div class="neu" style="font-size:12px;line-height:1.6">
-      Aktif sinyal yok — motor 4/4 kurulumu bekliyor.<br>
+      Aktif sinyal yok — motor 3/3 kurulumu bekliyor.<br>
       <span style="font-size:10.5px;color:var(--dim)">şimdiye kadar kaydedilen SİNYAL: <b>${kohortN}</b></span></div>${liste}`;
     return;
   }
