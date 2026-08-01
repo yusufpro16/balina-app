@@ -1500,6 +1500,46 @@ check("V97-5: yon uzlasisi yalniz grab'dan (emici uretemez de iptal de edemez)",
       "yonler = [y for y in (gyon,) if y]" in _src88
       and "yonler = [y for y in (gyon, emici) if y]" not in _src88)
 
+# ---------- 23) v9.8: TESHIS PAKETI (spec "v9.6") — SALT OLCUM ----------
+# V98-1 — dort yeni balina_ayarlar anahtari tam 1'er yazim noktasi + izolasyon
+check("V98-1: teshis anahtarlari 1'er yazim + skor/esik/karar satirlari AYNEN",
+      _src88.count('_ayarlar_yaz("skor_faktor_ortalama"') == 1
+      and _src88.count('_ayarlar_yaz("skor_zirve_dagilim"') == 1
+      and _src88.count('_ayarlar_yaz("izle_gir_kademe"') == 1
+      and _src88.count('_ayarlar_yaz("sinyalsizlik_teshis"') == 1
+      and "SINYAL_ESIGI = 90.0" in _src88
+      and "long_skor = 100.0 * absorbsiyon_long * spot_carpani_long" in _src88)
+# V98-2 — davranissal: faktorler emilim'de donuyor ve carpimlari ham skoru veriyor
+_y98 = skorla(YENI, 'NOTR')
+_em98 = _y98[5]
+_f98 = _em98.get('skor_faktorleri') if isinstance(_em98, dict) else None
+check("V98-2: skor_faktorleri donuste var + carpimi ham_long'u veriyor (skor OKUNDU, degismedi)",
+      isinstance(_f98, dict)
+      and abs(100.0 * _f98['absorbsiyon_long'] * _f98['spot_carpani_long']
+              * _f98['borsa_carpani_long'] * _f98['fund_carpani_long']
+              * _f98['iraksama_carpani_long'] * _f98['expiry_carpani']
+              - _f98['ham_long']) < 0.5,
+      f"ham_long={_f98.get('ham_long') if _f98 else None}")
+# V98-3 — erken donusler (_bos_emilim) faktor TASIMAZ; canli-ortalama blogu .get
+# ile None-guvenli (kaynak kaniti) — olcum hatasi sinyal uretimini durduramaz
+_e98 = YENI['balina_skoru_hesapla'](_a0, None, {'cvd_guvenilir': True, 'sebep': 'ok'})
+check("V98-3: erken donus emiliminde skor_faktorleri YOK + okuma .get ile guvenli",
+      isinstance(_e98[5], dict) and 'skor_faktorleri' not in _e98[5]
+      and "emilim.get('skor_faktorleri')" in _src88)
+# V98-4 — kadans hatasi duzeltmesi kaniti: faktor ortalamasi liste uzunluguna
+# DEGIL monoton tur sayacina bagli (liste 50'de sabitlenince %20 hic tetiklenmezdi
+# — spec'in kendi kodundaki hata; duzeltilmis haliyle kilitlenir)
+check("V98-4: faktor kadansi monoton sayacla (_faktor_tur), liste uzunluguyla DEGIL",
+      "_faktor_tur % 20 == 0" in _src88
+      and "% 20 == 0" in _src88 and "len(ozet_ve_analiz_dongusu._faktor_gecmis) % 20" not in _src88)
+# V98-5 — BV yon/ornek: dislama noktasi detay toplar, kalici blok tek lock'ta
+# isler (dongu icinde lock YOK — deadlock/cekisme riski tasinmaz), ornek listesi 5'le sinirli
+check("V98-5: bv dislama yon/ornek — detay listesi + tek lock blogu + 5 ornek siniri",
+      "dislanan_detay.append((sembol, oran))" in _src88
+      and "durum.bv_dislama_yon.setdefault" in _src88
+      and "if len(_ol) > 5:" in _src88
+      and '"dislama_yon": {k: dict(v) for k, v in durum.bv_dislama_yon.items()}' in _src88)
+
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
 sys.exit(1 if fails else 0)

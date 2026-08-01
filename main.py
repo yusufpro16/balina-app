@@ -200,6 +200,8 @@ class CanliDurum:
         # icin, su an her seyi kaydediyoruz. Sinyal uretimi DEGISMIYOR;
         # sadece olcum genisliyor.
         self.bv_dislanan_sayac = {}      # {sembol: kac_kez_dislandi}
+        self.bv_dislama_yon = {}         # v9.8: {sembol: {"alt": n, "ust": n}} — hangi sinira takildi
+        self.bv_oran_ornek = {}          # v9.8: {sembol: son_5_oran} — teshis ornekleri
         self.bv_toplam_tur = 0           # kac tur CVD hesaplandi
         self.bv_dislanan_tur = 0         # kac turda en az 1 borsa dislandi
         self.son_ve_red = ""             # son VE-kapisi red sebebi (DB'ye yazilir)
@@ -1049,6 +1051,7 @@ def _borsa_cvd_topla(veri, usd_cevir=False, etiket=""):
     toplam = 0.0
     saglikli = 0
     dislanan = []
+    dislanan_detay = []   # v9.8: [(sembol, oran)] — yon/ornek teshisi icin
     for borsa in veri:
         sembol = borsa.get('symbol', '?')
         gecmis = borsa.get('history', [])
@@ -1065,6 +1068,11 @@ def _borsa_cvd_topla(veri, usd_cevir=False, etiket=""):
         oran = b_bv / b_v
         if oran < BV_ALT_SINIR or oran > BV_UST_SINIR:
             dislanan.append(f"{sembol}(bv/v={oran:.2f})")
+            # v9.8 (spec "v9.6" 1a): yon+oran detayi — kalici sayac blogunda
+            # (asagida, MEVCUT lock deseniyle) islenir; dongu icinde lock ALINMAZ
+            # (spec dongu icinde durum.lock oneriyordu — mevcut desen tek lock
+            # blogudur, oyle kalir; belgeli sapma).
+            dislanan_detay.append((sembol, oran))
             continue  # BOZUK -> bu borsayi hesaba KATMA
         # Saglikli borsa: CVD'sini ekle
         for mum in gecmis:
@@ -1090,6 +1098,19 @@ def _borsa_cvd_topla(veri, usd_cevir=False, etiket=""):
                 for d in dislanan:
                     sembol_ad = d.split('(')[0]
                     durum.bv_dislanan_sayac[sembol_ad] = durum.bv_dislanan_sayac.get(sembol_ad, 0) + 1
+                # v9.8 (SALT OLCUM): dislama YONU (surekli ALT'a takilan borsa
+                # "satis-agir bozuk", UST'e takilan "alim-agir bozuk" — farkli
+                # sebep, farkli cozum) + son 5 oran ornegi. Karar/CVD DEGISMEZ.
+                for _sm, _orn in dislanan_detay:
+                    _yd = durum.bv_dislama_yon.setdefault(_sm, {"alt": 0, "ust": 0})
+                    if _orn < BV_ALT_SINIR:
+                        _yd["alt"] += 1
+                    else:
+                        _yd["ust"] += 1
+                    _ol = durum.bv_oran_ornek.setdefault(_sm, [])
+                    _ol.append(round(_orn, 3))
+                    if len(_ol) > 5:
+                        _ol.pop(0)
     except Exception:
         pass
     return toplam, saglikli, dislanan
@@ -3889,6 +3910,26 @@ def balina_skoru_hesapla(a, pencere, kalite):
                  * borsa_carpani_short * fund_carpani_short \
                  * iraksama_carpani_short * expiry_carpani
 
+    # v9.8 (spec "v9.6" 2b — SALT OLCUM): SKOR FAKTOR AYRISTIRMASI. Carpimsal
+    # skorda hangi faktor boguyor? VETO ONCESI ham degerler kaydedilir; skorun
+    # KENDISI yalnizca OKUNUR, asla degistirilmez. (Adlar gercek koddan grep'le
+    # dogrulandi — spec'in kendi uyarisi geregi.)
+    skor_faktorleri = {
+        'absorbsiyon_long': round(absorbsiyon_long, 4),
+        'absorbsiyon_short': round(absorbsiyon_short, 4),
+        'spot_carpani_long': round(spot_carpani_long, 4),
+        'spot_carpani_short': round(spot_carpani_short, 4),
+        'borsa_carpani_long': round(borsa_carpani_long, 4),
+        'borsa_carpani_short': round(borsa_carpani_short, 4),
+        'fund_carpani_long': round(fund_carpani_long, 4),
+        'fund_carpani_short': round(fund_carpani_short, 4),
+        'iraksama_carpani_long': round(iraksama_carpani_long, 4),
+        'iraksama_carpani_short': round(iraksama_carpani_short, 4),
+        'expiry_carpani': round(expiry_carpani, 4),
+        'ham_long': round(long_skor, 2),   # veto ONCESI
+        'ham_short': round(short_skor, 2),
+    }
+
     # =====================================================================
     # KATMAN 4 — OI VETOSU (kirilganlik). SINYALI KESER (zayiflatmaz).
     # =====================================================================
@@ -3984,6 +4025,7 @@ def balina_skoru_hesapla(a, pencere, kalite):
     alici_tuk = a.get('alici_tukenmesi', False)         # v7.6: ALICI tukenmesi (dagitim)
     alici_sonme = a.get('alici_sonme_orani', None)
     emilim = {
+        'skor_faktorleri': skor_faktorleri,   # v9.8: SALT OLCUM (2b)
         'emilim_esnekligi': round(emilim_esnek, 4) if emilim_esnek is not None else None,
         'emilim_borsasi': emilim_bors,
         'emilim_spot_pay': round(emilim_spot_pay, 4) if emilim_spot_pay is not None else None,
@@ -4905,6 +4947,89 @@ def ozet_ve_analiz_dongusu():
             long_skor = round(long_skor, 1)
             short_skor = round(short_skor, 1)
             guven_skoru = max(long_skor, short_skor)
+
+            # ---- v9.8 (spec "v9.6" 2b): CANLI FAKTOR ORTALAMASI (son 50 tur) ----
+            # Hangi faktor skoru boguyor? SALT OLCUM — try/except izoleli, olcum
+            # hatasi sinyal uretimini ASLA durdurmaz. DB kolonu istemez
+            # (balina_ayarlar'a kadansli yazim; spec'in kolonsuz alternatifi).
+            try:
+                _sf = emilim.get('skor_faktorleri') if isinstance(emilim, dict) else None
+                if _sf:
+                    if not hasattr(ozet_ve_analiz_dongusu, "_faktor_gecmis"):
+                        ozet_ve_analiz_dongusu._faktor_gecmis = []
+                    ozet_ve_analiz_dongusu._faktor_gecmis.append(_sf)
+                    if len(ozet_ve_analiz_dongusu._faktor_gecmis) > 50:
+                        ozet_ve_analiz_dongusu._faktor_gecmis.pop(0)
+                    ozet_ve_analiz_dongusu._faktor_tur = getattr(
+                        ozet_ve_analiz_dongusu, "_faktor_tur", 0) + 1
+                    # 20 turda bir yaz (kadans; her tur DB'ye yazmak israf)
+                    if ozet_ve_analiz_dongusu._faktor_tur % 20 == 0:
+                        _gecmis = ozet_ve_analiz_dongusu._faktor_gecmis
+                        _ort = {}
+                        for _k in _gecmis[0].keys():
+                            _vals = [g[_k] for g in _gecmis
+                                     if isinstance(g.get(_k), (int, float))]
+                            if _vals:
+                                _ort[_k] = round(sum(_vals) / len(_vals), 4)
+                        _ayarlar_yaz("skor_faktor_ortalama", {
+                            "ortalama": _ort, "ornek_sayisi": len(_gecmis),
+                            "guncelleme": datetime.datetime.utcnow().isoformat(),
+                            "not": "Dusuk faktor = skoru bogan bilesen. "
+                                   "1.0 = notr, <0.5 = guclu baski."})
+            except Exception as e:
+                logging.warning(f"Faktor ortalama hatasi: {e}")
+
+            # ---- v9.8 (spec "v9.6" 3a): SKOR ZIRVE HISTOGRAMI ----
+            # Skor 90'a NEDEN gelmiyor? 60'ta mi takiliyor (tavan dusuk — esik
+            # sorunu degil) yoksa 85-90'a gelip mi iskaliyior (esik marjinal)?
+            # SALT OLCUM; esik ASLA degistirilmez, sadece dagilim sayilir.
+            try:
+                if not hasattr(ozet_ve_analiz_dongusu, "_skor_hist"):
+                    ozet_ve_analiz_dongusu._skor_hist = {
+                        "0-30": 0, "30-50": 0, "50-70": 0,
+                        "70-80": 0, "80-85": 0, "85-90": 0, "90+": 0}
+                    ozet_ve_analiz_dongusu._skor_hist_toplam = 0
+                    ozet_ve_analiz_dongusu._skor_max_gorulen = 0.0
+                _g = guven_skoru
+                _kova = ("90+" if _g >= 90 else "85-90" if _g >= 85 else
+                         "80-85" if _g >= 80 else "70-80" if _g >= 70 else
+                         "50-70" if _g >= 50 else "30-50" if _g >= 30 else "0-30")
+                ozet_ve_analiz_dongusu._skor_hist[_kova] += 1
+                ozet_ve_analiz_dongusu._skor_hist_toplam += 1
+                ozet_ve_analiz_dongusu._skor_max_gorulen = max(
+                    ozet_ve_analiz_dongusu._skor_max_gorulen, _g)
+                if ozet_ve_analiz_dongusu._skor_hist_toplam % 30 == 0:
+                    _ayarlar_yaz("skor_zirve_dagilim", {
+                        "histogram": dict(ozet_ve_analiz_dongusu._skor_hist),
+                        "toplam": ozet_ve_analiz_dongusu._skor_hist_toplam,
+                        "max_gorulen": round(ozet_ve_analiz_dongusu._skor_max_gorulen, 2),
+                        "guncelleme": datetime.datetime.utcnow().isoformat(),
+                        "not": "90+ bos ve max_gorulen<90 -> sorun ESIK degil, skor TAVANI. "
+                               "85-90 doluysa esik marjinal olabilir (yine de DOKUNMA, olc)."})
+            except Exception as e:
+                logging.warning(f"Skor histogram hatasi: {e}")
+
+            # ---- v9.8 (spec "v9.6" 3b): IZLE/GIR KADEME SAYACI ----
+            # 75-90 bandi = "izleme adayi". SADECE SAYAR — sinyal URETMEZ, esik
+            # DEGISTIRMEZ. (golge_* 90+ kapi-reddini izler; bu sayac 75-90
+            # bandini izler — cakismaz, birbirini tamamlar.)
+            try:
+                if not hasattr(ozet_ve_analiz_dongusu, "_izle_sayac"):
+                    ozet_ve_analiz_dongusu._izle_sayac = {
+                        "izle_75_90": 0, "gir_90+": 0, "toplam": 0}
+                ozet_ve_analiz_dongusu._izle_sayac["toplam"] += 1
+                if guven_skoru >= 90:
+                    ozet_ve_analiz_dongusu._izle_sayac["gir_90+"] += 1
+                elif guven_skoru >= 75:
+                    ozet_ve_analiz_dongusu._izle_sayac["izle_75_90"] += 1
+                if ozet_ve_analiz_dongusu._izle_sayac["toplam"] % 30 == 0:
+                    _ayarlar_yaz("izle_gir_kademe", {
+                        "sayac": dict(ozet_ve_analiz_dongusu._izle_sayac),
+                        "guncelleme": datetime.datetime.utcnow().isoformat(),
+                        "not": "izle_75_90>0 ama gir_90+=0: kurulumlar esige YAKLASIYOR "
+                               "ama gecemiyor. Bandin isabeti olculmeden esik DUSURULMEZ (Faz 2)."})
+            except Exception as e:
+                logging.warning(f"Izle/gir sayac hatasi: {e}")
 
             # ---- v4: SÜREÇ HAFIZASI (dagitim/toplama olgunlugu + tukenme) ----
             surec = surec_takip_et(
@@ -6039,6 +6164,10 @@ def geri_test_dongusu():
                         100.0 * durum.bv_dislanan_tur / durum.bv_toplam_tur, 1
                     ) if durum.bv_toplam_tur else 0.0,
                     "borsa_sayaclari": dict(durum.bv_dislanan_sayac),
+                    # v9.8 (spec "v9.6" 1b): dislama yonu + son oran ornekleri —
+                    # hangi borsa hangi sinira takiliyor (teshis; karar degil)
+                    "dislama_yon": {k: dict(v) for k, v in durum.bv_dislama_yon.items()},
+                    "oran_ornek": {k: list(v) for k, v in durum.bv_oran_ornek.items()},
                 }
             istatistik["bv_filtre"] = bv_ist
 
@@ -6046,6 +6175,69 @@ def geri_test_dongusu():
                 _ayarlar_yaz("geri_test_istatistik", istatistik)
             except Exception as e:
                 logging.warning(f"Istatistik yazma hatasi: {e}")
+
+            # ---- v9.8 (spec "v9.6" 3c): SINYALSIZLIK TESHIS PANOSU ----
+            # Tum olcumleri TEK kayitta toparla: "sistem su an neden sinyal
+            # vermiyor" tek bakista. SALT OLCUM; try/except izoleli.
+            # (_ayarlar_oku imzasi grep'le dogrulandi: kayit dict / None doner.)
+            try:
+                def _oku_deger(anahtar):
+                    kayit = _ayarlar_oku(anahtar)
+                    if not kayit:
+                        return None
+                    d = kayit.get("deger")
+                    if isinstance(d, str):
+                        try:
+                            d = json.loads(d)
+                        except Exception:
+                            return None
+                    return d if isinstance(d, dict) else None
+
+                _hist = _oku_deger("skor_zirve_dagilim")
+                _red = _oku_deger("ve_kapisi_redleri")
+                _fak = _oku_deger("skor_faktor_ortalama")
+                teshis = {
+                    "guncelleme": datetime.datetime.utcnow().isoformat(),
+                    "kisa_ufuk_karli_mi": {
+                        u: istatistik["ufuklar"][u]["kanaat"].get("karli_mi")
+                        for u in istatistik.get("ufuklar", {})
+                        if isinstance(istatistik["ufuklar"][u].get("kanaat"), dict)
+                    },
+                    "veri_dislama_orani": bv_ist.get("dislanma_orani"),
+                    "skor_max_gorulen": (_hist or {}).get("max_gorulen"),
+                    "en_cok_reddeden_kapi": None,
+                    "en_dusuk_faktor": None,
+                    "not": "Tek bakis: skor_max<90 -> tavan dusuk; karli_mi hep false -> "
+                           "kanaat zayif; dislama>%50 -> veri kirli; en_dusuk_faktor -> "
+                           "skoru bogan bilesen; ob_yorum -> duvar bilgisinin degeri.",
+                }
+                # en cok reddeden kapi (v9.7 sonrasi: islem/direnc/surec kalabilir)
+                _ks = (_red or {}).get("kapi_sayaclari") or {}
+                if _ks:
+                    teshis["en_cok_reddeden_kapi"] = max(_ks.items(), key=lambda x: x[1])
+                # en dusuk (bogan) faktor
+                _ort = (_fak or {}).get("ortalama") or {}
+                _carp = {k: v for k, v in _ort.items()
+                         if "carpani" in k and isinstance(v, (int, float))}
+                if _carp:
+                    teshis["en_dusuk_faktor"] = min(_carp.items(), key=lambda x: x[1])
+                # ASAMA 3 minimal karari: ob_olcum'a DOKUNULMADI; mevcut 240dk
+                # lehte/aleyhte kiyasi burada YORUMLANIR (orneklem bolunmez)
+                _ob240 = (istatistik.get("ob_olcum") or {}).get("240dk") or {}
+                _le240 = (_ob240.get("duvar_lehte") or {}).get("isabet")
+                _al240 = (_ob240.get("duvar_aleyhte") or {}).get("isabet")
+                if _le240 is not None and _al240 is not None:
+                    teshis["ob_yorum"] = {
+                        "duvar_lehte_isabet_240dk": _le240,
+                        "duvar_aleyhte_isabet_240dk": _al240,
+                        "yorum": ("duvar bilgi katmiyor (fark kucuk)"
+                                  if abs(_le240 - _al240) < 5 else
+                                  ("duvara KARSI kanaatler daha iyi — duvar verisi ters/curuk"
+                                   if _al240 > _le240 else
+                                   "duvar lehine fark var — duvar verisi is goruyor olabilir"))}
+                _ayarlar_yaz("sinyalsizlik_teshis", teshis)
+            except Exception as e:
+                logging.warning(f"Teshis panosu hatasi: {e}")
 
             # ---- v7.3: TASFIYE KOHORTU ILERI OLCUMU (2x2 + MAE/stop) ----
             # v9.5 KILIT: kohort KISA ufuk sistemidir (kisa 'zamanli' penceresine
@@ -6097,6 +6289,20 @@ def geri_test_dongusu():
                         f"turda borsa dislandi (%{bv_ist['dislanma_orani']}) | "
                         f"suclular: {bv_ist['borsa_sayaclari'] or 'yok'}"
                     )
+                    # v9.8 (spec "v9.6" 1c): KRONIK dislanan borsa tespiti —
+                    # SADECE UYARI; hicbir borsa otomatik CIKARILMAZ (cikarma CVD
+                    # toplamini degistirir = mudahale; karar insana ait, Faz 2).
+                    try:
+                        for _sm, _kez in (bv_ist["borsa_sayaclari"] or {}).items():
+                            if bv_ist["toplam_tur"] > 100 and _kez / bv_ist["toplam_tur"] > 0.80:
+                                _yn = (bv_ist.get("dislama_yon") or {}).get(_sm, {})
+                                logging.warning(
+                                    f"KRONIK DISLAMA: {_sm} turlarin "
+                                    f"%{100 * _kez / bv_ist['toplam_tur']:.0f}'inde dislandi "
+                                    f"(alt={_yn.get('alt', 0)}, ust={_yn.get('ust', 0)}). "
+                                    f"Beslemeden CIKARMAK dusunulebilir (Faz 2 — insan karari).")
+                    except Exception:
+                        pass
                 # v7.3: kohort 2x2 ozeti (15dk'da bir)
                 if kohort_ozet:
                     parcalar2 = []
