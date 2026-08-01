@@ -4152,6 +4152,20 @@ def balina_skoru_hesapla(a, pencere, kalite):
         if 0 < en_yakin_bid < fiyat:
             hedef_var_short = ((fiyat - en_yakin_bid) / fiyat * 100) >= MALIYET_CITASI_PCT
 
+    # v9.9: HEDEF MESAFESI OLCUMU (SALT KAYIT — karara girmez; kapi v9.7'de
+    # kalkti). Kaldirilan kapinin "hayaleti": kanaatler hangi mesafe bandinda
+    # karli? Kova analizi geri-testte; burada yalniz yuzde mesafe olculur.
+    # Olculemeyen yon None (sifir tuzagi — duvar yoksa mesafe UYDURULMAZ).
+    hedef_mesafe_long = None
+    hedef_mesafe_short = None
+    if fiyat > 0:
+        if en_yakin_ask > fiyat:
+            hedef_mesafe_long = round((en_yakin_ask - fiyat) / fiyat * 100, 4)
+        if 0 < en_yakin_bid < fiyat:
+            hedef_mesafe_short = round((fiyat - en_yakin_bid) / fiyat * 100, 4)
+    emilim['hedef_mesafe_long'] = hedef_mesafe_long     # v9.9 (kayit tasima)
+    emilim['hedef_mesafe_short'] = hedef_mesafe_short   # v9.9
+
     # -- NİHAİ KARAR: skor + marj + VE-kapıları --
     # v9.7: 'hedef' (maliyet citasi) sarti KALDIRILDI — en_yakin_ask/bid duvar
     # mesafesi ayni 60sn REST fotografindan geliyordu (kullanici karari: order
@@ -5608,6 +5622,21 @@ def ozet_ve_analiz_dongusu():
                     except Exception as e:
                         logging.warning(f"golge kolonlari UPDATE hatasi (ALTER edildi mi?): {e}")
 
+                # ---- v9.9: HEDEF MESAFESI — AYRI best-effort UPDATE (spec payload'a
+                # ekle diyordu; ana insert'e eklemek kolon yokken TUM dakikalik kaydi
+                # dusururdu — golge deseni kullanildi: kolon yoksa YALNIZ mesafe
+                # kaybolur, ana kayit ASLA olmez; ALTER gelince akmaya baslar). ----
+                _hml9 = emilim.get('hedef_mesafe_long') if isinstance(emilim, dict) else None
+                _hms9 = emilim.get('hedef_mesafe_short') if isinstance(emilim, dict) else None
+                if SWING_ARSIV_AKTIF and yeni_satir_id and (_hml9 is not None or _hms9 is not None):
+                    try:
+                        supabase.table("balina_avcisi_data").update({
+                            "hedef_mesafe_long": _hml9,    # v9.9: SALT KAYIT
+                            "hedef_mesafe_short": _hms9,   # (olculemeyen yon NULL)
+                        }).eq("id", yeni_satir_id).execute()
+                    except Exception as e:
+                        logging.warning(f"hedef mesafe UPDATE hatasi (ALTER edildi mi?): {e}")
+
                 if kalite['cvd_guvenilir'] and (tasfiye_a or supurme_yeni_onaylar):
                     olaylar = []
                     ham = {
@@ -5797,13 +5826,32 @@ def geri_test_dongusu():
             pencere_bas = (simdi - datetime.timedelta(minutes=max(UFUKLAR) + 30)).isoformat()
             # v7.3: spot_cvd + open_interest EKLENDI (gecikmeli teyit olcumu icin;
             # sorgu zaten atiliyor — ek REST yok).
-            res = (supabase.table("balina_avcisi_data")
-                   .select("id,kayit_zamani,anlik_fiyat,long_skor,short_skor,"
-                           "is_win,sinyal_durumu,spot_cvd,open_interest")
-                   .gte("kayit_zamani", pencere_bas)
-                   .order("kayit_zamani", desc=False)
-                   .limit(5000)
-                   .execute())
+            # v9.9: MESAFELI select DENENIR; kolonlar henuz ALTER edilmediyse
+            # PostgREST TUM sorguyu reddeder — o durumda MESAFESIZ (eski) select'e
+            # DUSULUR: geri-test/is_win ASLA olmez, kolon gelince kendiliginden
+            # zenginlesir. (Spec bu kirilganligi ele almamisti — belgeli ekleme.)
+            res = None
+            for _sel99 in (
+                    "id,kayit_zamani,anlik_fiyat,long_skor,short_skor,"
+                    "is_win,sinyal_durumu,spot_cvd,open_interest,"
+                    "hedef_mesafe_long,hedef_mesafe_short",          # v9.9 mesafeli
+                    "id,kayit_zamani,anlik_fiyat,long_skor,short_skor,"
+                    "is_win,sinyal_durumu,spot_cvd,open_interest"):  # eski (fallback)
+                try:
+                    res = (supabase.table("balina_avcisi_data")
+                           .select(_sel99)
+                           .gte("kayit_zamani", pencere_bas)
+                           .order("kayit_zamani", desc=False)
+                           .limit(5000)
+                           .execute())
+                    break
+                except Exception as _e99:
+                    _tip99 = 'mesafeli' if 'hedef_mesafe' in _sel99 else 'temel'
+                    logging.warning(f"geri-test sorgu hatasi ({_tip99}): {_e99}")
+                    res = None
+            if res is None:
+                time.sleep(180)
+                continue
             satirlar = res.data or []
             if len(satirlar) < 20:
                 time.sleep(180)
@@ -6002,6 +6050,76 @@ def geri_test_dongusu():
                     "kanaat": ozet(kanaat_dogru, kanaat_top, kanaat_getiri),
                     "sinyal": ozet(sinyal_dogru, sinyal_top, sinyal_getiri),
                 }
+
+            # ================= v9.9: HEDEF MESAFESI KOVA OLCUMU =================
+            # Kaldirilan maliyet citasi kapisinin "hayaleti" (v9.7): kanaatler
+            # hangi mesafe bandinda karli? En karli bant = eski kapinin OLMASI
+            # GEREKEN esigi (kapi geri eklenecekse Faz 2'de o esikle, KANITLA).
+            # SALT OLCUM — mevcut kisa donguye DOKUNULMADI, yanina ayri blok.
+            # v9.9-MESAFE BASLA (kabul testleri bu blogu marker'la calistirir)
+            def _mesafe_ozet(dogru, top, getiriler):
+                # ozet()'in kopyasi + guvenilir alani. BILINCLI IKIZ (belgeli):
+                # ozet() kisa 'for ufuk' dongusunun ICINDE tanimli — bu blok
+                # dongu DISINDA, erisemez; ozet'i tasimak mevcut kodu degistirirdi.
+                if top == 0:
+                    return {"n": 0}
+                ort = sum(getiriler) / len(getiriler)
+                net = ort - MALIYET_PCT
+                return {"n": top, "isabet": round(100.0 * dogru / top, 1),
+                        "ort_getiri": round(ort, 4), "net_getiri": round(net, 4),
+                        "karli_mi": bool(net > 0), "guvenilir": bool(top >= 30)}
+
+            def _mesafe_kova(m):
+                if m is None:
+                    return None          # olculemedi -> kovaya SOKMA (sifir tuzagi)
+                if m < 0.20:
+                    return "<0.20"       # eski kapinin reddettigi bolge
+                if m < 0.40:
+                    return "0.20-0.40"   # eski esik (%0.30) civari
+                if m < 0.70:
+                    return "0.40-0.70"   # orta olcek (kullanici sezgisi: tatli nokta)
+                if m < 1.20:
+                    return "0.70-1.20"
+                return ">=1.20"
+
+            mesafe_ist = {}
+            for ufuk in UFUKLAR:
+                kovalar_m = {b: {'d': 0, 'n': 0, 'g': []} for b in
+                             ("<0.20", "0.20-0.40", "0.40-0.70", "0.70-1.20", ">=1.20")}
+                for (t, s) in zamanli:
+                    if (simdi - t).total_seconds() / 60.0 < ufuk:
+                        continue
+                    ls = float(s.get('long_skor') or 0)
+                    ss = float(s.get('short_skor') or 0)
+                    if abs(ls - ss) < LEAN_MARJI:
+                        continue   # yonsuz — olcme
+                    f0 = float(s.get('anlik_fiyat') or 0)
+                    if f0 <= 0:
+                        continue
+                    f1 = sonraki_fiyat(t, ufuk)
+                    if not f1:
+                        continue
+                    lean = 1 if ls > ss else -1
+                    getiri = (f1 / f0 - 1) * 100 * lean
+                    # kanaat yonune gore DOGRU mesafe: LONG -> yukari hedef (ask),
+                    # SHORT -> asagi hedef (bid). Ters baglanirsa olcum COP olur.
+                    m = s.get('hedef_mesafe_long') if lean > 0 else s.get('hedef_mesafe_short')
+                    m = float(m) if m is not None else None
+                    kova_ad = _mesafe_kova(m)
+                    if kova_ad is None:
+                        continue
+                    k = kovalar_m[kova_ad]
+                    k['n'] += 1
+                    k['g'].append(getiri)
+                    if getiri > 0:
+                        k['d'] += 1
+                mesafe_ist[f"{ufuk}dk"] = {
+                    b: _mesafe_ozet(k['d'], k['n'], k['g'])
+                    for b, k in kovalar_m.items()
+                }
+            istatistik["hedef_mesafe_kovalar"] = mesafe_ist
+            # v9.9-MESAFE BITIR
+            # ===================================================================
 
             # ================= v9.5: UZUN UFUK + REJIM DILIMLI OLCUM =================
             # SALT OLCUM — sinyal davranisina, is_win'e, kisa 'ufuklar' ciktisina

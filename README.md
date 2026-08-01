@@ -166,5 +166,6 @@ Sağlık kontrolü `/` rotasıdır.
 | v9.6 | Order book değer ölçümü — duvar-uyum + gölge-duvar hakemleri |
 | v9.7 | **Order book karardan çıkarıldı** (duvar/hedef kapıları + emici şartı; kayıt yaşar) |
 | v9.8 | Teşhis paketi: BV dışlama yönü, skor faktör ayrıştırma, zirve histogramı, izle/gir sayacı, sinyalsizlik panosu (salt ölçüm) |
+| v9.9 | Hedef mesafesi kova ölçümü — kaldırılan maliyet çıtasının "hayaleti" (salt ölçüm) |
 
 `yedek/` klasöründe tarihli veri anlık görüntüleri tutulur.

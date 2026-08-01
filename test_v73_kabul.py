@@ -1540,6 +1540,72 @@ check("V98-5: bv dislama yon/ornek — detay listesi + tek lock blogu + 5 ornek 
       and "if len(_ol) > 5:" in _src88
       and '"dislama_yon": {k: dict(v) for k, v in durum.bv_dislama_yon.items()}' in _src88)
 
+# ---------- 24) v9.9: HEDEF MESAFESI KOVA OLCUMU (SALT OLCUM) ----------
+# Kaldirilan maliyet-citasi kapisinin hayaleti: hangi mesafe bandi karli?
+# V99-1 — kaynak: mesafe KARARA girmez; ayri UPDATE (payload'a DOKUNULMADI);
+# select fallback iki asamali; MALIYET_CITASI/hedef_var aynen
+check("V99-1: mesafe karar disi + ayri UPDATE + payload temiz + select fallback",
+      '"hedef_mesafe_long": _hml9' in _src88
+      and _src88.count('"hedef_mesafe_long"') == 1          # yalniz ayri UPDATE'te
+      and 'MALIYET_CITASI_PCT = 0.30' in _src88
+      and 'hedef_var_long = ((en_yakin_ask - fiyat)' in _src88
+      and 'and long_ve and hedef_var_long' not in _src88    # kapi geri EKLENMEDI
+      and _src88.count('"is_win,sinyal_durumu,spot_cvd,open_interest,"') == 1
+      and _src88.count('"is_win,sinyal_durumu,spot_cvd,open_interest"):') == 1)
+# V99-2 — davranissal: mesafeler dogru hesaplanip emilim'le donuyor; olculemeyen None
+_a99 = dict(a_g1); _a99['en_yakin_ask_fiyat'] = 60030.0; _a99['en_yakin_bid_fiyat'] = 59700.0
+_y99 = YENI['balina_skoru_hesapla'](_a99, dict(p_g1), {'cvd_guvenilir': True, 'sebep': 'ok'})
+_y99b = YENI['balina_skoru_hesapla'](dict(a_g1), dict(p_g1), {'cvd_guvenilir': True, 'sebep': 'ok'})
+check("V99-2: ask %0.05 -> hedef_mesafe_long=0.05, bid %0.5 -> short=0.5; duvar yoksa None",
+      _y99[5].get('hedef_mesafe_long') == 0.05 and _y99[5].get('hedef_mesafe_short') == 0.5
+      and _y99b[5].get('hedef_mesafe_long') is None and _y99b[5].get('hedef_mesafe_short') is None)
+# V99-3/4 — marker-exec: GERCEK kova blogu calistirilir
+_m99 = _re.search(r"# v9\.9-MESAFE BASLA.*?\n(.*?)# v9\.9-MESAFE BITIR", _src88, _re.S)
+check("V99-3: v9.9-MESAFE marker blogu mevcut", _m99 is not None)
+_kod99 = compile(_ast.Module(body=[_ast.parse('if True:\n' + _m99.group(1)).body[0]],
+                             type_ignores=[]), 'v99', 'exec')
+def _s99(i):
+    s = {'anlik_fiyat': 60000.0 + i, 'long_skor': 0, 'short_skor': 0,
+         'hedef_mesafe_long': None, 'hedef_mesafe_short': None}
+    m = i % 6
+    if m == 0: s.update(long_skor=50, hedef_mesafe_long=0.1)
+    if m == 1: s.update(long_skor=50, hedef_mesafe_long=0.3)
+    if m == 2: s.update(long_skor=50, hedef_mesafe_long=0.5)
+    if m == 3: s.update(short_skor=50, hedef_mesafe_short=1.0)
+    if m == 4: s.update(long_skor=50, hedef_mesafe_short=5.0)   # LONG kanaat ama long mesafesi YOK
+    return s                                                     # m==5: yonsuz
+_fx99 = [(_T95 + _dt95.timedelta(minutes=i), _s99(i)) for i in range(300)]
+def _snk99(t0, ufuk_dk):
+    hedef = t0 + _dt95.timedelta(minutes=ufuk_dk)
+    for (t2, s2) in _fx99:
+        if t2 >= hedef:
+            f = float(s2.get('anlik_fiyat') or 0)
+            return f if f > 0 else None
+    return None
+_ns99 = {'zamanli': _fx99, 'sonraki_fiyat': _snk99, 'UFUKLAR': [15, 30, 60, 240],
+         'LEAN_MARJI': 10.0, 'MALIYET_PCT': 0.10,
+         'simdi': _T95 + _dt95.timedelta(minutes=300), 'istatistik': {}}
+exec(_kod99, _ns99)
+_mk = _ns99['_mesafe_kova']
+check("V99-4a: kova siniflari dogru (0.1/0.3/0.5/1.0/2.0/None)",
+      _mk(0.1) == "<0.20" and _mk(0.3) == "0.20-0.40" and _mk(0.5) == "0.40-0.70"
+      and _mk(1.0) == "0.70-1.20" and _mk(2.0) == ">=1.20" and _mk(None) is None)
+_mi15 = _ns99['istatistik']['hedef_mesafe_kovalar']['15dk']
+check("V99-4b: uctan uca — yukselen fiyatta LONG kovalari %100, SHORT kovasi %0, "
+      "LONG kanaatte short-mesafesi KULLANILMAZ (m4 atlandi), >=1.20 bos",
+      _mi15['<0.20']['isabet'] == 100.0 and _mi15['<0.20']['guvenilir'] is True
+      and _mi15['0.40-0.70']['n'] > 0
+      and _mi15['0.70-1.20']['isabet'] == 0.0
+      and _mi15['>=1.20'] == {"n": 0}
+      and sorted(_ns99['istatistik']['hedef_mesafe_kovalar'].keys())
+          == ['15dk', '240dk', '30dk', '60dk'],
+      f"15dk={_mi15['<0.20']}")
+# V99-5 — m4 kaniti sayisal: 15dk'da olculen toplam = m0+m1+m2+m3 siniflari
+# (her sinif ~48; m4+m5 hic girmez) — yon secimi ters baglanmadi
+_top99 = sum(v.get('n', 0) for v in _mi15.values())
+check("V99-5: kovalara giren toplam yalniz 4 sinif (m4 yon-uyumsuz + m5 yonsuz DISARIDA)",
+      190 <= _top99 <= 192, f"toplam={_top99}")
+
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
 sys.exit(1 if fails else 0)
