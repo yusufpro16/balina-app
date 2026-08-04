@@ -167,5 +167,6 @@ Sağlık kontrolü `/` rotasıdır.
 | v9.7 | **Order book karardan çıkarıldı** (duvar/hedef kapıları + emici şartı; kayıt yaşar) |
 | v9.8 | Teşhis paketi: BV dışlama yönü, skor faktör ayrıştırma, zirve histogramı, izle/gir sayacı, sinyalsizlik panosu (salt ölçüm) |
 | v9.9 | Hedef mesafesi kova ölçümü — kaldırılan maliyet çıtasının "hayaleti" (salt ölçüm) |
+| v10.0 | **Yapışık-seviye atlama** (kısa hedef ≥1R uzak) + kanaat kalıcılık dilimi ölçümü |
 
 `yedek/` klasöründe tarihli veri anlık görüntüleri tutulur.

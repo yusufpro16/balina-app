@@ -2287,7 +2287,8 @@ def _swing_hedef_stop(yon, giris, seviyeler, vol_pct, magnet=None,
     ikiz yazilmadi):
       * stop  = stop_zorla (fitil ucu/kirilan seviye + tampon; _grab_stop hesaplar)
       * min_guc verilirse hedef adaylari 'guc' >= min_guc seviyelerle sinirlanir
-      * kisa_hedef = hedef yonunde ILK guclu seviye; swing_hedef = KARSI LIKIDITE
+      * kisa_hedef = hedef yonunde, girise EN AZ 1R uzak ILK guclu seviye
+        (v10.0: yapisik komsu kumeler atlanir — rr'i olduruyordu); swing_hedef = KARSI LIKIDITE
         HAVUZU: hedef yonunde EN YUKSEK guc'lu seviye (esitlikte uzak olan —
         "dip supuruldyse yuksekleri hedefle" miknatis ilkesi); magnet YOK SAYILIR
       * R/R kapisi rr_KISA uzerinden: rr_kisa < SWING_MIN_RR -> gecerli=False (rr_red)
@@ -2311,10 +2312,16 @@ def _swing_hedef_stop(yon, giris, seviyeler, vol_pct, magnet=None,
         return max(adaylar, key=lambda s: ((s.get('guc') or 0),
                                            abs(s['fiyat'] - giris)))['fiyat']
 
+    # v10.0: YAPISIK SEVIYE ATLAMA — kisa hedef, girise EN AZ 1R (risk kadar)
+    # uzak ILK guclu seviyedir. Canli kanit: TUM rr_red'ler 0.01-0.1 cikiyordu —
+    # harita komsu kumeler uretiyor (orn. 62411/62461, 50 USD ara), "ilk seviye"
+    # girisin dibinde kaliyor ve RR matematiksel olu doguyordu (3 Agu 16:30 TR:
+    # dogru yonlu 3/3 teyitli kurulum rr_kisa 0.07 ile olduruldu). 1R alti
+    # adaylar hedef SAYILMAZ; hic 1R+ aday yoksa ayri sebeple red. rr_kisa
+    # boylece >=1 baslar; kapi (>=2) anlamini KORUR (1R-2R hedefler yine red).
     if yon == 'SHORT':
         altlar = sorted((s for s in hedef_havuzu if s['fiyat'] < giris),
                         key=lambda s: -s['fiyat'])                 # en yakin alt once
-        kisa = altlar[0]['fiyat'] if altlar else None
         if grab_modu:
             stop = stop_zorla
             swing = _en_guclu(altlar) if altlar else None
@@ -2323,15 +2330,18 @@ def _swing_hedef_stop(yon, giris, seviyeler, vol_pct, magnet=None,
                             key=lambda s: s['fiyat'])              # en yakin ust yapisal once
             stop = (ustler[0]['fiyat'] + tampon) if ustler else None
             swing = magnet if (magnet and magnet < giris) else (altlar[-1]['fiyat'] if altlar else None)
-        if kisa is None or swing is None or stop is None or stop <= giris:
+        if swing is None or stop is None or stop <= giris:
             return {**bos, 'sebep': 'yapisal seviye eksik (alt hedef / ust stop yok)'}
         risk = stop - giris
+        kisa = next((s['fiyat'] for s in altlar if (giris - s['fiyat']) >= risk), None)
+        if kisa is None:
+            return {**bos, 'sebep': ('hedef adaylari yapisik (1R icinde) — uzak guclu seviye yok'
+                                     if altlar else 'yapisal seviye eksik (alt hedef / ust stop yok)')}
         rr_kisa = (giris - kisa) / risk
         rr_swing = (giris - swing) / risk
     else:  # LONG
         ustler = sorted((s for s in hedef_havuzu if s['fiyat'] > giris),
                         key=lambda s: s['fiyat'])
-        kisa = ustler[0]['fiyat'] if ustler else None
         if grab_modu:
             stop = stop_zorla
             swing = _en_guclu(ustler) if ustler else None
@@ -2340,9 +2350,13 @@ def _swing_hedef_stop(yon, giris, seviyeler, vol_pct, magnet=None,
                             key=lambda s: -s['fiyat'])
             stop = (altlar[0]['fiyat'] - tampon) if altlar else None
             swing = magnet if (magnet and magnet > giris) else (ustler[-1]['fiyat'] if ustler else None)
-        if kisa is None or swing is None or stop is None or stop >= giris:
+        if swing is None or stop is None or stop >= giris:
             return {**bos, 'sebep': 'yapisal seviye eksik (ust hedef / alt stop yok)'}
         risk = giris - stop
+        kisa = next((s['fiyat'] for s in ustler if (s['fiyat'] - giris) >= risk), None)
+        if kisa is None:
+            return {**bos, 'sebep': ('hedef adaylari yapisik (1R icinde) — uzak guclu seviye yok'
+                                     if ustler else 'yapisal seviye eksik (ust hedef / alt stop yok)')}
         rr_kisa = (kisa - giris) / risk
         rr_swing = (swing - giris) / risk
     # v9.2: R/R kapisi HER IKI modda rr_KISA uzerinden (birlesik kapi). Canli veri
@@ -6136,6 +6150,54 @@ def geri_test_dongusu():
                 }
             istatistik["hedef_mesafe_kovalar"] = mesafe_ist
             # v9.9-MESAFE BITIR
+            # ===================================================================
+
+            # ================= v10.0: KANAAT KALICILIK DILIMI (SALT OLCUM) =================
+            # Canli kanit (3 Agu 03-08 UTC dokumu): skor dakikalar icinde
+            # L100 <-> S100 zipliyor (flip-flop). Soru: KALICI kanaat (onceki 5
+            # kayit da ayni yonde yonlu) titrek kanaatten daha mi isabetli?
+            # Kanit gelirse kalicilik sarti Faz-2'de kapiya cevrilir — once OLC.
+            # Ilk 5 kayit kalicilik OLCULEMEZ -> dilime sokulmaz (sifir tuzagi).
+            # v10.0-KALICILIK BASLA (kabul testleri bu blogu marker'la calistirir)
+            kalici_ist = {}
+            for ufuk in UFUKLAR:
+                kovalar_kl = {'kalici': {'d': 0, 'n': 0, 'g': []},
+                              'titrek': {'d': 0, 'n': 0, 'g': []}}
+                for _i, (t, s) in enumerate(zamanli):
+                    if (simdi - t).total_seconds() / 60.0 < ufuk:
+                        continue
+                    ls = float(s.get('long_skor') or 0)
+                    ss = float(s.get('short_skor') or 0)
+                    if abs(ls - ss) < LEAN_MARJI:
+                        continue   # yonsuz — olcme
+                    f0 = float(s.get('anlik_fiyat') or 0)
+                    if f0 <= 0:
+                        continue
+                    f1 = sonraki_fiyat(t, ufuk)
+                    if not f1:
+                        continue
+                    lean = 1 if ls > ss else -1
+                    getiri = (f1 / f0 - 1) * 100 * lean
+                    if _i < 5:
+                        continue   # kalicilik olculemez — dilime SOKMA
+                    kalici = True
+                    for (_t2, _s2) in zamanli[_i - 5:_i]:
+                        _l2 = float(_s2.get('long_skor') or 0)
+                        _s2v = float(_s2.get('short_skor') or 0)
+                        if abs(_l2 - _s2v) < LEAN_MARJI or (1 if _l2 > _s2v else -1) != lean:
+                            kalici = False
+                            break
+                    k = kovalar_kl['kalici' if kalici else 'titrek']
+                    k['n'] += 1
+                    k['g'].append(getiri)
+                    if getiri > 0:
+                        k['d'] += 1
+                kalici_ist[f"{ufuk}dk"] = {
+                    ad: _mesafe_ozet(k['d'], k['n'], k['g'])
+                    for ad, k in kovalar_kl.items()
+                }
+            istatistik["kalicilik_dilimi"] = kalici_ist
+            # v10.0-KALICILIK BITIR
             # ===================================================================
 
             # ================= v9.5: UZUN UFUK + REJIM DILIMLI OLCUM =================

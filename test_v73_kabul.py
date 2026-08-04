@@ -587,11 +587,14 @@ check("SB9: rr_swing hesabi dogru (giris-swing)/(stop-giris)",
 _hL=hst('LONG',61150,_sev,_vol,magnet=None)
 check("SB10: LONG simetrik; stop ALT yapisal (61000 pivot) - tampon, gecerli",
       _hL['kisa_hedef']==62000.0 and _hL['stop'] < 61000 and _hL['gecerli'] is True)
-# R/R vetosu: swing hedef cok yakin -> rr_swing<1.5 -> gecerli False
+# SB11 — v10.0'DA BILINCLI YENIDEN YAZILDI: tek aday (62000) girise 50 USD'de,
+# risk ~1592 -> 1R icinde YAPISIK -> hedef sayilmaz, ayri sebeple red (eski
+# davranista rr 0.03'le rr_red oluyordu — ayni sonuc, artik dogru etiketle)
 _bad=hst('SHORT',62050,[{'fiyat':62000.0,'kaynak':'HL','gizli':False},
                         {'fiyat':63624.0,'kaynak':'VP','gizli':False}],_vol,magnet=62000.0)
-check("SB11: rr_swing < SWING_MIN_RR -> gecerli False (kotu R/R -> sinyal yok)",
-      _bad['gecerli'] is False and _bad['rr_swing'] < YENI['SWING_MIN_RR'])
+check("SB11(v10.0): 1R icinde kalan tek aday hedef SAYILMAZ -> gecerli False (yapisik red)",
+      _bad['gecerli'] is False and _bad['rr_kisa'] is None
+      and str(_bad['sebep']).startswith('hedef adaylari yapisik'), f"={_bad['sebep']}")
 check("SB12: yon yok / yapisal eksik -> gecerli False (uydurmaz)",
       hst(None,62000,_sev,_vol)['gecerli'] is False
       and hst('SHORT',62000,[{'fiyat':61000.0,'kaynak':'ROUND','gizli':False}],_vol)['gecerli'] is False)
@@ -996,18 +999,24 @@ check("V89-D2: rr_kisa ve rr_swing FARKLI uretildi + arsiv satirlari dogru anaht
       _d2['rr_kisa']!=_d2['rr_swing']
       and '"swing_rr": _hs.get(\'rr_swing\')' in _src88
       and '"swing_rr_kisa": _hs.get(\'rr_kisa\')' in _src88)
-# D3 — v9.2'DE BILINCLI YENIDEN YAZILDI (Faz-2 karari, kullanici emriyle).
-# Eski test "rr_kisa kapiyi etkilememeli"yi kilitliyordu; v9.2 tam tersini
-# SOZLESME yapar: ilk seviyeye bile 2R yoksa kurulum sinyal DEGILDIR —
-# rr_swing'in uzak miknatisla sisip kapiyi gecirmesi (lastik damga) biter.
+# D3 — v10.0'DA UCUNCU KEZ BILINCLI YENIDEN YAZILDI: ayni fixtur artik YAPISIK
+# ATLAMANIN pozitif kanitidir — 63400 (50 USD, risk ~69'un ICINDE) hedef sayilmaz,
+# uzak 60000 hedef olur, rr_kisa ~50 -> gecerli True. rr<2 reddi icin AYRI
+# fixtur (_d3b): 1R+ uzak hedef var AMA 2R yok -> rr_kisa reddi YASIYOR.
 _d3 = hst('SHORT', 63450.0,
           [{'fiyat':63500.0,'kaynak':'HL','gizli':False},    # stop kaynagi (en yakin ust)
-           {'fiyat':63400.0,'kaynak':'VP','gizli':False},    # kisa hedef COK yakin -> rr_kisa<2
-           {'fiyat':60000.0,'kaynak':'LIQ','gizli':False}],  # swing hedef uzak -> rr_swing>=2
+           {'fiyat':63400.0,'kaynak':'VP','gizli':False},    # YAPISIK (50 USD < risk 69) -> atlanir
+           {'fiyat':60000.0,'kaynak':'LIQ','gizli':False}],  # 1R+ uzak -> kisa hedef BU olur
           _vol, magnet=60000.0)
-check("V89-D3(v9.2): rr_kisa<2.0 -> KADEME yolu da gecerli=False (birlesik kapi) + sebep rr_kisa",
-      _d3['rr_kisa']<2.0 and _d3['rr_swing']>=2.0 and _d3['gecerli'] is False
-      and str(_d3['sebep']).startswith('rr_kisa'), f"={_d3}")
+check("V89-D3(v10.0): yapisik 63400 ATLANDI, kisa=60000, rr_kisa>=2 -> gecerli True",
+      _d3['kisa_hedef']==60000.0 and _d3['rr_kisa']>=2.0 and _d3['gecerli'] is True, f"={_d3}")
+_d3b = hst('SHORT', 63450.0,
+           [{'fiyat':63500.0,'kaynak':'HL','gizli':False},   # stop: risk ~69
+            {'fiyat':63330.0,'kaynak':'VP','gizli':False}],  # mesafe 120 >= 1R ama rr ~1.74 < 2
+           _vol, magnet=63330.0)
+check("V89-D3b(v10.0): 1R+ uzak hedefte bile rr_kisa<2 -> red (kapi YASIYOR, tautoloji olmadi)",
+      _d3b['gecerli'] is False and _d3b['rr_kisa'] is not None and _d3b['rr_kisa'] < 2.0
+      and str(_d3b['sebep']).startswith('rr_kisa'), f"={_d3b}")
 # D4-D6 — lik_borsa sifir tuzagi
 lpa = YENI['_lik_penceresi_ayristir']
 check("V89-D4: liste var ama tum history bos -> lik_borsa None; agg toplamlari 0.0 DEGISMEDI",
@@ -1064,10 +1073,10 @@ check("V90-D1: uc alan yalniz UPDATE sozlugunde 1'er kez (hicbir if/karar okumuy
 # rr_swing salt kayit (kohort/arsiv/backtest) olarak kalir.
 # V92-1 — davranissal simetri: kademe modunda gecerli birebir rr_kisa'yi izler
 _v92a = hst('SHORT',63450,_sev,_vol,magnet=60480.0)          # SB8 fixturu: rr_kisa ~21
-check("V92-1: kademe modu gecerli==rr_kisa kapisi (iyi kurulum GECER, kotu DUSER)",
+check("V92-1(v10.0): kademe modu gecerli==rr_kisa kapisi (iyi kurulum GECER, kotu DUSER)",
       _v92a['gecerli'] is True and _v92a['rr_kisa'] >= YENI['SWING_MIN_RR']
-      and _d3['gecerli'] is False and _d3['rr_kisa'] < YENI['SWING_MIN_RR'],
-      f"iyi={_v92a['rr_kisa']} kotu={_d3['rr_kisa']}")
+      and _d3b['gecerli'] is False and _d3b['rr_kisa'] < YENI['SWING_MIN_RR'],
+      f"iyi={_v92a['rr_kisa']} kotu={_d3b['rr_kisa']}")
 # V92-2 — kadans kaynak kaniti: funding+L/S 5 turda bir; skip turu None baslar
 # (sifir tuzagi: "olculmedi" != 0.0) ve lock blogu None'i YAZMAZ (son olcum korunur)
 check("V92-2: funding+L/S kadansi — 5 turda bir cekim + skip turu None",
@@ -1619,6 +1628,64 @@ check("V991-1: uzun sorgu range() sayfalamali — dinamik adim + bos-sayfa cikis
 check("V991-2: pano faktor filtresi absorbsiyon'u da gorur (ham_* haric tum sayisallar)",
       "not k.startswith('ham_')" in _src88
       and '"carpani" in k and isinstance' not in _src88)
+
+# ---------- 26) v10.0: YAPISIK-SEVIYE ATLAMA + KALICILIK DILIMI ----------
+# A) Yapisik atlama (Faz-2, kullanici onayli): kisa hedef girise EN AZ 1R uzak.
+# V100-1 — grab modunda yapisik atlama: komsu seviye (risk icinde) atlanir
+_v100 = hst('SHORT', 60000.0,
+            [{'fiyat': 59950.0, 'kaynak': 'VP', 'gizli': False, 'guc': 80},    # 50 USD — yapisik
+             {'fiyat': 59700.0, 'kaynak': 'HL', 'gizli': False, 'guc': 80},    # 300 USD — 1R+ (risk 150)
+             {'fiyat': 59000.0, 'kaynak': 'ELLE', 'gizli': False, 'guc': 90}],
+            0.15, stop_zorla=60150.0, min_guc=40)
+check("V100-1: grab modunda yapisik 59950 ATLANDI -> kisa=59700, rr_kisa=2.0, gecerli True",
+      _v100['kisa_hedef'] == 59700.0 and _v100['rr_kisa'] == 2.0 and _v100['gecerli'] is True,
+      f"={_v100}")
+# V100-2 — hepsi yapisikken ayri sebep (rr_red DEGIL — etiket hijyeni korunur)
+_v100b = hst('SHORT', 60000.0,
+             [{'fiyat': 59950.0, 'kaynak': 'VP', 'gizli': False, 'guc': 80},
+              {'fiyat': 59900.0, 'kaynak': 'HL', 'gizli': False, 'guc': 80}],
+             0.15, stop_zorla=60150.0, min_guc=40)
+check("V100-2: tum adaylar 1R icinde -> 'yapisik' sebebi + rr None (rr_red sayilmaz)",
+      _v100b['gecerli'] is False and _v100b['rr_kisa'] is None
+      and str(_v100b['sebep']).startswith('hedef adaylari yapisik'))
+# V100-3 — kaynak kaniti: her iki dalda 1R filtresi + yeni sebep
+check("V100-3: kaynakta iki dalda da '>= risk' hedef filtresi + yapisik sebebi",
+      _src88.count(">= risk), None)") == 2
+      and _src88.count("hedef adaylari yapisik (1R icinde)") == 2)
+# B) Kalicilik dilimi (SALT OLCUM)
+_m100 = _re.search(r"# v10\.0-KALICILIK BASLA.*?\n(.*?)# v10\.0-KALICILIK BITIR", _src88, _re.S)
+check("V100-4: v10.0-KALICILIK marker blogu mevcut + tek yazim",
+      _m100 is not None and _src88.count('istatistik["kalicilik_dilimi"]') == 1)
+_kod100 = compile(_ast.Module(body=[_ast.parse('if True:\n' + _m100.group(1)).body[0]],
+                              type_ignores=[]), 'v100', 'exec')
+def _s100(i):
+    # 0-99: kalici LONG (hep ls=50); 100-199: flip-flop (tek tek yon degisir);
+    # fiyat yukselir -> LONG getiri +
+    if i < 100:
+        ls, ss = 50, 0
+    else:
+        ls, ss = (50, 0) if i % 2 == 0 else (0, 50)
+    return {'anlik_fiyat': 60000.0 + i, 'long_skor': ls, 'short_skor': ss}
+_fx100 = [(_T95 + _dt95.timedelta(minutes=i), _s100(i)) for i in range(200)]
+def _snk100(t0, ufuk_dk):
+    hedef = t0 + _dt95.timedelta(minutes=ufuk_dk)
+    for (t2, s2) in _fx100:
+        if t2 >= hedef:
+            f = float(s2.get('anlik_fiyat') or 0)
+            return f if f > 0 else None
+    return None
+_ns100 = {'zamanli': _fx100, 'sonraki_fiyat': _snk100, 'UFUKLAR': [15],
+          'LEAN_MARJI': 10.0, 'MALIYET_PCT': 0.10,
+          'simdi': _T95 + _dt95.timedelta(minutes=200), 'istatistik': {},
+          '_mesafe_ozet': _ns99['_mesafe_ozet']}   # v9.9 blogunun GERCEK ozeti
+exec(_kod100, _ns100)
+_kl15 = _ns100['istatistik']['kalicilik_dilimi']['15dk']
+# beklenti: i=5..99 kalici LONG (95 aday, 15dk olculebilir olanlar); i>=100 flip-flop
+# titrek; i<5 dilim disi. kalici kovasi yukselen fiyatta %100 isabet.
+check("V100-5: kalici LONG dizisi 'kalici' kovasinda %100; flip-flop 'titrek'te; ilk 5 dilim disi",
+      _kl15['kalici']['n'] > 30 and _kl15['kalici']['isabet'] == 100.0
+      and _kl15['kalici']['guvenilir'] is True and _kl15['titrek']['n'] > 30,
+      f"kalici={_kl15['kalici']['n']} titrek={_kl15['titrek']['n']}")
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
