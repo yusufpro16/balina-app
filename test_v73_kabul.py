@@ -1606,6 +1606,20 @@ _top99 = sum(v.get('n', 0) for v in _mi15.values())
 check("V99-5: kovalara giren toplam yalniz 4 sinif (m4 yon-uyumsuz + m5 yonsuz DISARIDA)",
       190 <= _top99 <= 192, f"toplam={_top99}")
 
+# ---------- 25) v9.9.1: SAYFALAMA + PANO FILTRE DUZELTMELERI ----------
+# Canli kanit (4 Agu dump): PostgREST max-rows=1000, limit(10000)'i sessizce
+# kirpti -> uzun pencere ~16.6 saat kaldi, 1440dk+ ufuklar HIC olculemedi
+# (ob 60dk n=757 / 240dk n=629 = tam 1000dk pencere; uzun_ufuklar hep n=0).
+check("V991-1: uzun sorgu range() sayfalamali — dinamik adim + bos-sayfa cikisi + 10000 tavani",
+      ".range(_bas99, _bas99 + 999)" in _src88
+      and "_bas99 += len(_parca99)" in _src88
+      and "if not _parca99:" in _src88
+      and "if len(uzun_satirlar) >= 10000:" in _src88
+      and '.limit(10000)' not in _src88)   # kirpilan tek-atis sorgu KALKTI
+check("V991-2: pano faktor filtresi absorbsiyon'u da gorur (ham_* haric tum sayisallar)",
+      "not k.startswith('ham_')" in _src88
+      and '"carpani" in k and isinstance' not in _src88)
+
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")
 sys.exit(1 if fails else 0)

@@ -5880,16 +5880,33 @@ def geri_test_dongusu():
                 uzun_pencere_bas = (simdi - datetime.timedelta(
                     minutes=max(UZUN_UFUKLAR_DK) + 60)).isoformat()
                 try:
-                    res_uzun = (supabase.table("balina_avcisi_data")
-                        .select("id,kayit_zamani,anlik_fiyat,long_skor,short_skor,"
-                                # v9.6: OB olcumu icin — duvar dilimi + golge dilimi
-                                "order_book_depth_bid_1pct,order_book_depth_ask_1pct,"
-                                "golge_yon,golge_kapi")
-                        .gte("kayit_zamani", uzun_pencere_bas)
-                        .order("kayit_zamani", desc=False)
-                        .limit(10000)
-                        .execute())
-                    uzun_satirlar = res_uzun.data or []
+                    # v9.9.1: SAYFALAMA — PostgREST sunucu tarafi 'max-rows'
+                    # (varsayilan 1000) limit(10000)'i SESSIZCE 1000'e kirpiyordu:
+                    # pencere 4 gun yerine ~16.6 saatte kaliyor, 1440dk+ ufuklar
+                    # HIC olculemiyordu (canli kanit: ob 60dk n=757 / 240dk n=629
+                    # tam 1000dk'lik pencereye denk; 1440dk ve TUM uzun_ufuklar
+                    # n=0). range() ile dinamik adimli sayfalama — sunucu sayfa
+                    # basina kac dondururse oradan devam eder (tavan ne olursa
+                    # olsun dogru pencere toplanir).
+                    uzun_satirlar = []
+                    _bas99 = 0
+                    for _ in range(40):               # emniyet tavani (40 sayfa)
+                        _r99 = (supabase.table("balina_avcisi_data")
+                            .select("id,kayit_zamani,anlik_fiyat,long_skor,short_skor,"
+                                    # v9.6: OB olcumu icin — duvar dilimi + golge dilimi
+                                    "order_book_depth_bid_1pct,order_book_depth_ask_1pct,"
+                                    "golge_yon,golge_kapi")
+                            .gte("kayit_zamani", uzun_pencere_bas)
+                            .order("kayit_zamani", desc=False)
+                            .range(_bas99, _bas99 + 999)
+                            .execute())
+                        _parca99 = _r99.data or []
+                        uzun_satirlar.extend(_parca99)
+                        if not _parca99:
+                            break                     # pencere bitti
+                        _bas99 += len(_parca99)       # sunucu tavanindan bagimsiz ilerle
+                        if len(uzun_satirlar) >= 10000:
+                            break                     # asagidaki koruma devralir
                 except Exception as e:
                     logging.warning(f"UZUN UFUK sorgu hatasi: {e}")
                     uzun_satirlar = []
@@ -6335,8 +6352,12 @@ def geri_test_dongusu():
                     teshis["en_cok_reddeden_kapi"] = max(_ks.items(), key=lambda x: x[1])
                 # en dusuk (bogan) faktor
                 _ort = (_fak or {}).get("ortalama") or {}
+                # v9.9.1: 'carpani' ad filtresi ABSORBSIYON'u kaciriyordu (adinda
+                # 'carpani' yok ama skorun EN BASKIN faktoru — canli veride 0.13-0.18
+                # ile acik ara en dusuktu ve pano onu goremiyordu). ham_* haric tum
+                # sayisal faktorler kiyasa girer.
                 _carp = {k: v for k, v in _ort.items()
-                         if "carpani" in k and isinstance(v, (int, float))}
+                         if isinstance(v, (int, float)) and not k.startswith('ham_')}
                 if _carp:
                     teshis["en_dusuk_faktor"] = min(_carp.items(), key=lambda x: x[1])
                 # ASAMA 3 minimal karari: ob_olcum'a DOKUNULMADI; mevcut 240dk
