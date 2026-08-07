@@ -55,7 +55,9 @@ SABITLER = {'SINYAL_ESIGI','SINYAL_MARJI','MALIYET_CITASI_PCT','VE_ISLEM_MIN',
             'SWING_SEVIYE_MIN_GUC','SWING_COKZAMAN_BANT','SWEEP_MIN_DELME_PCT',
             'SWEEP_ESLIK_HACIM_KAT','SWEEP_COOLDOWN_DK','SWEEP_GOVDE_ORAN',
             'SWEEP_STOP_TAMPON_PCT','SWING_EQ_BANT','SWING_GUC_PUAN',
-            'DAGITIM_AILESI','TOPLAMA_AILESI','CHOCH_MAX_MUM'}
+            'DAGITIM_AILESI','TOPLAMA_AILESI','CHOCH_MAX_MUM',
+            # v10.1 sembol kara listesi:
+            'SEMBOL_KARA_LISTE','MAJOR_BORSA_KODLARI'}
 FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et',
                 '_tasfiye_bayraklari',
@@ -73,7 +75,10 @@ FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 '_seviye_kalicilik','_grab_teshis','_grab_n1_kayitlari',
                 '_lik_donma_guncelle',
                 # v8.9 cerrahi duzeltmeler (SADECE KAYIT):
-                '_lik_penceresi_ayristir','_kohort_buda'}  # v7.4-v9.4
+                '_lik_penceresi_ayristir','_kohort_buda',
+                # v10.1 sembol kara listesi (yardimci + getter):
+                '_kara_liste_uygula','_majorleri_oncelikle_sec',
+                'coinalyze_sembolleri_getir'}  # v7.4-v10.1
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -1686,6 +1691,112 @@ check("V100-5: kalici LONG dizisi 'kalici' kovasinda %100; flip-flop 'titrek'te;
       _kl15['kalici']['n'] > 30 and _kl15['kalici']['isabet'] == 100.0
       and _kl15['kalici']['guvenilir'] is True and _kl15['titrek']['n'] > 30,
       f"kalici={_kl15['kalici']['n']} titrek={_kl15['titrek']['n']}")
+
+# =========================================================================
+# v10.1 — SEMBOL KARA LISTESI + SINYAL KARTI AKIBET IZLEME (kullanici onayli)
+# =========================================================================
+class _Log101:
+    info = warning = staticmethod(lambda *a, **k: None)
+
+# A) kara liste yardimcisi
+_klu = YENI['_kara_liste_uygula']
+check("V101-1: kara liste filtreler; tamamen bosaltacaksa DOKUNMAZ; bos giris bos",
+      _klu(['BTCUSD.A', 'BTCUD.A', 'sBTCUSDT.6']) == ['BTCUSD.A', 'sBTCUSDT.6']
+      and _klu(['BTCUD.A']) == ['BTCUD.A']
+      and _klu([]) == []
+      and 'BTCUD.A' in YENI['SEMBOL_KARA_LISTE'])
+
+# B) getter kaynak kaniti: DORT donus yolu da suzgecten gecer
+_g101 = _re.search(r"def coinalyze_sembolleri_getir\(.*?(?=\ndef )", _src88, _re.S).group(0)
+check("V101-2: getter'in 4 donus yolu da kara listeden gecer",
+      _g101.count('_kara_liste_uygula') == 4
+      and 'return _kara_liste_uygula(varsayilan)' in _g101
+      and _g101.count("return _kara_liste_uygula(kayit['deger'])") == 2)
+
+# C) getter davranisi: onbellek / kesif / varsayilan yollari (stub'lar gecici,
+# try/finally ile geri alinir — YENI paylasilan ns kirletilmez)
+_eski101 = {k: YENI.get(k) for k in ('_ayarlar_oku', '_ayarlar_yaz', 'logging')}
+try:
+    YENI['logging'] = _Log101
+    YENI['_ayarlar_yaz'] = lambda a, d: True
+    YENI['_ayarlar_oku'] = lambda a: {
+        'deger': ['BTCUD.A', 'BTCUSD.A'],
+        'guncellenme_zamani': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    _r1 = YENI['coinalyze_sembolleri_getir'](None, None, 'x', lambda s, h: [], ['V'])
+    YENI['_ayarlar_oku'] = lambda a: None
+    _r2 = YENI['coinalyze_sembolleri_getir'](
+        None, None, 'x', lambda s, h: ['BTCUD.A', 'BTCUSDT.6', 'BTCUSD.A'], ['V'])
+    _r3 = YENI['coinalyze_sembolleri_getir'](None, None, 'x',
+                                             lambda s, h: [], ['BTCUD.A', 'V'])
+finally:
+    for _k, _v in _eski101.items():
+        if _v is None:
+            YENI.pop(_k, None)
+        else:
+            YENI[_k] = _v
+check("V101-3: taze onbellek filtreli; kesif secimden ONCE filtreli; varsayilan filtreli",
+      _r1 == ['BTCUSD.A'] and _r2 == ['BTCUSD.A', 'BTCUSDT.6'] and _r3 == ['V'])
+
+# D) AKIBET blogu — marker + kartin yalniz dogumda ve blokta yazildigi kaniti
+_m101 = _re.search(r"# ---- v10\.1-AKIBET BASLA.*?\n(.*?)# ---- v10\.1-AKIBET BITIR",
+                   _src88, _re.S)
+check("V101-4: v10.1-AKIBET marker blogu mevcut; kart yazimi 2 nokta (dogum+akibet)",
+      _m101 is not None and _src88.count("_ayarlar_yaz('grab_aktif_sinyal'") == 2)
+
+_kod101 = compile(_ast.Module(body=[_ast.parse('if True:\n' + _m101.group(1)).body[0]],
+                              type_ignores=[]), 'v101', 'exec')
+
+class _Durum101:
+    def __init__(self, kart):
+        self.akibet_kart = kart
+
+def _kosum101(kart, fiyat, yaz_ok=True, oku_kart=None):
+    d = _Durum101(kart)
+    yazilan = []
+    ns = {'durum': d, 'anlik_fiyat': fiyat, 'datetime': datetime, 'logging': _Log101,
+          '_ayarlar_oku': lambda a: oku_kart,
+          '_ayarlar_yaz': lambda a, v: (yazilan.append((a, dict(v))), yaz_ok)[1]}
+    exec(_kod101, ns)
+    return d, yazilan
+
+# LONG: stop / hedef temaslari
+_dL1, _yL1 = _kosum101({'yon': 'LONG', 'stop': 100.0, 'kisa_hedef': 110.0}, 99.9)
+_dL2, _yL2 = _kosum101({'yon': 'LONG', 'stop': 100.0, 'kisa_hedef': 110.0}, 110.5)
+check("V101-5: LONG stop temasi -> durum STOP + akibet alanlari + bellek guncel",
+      len(_yL1) == 1 and _yL1[0][1]['durum'] == 'STOP'
+      and _yL1[0][1]['akibet_fiyat'] == 99.9 and 'akibet_zamani' in _yL1[0][1]
+      and _dL1.akibet_kart.get('durum') == 'STOP')
+check("V101-6: LONG hedef temasi -> durum HEDEF",
+      len(_yL2) == 1 and _yL2[0][1]['durum'] == 'HEDEF'
+      and _dL2.akibet_kart.get('durum') == 'HEDEF')
+
+# SHORT: simetri
+_dS1, _yS1 = _kosum101({'yon': 'SHORT', 'stop': 110.0, 'kisa_hedef': 100.0}, 110.2)
+_dS2, _yS2 = _kosum101({'yon': 'SHORT', 'stop': 110.0, 'kisa_hedef': 100.0}, 99.8)
+check("V101-7: SHORT stop/hedef simetrisi",
+      len(_yS1) == 1 and _yS1[0][1]['durum'] == 'STOP'
+      and len(_yS2) == 1 and _yS2[0][1]['durum'] == 'HEDEF')
+
+# Dokunmama garantileri: kapali kart / fiyat yok / kart yok
+_dN1, _yN1 = _kosum101({'yon': 'LONG', 'stop': 100.0, 'kisa_hedef': 110.0,
+                        'durum': 'STOP'}, 99.0)
+_dN2, _yN2 = _kosum101({'yon': 'LONG', 'stop': 100.0, 'kisa_hedef': 110.0}, 0.0)
+_dN3, _yN3 = _kosum101(None, 99.0, oku_kart=None)
+check("V101-8: kapali kart / fiyat 0 / kart yok -> YAZIM YOK (idempotent)",
+      _yN1 == [] and _yN2 == [] and _yN3 == [] and _dN3.akibet_kart == {})
+
+# DB'den yukleme yolu: bellek None iken kart okunur ve AYNI turda kontrol edilir
+_dO1, _yO1 = _kosum101(None, 99.0,
+                       oku_kart={'deger': {'yon': 'LONG', 'stop': 100.0,
+                                           'kisa_hedef': 110.0}})
+check("V101-9: bellek bos -> DB'den kart yuklenir ve ayni turda STOP islenir",
+      len(_yO1) == 1 and _yO1[0][1]['durum'] == 'STOP')
+
+# Yazim hatasi -> bellek GUNCELLENMEZ (sonraki dakika yeniden dener)
+_dF1, _yF1 = _kosum101({'yon': 'LONG', 'stop': 100.0, 'kisa_hedef': 110.0}, 99.0,
+                       yaz_ok=False)
+check("V101-10: yazim basarisiz -> bellek eski kalir (retry semantigi)",
+      len(_yF1) == 1 and _dF1.akibet_kart.get('durum') is None)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")

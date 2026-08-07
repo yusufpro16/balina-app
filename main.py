@@ -105,6 +105,11 @@ class CanliDurum:
         self.funding_rate = 0.0001
         self.open_interest = 0.0
 
+        # v10.1-AKIBET: aktif sinyal kartinin bellek kopyasi. None = DB'den henuz
+        # yuklenmedi; {} = DB'de kart yok. Kart yalniz dogumda yazilip bir daha
+        # guncellenmedigi icin stop/hedef temasi gorunmuyordu (5 Agu vakasi).
+        self.akibet_kart = None
+
         self.trade_gecmisi = deque()        # 15dk pencere (VADELİ tick-rule yedek)
         self.son_tick_fiyat = 0.0
         self.spot_trade_gecmisi = deque()   # SPOT tick-rule yedek
@@ -870,6 +875,18 @@ def coinalyze_spot_sembolleri_kesfet(session, headers):
 
 MAJOR_BORSA_KODLARI = ['A', '6', '3', '2', '0', 'C', 'K', 'F']
 
+# v10.1-KARALISTE: olu/bozuk Coinalyze beslemeleri. BTCUD.A 7 Agu verisinde BV
+# oranlari ~0 uretip tur dislamalarinin %73'unu tek basina tetikledi (2636/3600).
+# Kesif her acilista yeniden sectigi icin SQL temizligi kalici olmaz — filtre
+# kod tarafinda, her donus yolunda uygulanir.
+SEMBOL_KARA_LISTE = {'BTCUD.A'}
+
+def _kara_liste_uygula(liste):
+    """Kara listedeki sembolleri ayikla. Filtre listeyi BOSALTACAKSA dokunma:
+    supheli sembol, hic veri akisi olmamasindan iyidir (akis kesilmesin)."""
+    suzulmus = [s for s in (liste or []) if s not in SEMBOL_KARA_LISTE]
+    return suzulmus if suzulmus else liste
+
 def _majorleri_oncelikle_sec(semboller, maks=5):
     def oncelik(sembol):
         kod = sembol.split('.')[-1] if '.' in sembol else ''
@@ -925,11 +942,12 @@ def coinalyze_sembolleri_getir(session, headers, anahtar, kesif_fn, varsayilan, 
             yas_saat = (datetime.datetime.now(datetime.timezone.utc) - guncelleme).total_seconds() / 3600
             if yas_saat < onbellek_saat and kayit.get('deger'):
                 logging.info(f"Sembol onbellegi kullanildi ({anahtar}, {yas_saat:.1f}s yasinda).")
-                return kayit['deger']
+                return _kara_liste_uygula(kayit['deger'])
         except Exception:
             pass
 
-    bulunan = kesif_fn(session, headers)
+    # v10.1-KARALISTE: secimden ONCE ayikla — olu sembol 5 slottan birini yemesin
+    bulunan = _kara_liste_uygula(kesif_fn(session, headers))
     if bulunan:
         secilen = _majorleri_oncelikle_sec(bulunan, maks=5)
         _ayarlar_yaz(anahtar, secilen)
@@ -938,9 +956,9 @@ def coinalyze_sembolleri_getir(session, headers, anahtar, kesif_fn, varsayilan, 
 
     if kayit and kayit.get('deger'):
         logging.warning(f"Kesif basarisiz, eski onbellek kullaniliyor ({anahtar}).")
-        return kayit['deger']
+        return _kara_liste_uygula(kayit['deger'])
     logging.warning(f"Kesif ve onbellek yok, varsayilana dusuluyor ({anahtar}).")
-    return varsayilan
+    return _kara_liste_uygula(varsayilan)
 
 
 def coinalyze_bv_dogrula(session, headers, semboller):
@@ -5549,8 +5567,55 @@ def ozet_ve_analiz_dongusu():
                                              f"toplam {len(_oly)}")
                             if _sinyal_karti:
                                 _ayarlar_yaz('grab_aktif_sinyal', _sinyal_karti)
+                                # v10.1-AKIBET: yeni kart dogdu — izleme bellegi tazelenir
+                                durum.akibet_kart = _sinyal_karti
                     except Exception as e:
                         logging.warning(f"grab motoru hatasi (akis devam eder): {e}")
+
+                # ---- v10.1-AKIBET BASLA (salt olcum — kullanici onayli) ----
+                # Kart dogumdan sonra hic guncellenmiyordu; 5 Agu LONG'u stop'u
+                # sinyalden 24dk sonra delindigi halde 2 gun "acik" gorundu. Bu blok
+                # hicbir karari OKUMAZ ve DEGISTIRMEZ: yalnizca kartin akibet
+                # alanlarini yazar (durum/akibet_zamani/akibet_fiyat). Gecmise donuk
+                # tarama YAPMAZ — deploy aninden itibaren ileriye donuk dakikalik
+                # temas kontroludur (eski kartlarin akibeti elle/SQL ile islenir).
+                try:
+                    if durum.akibet_kart is None:      # None = DB'den henuz yuklenmedi
+                        _akk = _ayarlar_oku('grab_aktif_sinyal')
+                        durum.akibet_kart = ((_akk or {}).get('deger')) or {}
+                    _kart_a = durum.akibet_kart
+                    if (_kart_a and anlik_fiyat and anlik_fiyat > 0
+                            and _kart_a.get('yon') in ('LONG', 'SHORT')
+                            and _kart_a.get('durum') not in ('STOP', 'HEDEF')):
+                        _stp_a = _kart_a.get('stop')
+                        _hdf_a = _kart_a.get('kisa_hedef')
+                        _akibet = None
+                        # stop kontrolu ONCE: ayni dakikada iki temas varsa kotumser
+                        # varsayim (STOP) — olcum iyimserlik tasimasin
+                        if _kart_a['yon'] == 'LONG':
+                            if _stp_a and anlik_fiyat <= _stp_a:
+                                _akibet = 'STOP'
+                            elif _hdf_a and anlik_fiyat >= _hdf_a:
+                                _akibet = 'HEDEF'
+                        else:
+                            if _stp_a and anlik_fiyat >= _stp_a:
+                                _akibet = 'STOP'
+                            elif _hdf_a and anlik_fiyat <= _hdf_a:
+                                _akibet = 'HEDEF'
+                        if _akibet:
+                            _yeni_kart = dict(_kart_a)
+                            _yeni_kart['durum'] = _akibet
+                            _yeni_kart['akibet_zamani'] = datetime.datetime.utcnow().isoformat()
+                            _yeni_kart['akibet_fiyat'] = round(float(anlik_fiyat), 1)
+                            # yazim dogrulanmadan bellek guncellenmez — gecici DB
+                            # hatasi akibeti kaybettirmesin, sonraki dakika yeniden dener
+                            if _ayarlar_yaz('grab_aktif_sinyal', _yeni_kart):
+                                durum.akibet_kart = _yeni_kart
+                                logging.info(f"SINYAL AKIBETI: {_yeni_kart['yon']} "
+                                             f"{_akibet} @ {anlik_fiyat:,.1f}")
+                except Exception as e:
+                    logging.warning(f"sinyal akibet izleme hatasi (akis devam eder): {e}")
+                # ---- v10.1-AKIBET BITIR ----
 
                 # ---- v8.8-F: TESHIS KOLONLARI (dakikalik; ayri UPDATE — mevcut swing
                 # arsiv deseninin aynisi: kolon yoksa ana insert ASLA olmez). seviye_*

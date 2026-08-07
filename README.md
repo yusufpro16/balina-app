@@ -85,11 +85,11 @@ veriyle kalibre edilir. Kohort budaması **gerçek sinyalleri korur** (v9.4).
 ## Testler
 
 ```bash
-python test_v73_kabul.py     # 183 kabul testi — hepsi geçmeli ("HEPSI GECTI")
+python test_v73_kabul.py     # 235 kabul testi — hepsi geçmeli ("HEPSI GECTI")
 ```
 
 Suite: 500'lük eşdeğerlik + süpürme/emilim/tasfiye vakaları + v8 motor adımları
-+ güçlendiriciler + v8.8–v9.4 ölçüm sözleşmeleri. Testler gerçek kod bloklarını
++ güçlendiriciler + v8.8–v10.1 ölçüm sözleşmeleri. Testler gerçek kod bloklarını
 marker'la çıkarıp çalıştırır (ikiz mantık yok).
 
 ## Paneller ve rotalar
@@ -168,5 +168,6 @@ Sağlık kontrolü `/` rotasıdır.
 | v9.8 | Teşhis paketi: BV dışlama yönü, skor faktör ayrıştırma, zirve histogramı, izle/gir sayacı, sinyalsizlik panosu (salt ölçüm) |
 | v9.9 | Hedef mesafesi kova ölçümü — kaldırılan maliyet çıtasının "hayaleti" (salt ölçüm) |
 | v10.0 | **Yapışık-seviye atlama** (kısa hedef ≥1R uzak) + kanaat kalıcılık dilimi ölçümü |
+| v10.1 | Sinyal kartı **akıbet izleme** (durum STOP/HEDEF, salt ölçüm) + BTCUD.A sembol kara listesi |
 
 `yedek/` klasöründe tarihli veri anlık görüntüleri tutulur.
