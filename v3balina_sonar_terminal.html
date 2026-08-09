@@ -276,6 +276,7 @@
   <div id="err"></div>
 
   <!-- HERO BAR — trader'ın ilk bakışı: fiyat, sinyal, rejim, duvarlar, isabet -->
+  <div class="hero" id="normalSerit" style="margin-bottom:8px;font-size:11px;padding:8px 14px"></div>
   <div class="hero" id="heroBar"></div>
 
   <!-- İMZA ÖĞE: verdict + katman radarı -->
@@ -491,6 +492,13 @@ function esikHesapla(rows){
   }
   const dep=rows.map(r=>r.order_book_depth_bid_1pct).filter(v=>v>0).sort((a,b)=>a-b);
   const derinlik=yuzdelikNokta(dep,0.90)||45e6;     // motor 7g P90 kullanır; bu yerel yaklaşım
+  // v7.3.2: TASFİYE PAYDALARI — motorun _tasfiye_bayraklari'yla aynı matematik.
+  // Pay = agg_long_liq/agg_short_liq. Payda = SIFIR-OLMAYAN medyan (düz medyan
+  // sıfır-ağır kolonda ~0 çıkar ve HER dakikayı "diken" yapardı).
+  const lnzL=rows.map(r=>r.agg_long_liq||0).filter(v=>v>0).sort((a,b)=>a-b);
+  const lnzS=rows.map(r=>r.agg_short_liq||0).filter(v=>v>0).sort((a,b)=>a-b);
+  const likLongMed  = lnzL.length>=20 ? (yuzdelikNokta(lnzL,0.50)||0) : 0;
+  const likShortMed = lnzS.length>=20 ? (yuzdelikNokta(lnzS,0.50)||0) : 0;
   // v7.4: SPOT CVD eşiği (motorla aynı; motor_sabitleri yok, panel kendi hesaplar)
   const ds=aykiriTemizle(cvdDeltaSerisi(rows,'spot_cvd'));
   let spotNeg=2000;
@@ -500,7 +508,7 @@ function esikHesapla(rows){
     const smabs=yuzdelikNokta(ds.map(Math.abs).sort((a,b)=>a-b),0.50)||0;
     spotNeg = sp10<0 ? Math.max(Math.abs(sp10),Math.max(0.5*smabs,1)) : Math.max(0.5*smabs,1);
   }
-  return {cvdNeg,cvdPoz,derinlik,spotNeg,kaynak,deltalar:d};
+  return {cvdNeg,cvdPoz,derinlik,spotNeg,kaynak,deltalar:d,likLongMed,likShortMed};
 }
 
 // ============ v7: MOTORUN TAM KAPI SETİ (hedef/süreç/marj/cooldown) ============
@@ -562,6 +570,9 @@ const REJIMLER = {
   SHORT_SQUEEZE:  {renk:'var(--veto)', bg:'rgba(255,138,61,.14)', ad:'SHORT SQUEEZE', aciklama:'Fiyat çıkıyor ama OI düşüyor — short\'lar zorla kapanıyor. Kırılgan; OI vetosu LONG\'u kesti.'},
   TAZE_SATIS:     {renk:'var(--alarm)', bg:'rgba(255,84,112,.14)', ad:'TAZE SATIŞ', aciklama:'Fiyat düşüyor, OI artıyor — yeni short\'lar geliyor. Gerçek satış baskısı.'},
   LONG_TASFIYE:   {renk:'var(--veto)', bg:'rgba(255,138,61,.14)', ad:'LONG TASFİYE', aciklama:'Fiyat düşüyor ve OI düşüyor — long\'lar zorla kapanıyor. Kırılgan; OI vetosu SHORT\'u kesti.'},
+  TASFIYE_SONRASI_DONUS: {renk:'var(--amber)', bg:'rgba(255,194,75,.16)', ad:'TASFİYE SONRASI DÖNÜŞ', aciklama:'Long\'lar AZ ÖNCE zorla flush edildi ve fiyat GERİ ALIYOR. OI düşüşü = tasfiyenin kendisi (mekanik), yakıtsızlık DEĞİL. FAZ 1: veto hâlâ duruyor, sistem sadece ÖLÇÜYOR.'},
+  SHORT_TASFIYE:  {renk:'var(--amber)', bg:'rgba(255,194,75,.16)', ad:'SHORT TASFİYE', aciklama:'Short\'lar ZORLA kapatılıyor (likidasyon dikeni) — gönüllü kaçış değil, zorunlu alım. FAZ 1: veto hâlâ duruyor, ölçülüyor.'},
+  LONG_KAPITULASYON: {renk:'var(--amber)', bg:'rgba(255,194,75,.16)', ad:'LONG KAPİTÜLASYON', aciklama:'Fiyat düşerken long\'lar ZORLA tasfiye ediliyor — "kırılgan düşüş" değil, "satıcı tükeniyor" olabilir. SHORT vetolu. FAZ 1: LONG kapısı henüz AÇILMADI.'},
   DIP_TOPLAMA:    {renk:'var(--sonar)', bg:'rgba(47,245,200,.14)', ad:'DİP TOPLAMA', aciklama:'Satış akışı olgun alım duvarınca emiliyor — birileri sessizce topluyor olabilir.'},
   DIP_TOPLAMA_SPOT:{renk:'var(--sonar)', bg:'rgba(47,245,200,.16)', ad:'DİP TOPLAMA · SPOT', aciklama:'v7.4: Emilim güçlü + satıcı tükeniyor + satış ağırlığı SPOT — gerçek toplama adayı (envanter biriktiriliyor).'},
   DIP_TOPLAMA_TEYITSIZ:{renk:'var(--amber)', bg:'rgba(255,194,75,.13)', ad:'DİP TOPLAMA · TEYİTSİZ', aciklama:'v7.4: Emilim VAR ama yön belirsiz — toplama mı dağıtım mı bilinmiyor. Sistem bunu bilerek "belirsiz" der.'},
@@ -577,16 +588,32 @@ const REJIMLER = {
 
 // Kayıttan rejimi TÜRET (main.py'nin mantığını panelde yeniden kurar,
 // çünkü rejim ayrı bir kolonda saklanmıyor — davranıştan okunuyor)
-function rejimTuret(L, pencere){
-  const kaliteRed = (L.guven_skoru==0 && L.long_skor==0 && L.short_skor==0 &&
-                     (L.open_interest==null || L.open_interest < 1e9));
+function rejimTuret(L, pencere, esik, ms){
+  // v7.3.2: TASFİYE AYRIMI. Eski hali sadece v7.2 rejimlerini biliyordu ve
+  // kanonik süpürmenin geri-alım barını SHORT_SQUEEZE ("kırılgan, veto kesti")
+  // gösteriyordu — motor ise TASFIYE_SONRASI_DONUS diyordu. Panel, motorun TAM
+  // TERSİ hikâyeyi anlatıyordu. Artık aynı ayrımı yapıyor: OI düşüşü likidasyon
+  // dikeniyle EŞZAMANLIYSA bu gönüllü kaçış değil, ZORLA tasfiyedir.
   if(L.open_interest==null || L.open_interest < 1e9) return 'VERI_GUVENSIZ';
   if(!pencere) return 'VERI_BEKLENIYOR';
   const dF=pencere.dF, dOI=pencere.dOI, absL=pencere.absL, absS=pencere.absS;
-  if(dF>0.02 && dOI>0.05) return 'TAZE_ALIM';
-  if(dF>0.02 && dOI<-0.05) return 'SHORT_SQUEEZE';
+  esik = esik || {};
+  const TDC=(ms&&ms.TASFIYE_DIKEN_CARPANI)||2.5;
+  const TOI=(ms&&ms.TASFIYE_OI_MIN_PCT)||0.05;
+  const medL=(ms&&ms.esik_lik_long_medyan)||esik.likLongMed||0;
+  const medS=(ms&&ms.esik_lik_short_medyan)||esik.likShortMed||0;
+  const zl = medL>0 && (L.agg_long_liq ||0)/medL >= TDC;
+  const zs = medS>0 && (L.agg_short_liq||0)/medS >= TDC;
+  const oiDustu = dOI <= -TOI;
+  const zorlaLong = zl && oiDustu, zorlaShort = zs && oiDustu;
+  if(dF>0.02 && dOI>0.05)  return 'TAZE_ALIM';
+  if(dF>0.02 && dOI<-0.05){
+    if(zorlaLong)  return 'TASFIYE_SONRASI_DONUS';
+    if(zorlaShort) return 'SHORT_TASFIYE';
+    return 'SHORT_SQUEEZE';
+  }
   if(dF<-0.02 && dOI>0.05) return 'TAZE_SATIS';
-  if(dF<-0.02 && dOI<-0.05) return 'LONG_TASFIYE';
+  if(dF<-0.02 && dOI<-0.05) return zorlaLong ? 'LONG_KAPITULASYON' : 'LONG_TASFIYE';
   if(absL>0.45) return 'DIP_TOPLAMA';
   if(absS>0.45) return 'TEPE_DAGITIM';
   return 'NOTR';
@@ -653,28 +680,35 @@ async function load(){
   // v7: eşikler motorla aynı matematikle pencere verisinden (sabit ±2000 YOK)
   const esik=esikHesapla(rows);
   const pencere=pencereHesapla(rows,esik);
-  const rejim=rejimTuret(L,pencere);
 
-  // v7: motorun KENDİ yorum kayıtları — süreç + kapı redleri + geri test
+  // v7.3.2: motorun KENDİ kayıtları + motor_sabitleri (rejim türetmesi motorla
+  // BİREBİR olsun diye) + tasfiye_kohortu (Faz 1'in asıl çıktısı)
   // v7.9: + canli_emilim ("şu an emen kim?" — motor her dakika yazar)
-  let surec=null, veRed=null, geriTest=null, canliEmilim=null;
+  let surec=null, veRed=null, geriTest=null, motorSbt=null, kohort=null, canliEmilim=null;
   try{
     const {data:ay}=await sb.from('balina_ayarlar').select('*')
-      .in('anahtar',['surec_durumu','ve_kapisi_redleri','geri_test_istatistik','canli_emilim']);
+      .in('anahtar',['surec_durumu','ve_kapisi_redleri','geri_test_istatistik',
+                     'motor_sabitleri','tasfiye_kohortu','canli_emilim']);
     (ay||[]).forEach(k=>{
       const v = typeof k.deger==='string'?JSON.parse(k.deger):k.deger;
       if(k.anahtar==='surec_durumu') surec=v;
       else if(k.anahtar==='ve_kapisi_redleri') veRed=v;
       else if(k.anahtar==='geri_test_istatistik') geriTest=v;
+      else if(k.anahtar==='motor_sabitleri') motorSbt=v;
+      else if(k.anahtar==='tasfiye_kohortu') kohort=v;
       else if(k.anahtar==='canli_emilim') canliEmilim=v;
     });
   }catch(e){}
+
+  // Rejim, motor sabitleri ÇEKİLDİKTEN sonra türetilir.
+  const rejim=rejimTuret(L,pencere,esik,motorSbt);
 
   heroBar(L,rows,pencere,rejim,surec);
   surecPanel(surec,L);
   verdict(L,rejim,pencere,rows,surec);
   layerRadar(L,pencere,rejim);
-  kpis(L,rows,pencere,rejim,esik,canliEmilim);
+  kpis(L,rows,pencere,rejim,esik,motorSbt,canliEmilim);
+  normalSeridi(esik,motorSbt,rows);
   scores(L.long_skor||0, L.short_skor||0, rows, geriTest);
   otopsi(veRed,geriTest);
   cPrice(labels,rows); cLiq(labels,rows); cDelta(labels,rows);
@@ -947,7 +981,7 @@ function layerRadar(L,pencere,rejim){
 }
 
 // ============ KPI ============
-function kpis(L,rows,pencere,rejim,esik,canliEmilim){
+function kpis(L,rows,pencere,rejim,esik,ms,canliEmilim){
   const vcA=cvdAnlam(rows,'vadeli_cvd',L.vadeli_cvd||0);
   const scA=cvdAnlam(rows,'spot_cvd',L.spot_cvd||0);
   const funding=L.funding_rate||0;
@@ -971,8 +1005,37 @@ function kpis(L,rows,pencere,rejim,esik,canliEmilim){
       cls:yzd>=85?(dv>0?'pos':'neg'):yzd>=60?'warn':'neu'};
   }
 
-  // v7.9: CANLI EMİLİM — motorun KENDİ ölçümü ("şu an emen kim?"). Panel tahmini
-  // DEĞİL: balina_ayarlar['canli_emilim']'den okunur. Sıfır tuzağı kuralları:
+  // ===== v7.4: TASFİYE YOĞUNLUĞU — "800 coin" hastalığının panzehiri =====
+  // SORUN: Bir likidasyon dikenini gözle okuyup BAŞKA BİR GÜNÜN ham sayısıyla
+  // kıyaslamak ("1 Tem'de 800'dü, bugün 200, demek kapitülasyon yok") sistemi
+  // tek bir güne OVERFIT eder — v7.3 spec §3'ün yasakladığı şey tam olarak bu.
+  // Motor sabit sayı BİLMEZ; payda ADAPTİF (7g sıfır-olmayan medyan).
+  // Doğru soru "800'ü geçti mi" değil: "KENDİ NORMALİNİN kaç katı?"
+  // Sakin dönemde medyan düşer -> 200 coin'lik diken de 13x olabilir.
+  const TDC=(ms&&ms.TASFIYE_DIKEN_CARPANI)||2.5;
+  const medL=(ms&&ms.esik_lik_long_medyan)||esik.likLongMed||0;
+  const medS=(ms&&ms.esik_lik_short_medyan)||esik.likShortMed||0;
+  const yogL=medL>0?(L.agg_long_liq||0)/medL:0;
+  const yogS=medS>0?(L.agg_short_liq||0)/medS:0;
+  const dikenVar=yogL>=TDC||yogS>=TDC;
+  const oiDustu=pencere&&pencere.dOI<=-((ms&&ms.TASFIYE_OI_MIN_PCT)||0.05);
+  let tKpi;
+  if(medL<=0&&medS<=0){
+    tKpi={lbl:'Tasfiye Yoğunluğu',val:'—',
+      sub:'adaptif medyan hazır değil (min 20 sıfır-olmayan kayıt)',cls:'neu'};
+  }else{
+    tKpi={lbl:'Tasfiye Yoğunluğu',
+      val:`L ${yogL.toFixed(1)}× · S ${yogS.toFixed(1)}×`,
+      sub: dikenVar
+        ? (oiDustu?'DİKEN + OI düşüyor → ZORLA kapatma'
+                  :'diken var ama OI düşmüyor → gönüllü')
+        : `eşik ${TDC}× altında · gürültü`,
+      cls: dikenVar?(oiDustu?'pos':'warn'):'neu',
+      not: dikenVar?'':'ham sayıyı başka günle kıyaslama — oran budur'};
+  }
+
+  // ===== v7.9: CANLI EMİLİM — motorun KENDİ ölçümü ("şu an emen kim?"). =====
+  // Panel tahmini DEĞİL: balina_ayarlar['canli_emilim']'den okunur. Sıfır tuzağı:
   // kayıt yok/bayat/ölçülemedi → "ÖLÇÜLEMEDİ" denir, 0 ya da boş GÖSTERİLMEZ.
   let emKpi={lbl:'Emici (motor)',val:'—',sub:'motor henüz yazmadı',cls:'neu'};
   if(canliEmilim && canliEmilim.guncelleme){
@@ -1003,6 +1066,7 @@ function kpis(L,rows,pencere,rejim,esik,canliEmilim){
 
   const kpiler=[
     dKpi,
+    tKpi,
     emKpi,
     {lbl:'Vadeli CVD',val:bigSigned(L.vadeli_cvd),
       sub:`${vcA.metin} · ${vcA.konum}`,cls:vcA.sinif,
@@ -1022,6 +1086,33 @@ function kpis(L,rows,pencere,rejim,esik,canliEmilim){
 }
 
 // ============ HERO BAR — tek bakış durumu ============
+// ============ v7.4: BUGÜNÜN NORMALİ ŞERİDİ ============
+// Motorun ADAPTİF birimlerini ekrana basar. Sebep: ham sayıyı BAŞKA BİR GÜNÜN
+// ham sayısıyla kıyaslamak en sinsi hatadır. Motor sabit sayı bilmez; her eşik
+// KENDİ 7 günlük normalinin katıdır. Bu şerit o normali her an görünür kılar.
+function normalSeridi(esik, ms, rows){
+  const el=document.getElementById('normalSerit'); if(!el) return;
+  const yerel=!ms;
+  const vol=(ms&&ms.esik_volatilite);
+  const medL=(ms&&ms.esik_lik_long_medyan)||esik.likLongMed||0;
+  const medS=(ms&&ms.esik_lik_short_medyan)||esik.likShortMed||0;
+  const cN=(ms&&ms.esik_cvd_negatif)||esik.cvdNeg;
+  const TDC=(ms&&ms.TASFIYE_DIKEN_CARPANI)||2.5;
+  const kutu=(ad,deger,ipucu)=>
+    `<div class="hero-item"><span class="hero-lbl">${ad}</span>`+
+    `<span class="hero-val" style="font-size:12px">${deger}</span>`+
+    (ipucu?`<span class="hero-lbl" style="opacity:.7">${ipucu}</span>`:'')+`</div>`;
+  el.innerHTML =
+    `<div class="hero-item"><span class="hero-lbl">BUGÜNÜN NORMALİ</span>`+
+    `<span class="hero-lbl" style="opacity:.7">${yerel?'⚠ yerel yaklaşım':'motordan'} · ${rows.length} kayıt</span></div>`
+    + kutu('Volatilite', vol?('%'+vol.toFixed(3)):'—','medyan |5dk Δ|')
+    + kutu('Likidasyon medyanı',(medL||medS)?(`L ${big(medL)} · S ${big(medS)}`):'—','sıfır-olmayan 7g')
+    + kutu('Diken eşiği',TDC+'×','medyanın katı')
+    + kutu('CVD eşiği',cN?bigSigned(cN):'—','adaptif P10')
+    + `<div class="hero-item" style="flex:1;min-width:220px"><span class="hero-lbl" style="opacity:.75;line-height:1.5">`+
+      `Ham sayıyı başka günle kıyaslama. Her eşik <b>kendi normalinin katı</b>.</span></div>`;
+}
+
 function heroBar(L,rows,pencere,rejim,surec){
   const rj=REJIMLER[rejim]||REJIMLER.NOTR;
   const sig=(L.sinyal_durumu||'BEKLE').toUpperCase();
