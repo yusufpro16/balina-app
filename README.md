@@ -85,7 +85,7 @@ veriyle kalibre edilir. Kohort budaması **gerçek sinyalleri korur** (v9.4).
 ## Testler
 
 ```bash
-python test_v73_kabul.py     # 235 kabul testi — hepsi geçmeli ("HEPSI GECTI")
+python test_v73_kabul.py     # 247 kabul testi — hepsi geçmeli ("HEPSI GECTI")
 ```
 
 Suite: 500'lük eşdeğerlik + süpürme/emilim/tasfiye vakaları + v8 motor adımları
@@ -169,5 +169,6 @@ Sağlık kontrolü `/` rotasıdır.
 | v9.9 | Hedef mesafesi kova ölçümü — kaldırılan maliyet çıtasının "hayaleti" (salt ölçüm) |
 | v10.0 | **Yapışık-seviye atlama** (kısa hedef ≥1R uzak) + kanaat kalıcılık dilimi ölçümü |
 | v10.1 | Sinyal kartı **akıbet izleme** (durum STOP/HEDEF, salt ölçüm) + BTCUD.A sembol kara listesi |
+| v10.2 | **Rejim ölçümü** (squeeze/trend/range etiketi — sinyal hangi ortamda doğdu) + sinyal **MFE/MAE** (ölü giriş ↔ kâr-verip-aldı ayrımı). Salt ölçüm, karar-dışı |
 
 `yedek/` klasöründe tarihli veri anlık görüntüleri tutulur.

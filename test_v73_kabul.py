@@ -57,7 +57,9 @@ SABITLER = {'SINYAL_ESIGI','SINYAL_MARJI','MALIYET_CITASI_PCT','VE_ISLEM_MIN',
             'SWEEP_STOP_TAMPON_PCT','SWING_EQ_BANT','SWING_GUC_PUAN',
             'DAGITIM_AILESI','TOPLAMA_AILESI','CHOCH_MAX_MUM',
             # v10.1 sembol kara listesi:
-            'SEMBOL_KARA_LISTE','MAJOR_BORSA_KODLARI'}
+            'SEMBOL_KARA_LISTE','MAJOR_BORSA_KODLARI',
+            # v10.2 rejim olcumu:
+            'REJIM_PENCERE_DK','REJIM_RANGE_PCT','REJIM_SQUEEZE_ORAN'}
 FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 'ceyreklik_expiry_yakin_mi','balina_skoru_hesapla','supurme_takip_et',
                 '_tasfiye_bayraklari',
@@ -78,7 +80,9 @@ FONKSIYONLAR = {'_norm','_olgunluk_carpani','_cvd_iraksama_hesapla',
                 '_lik_penceresi_ayristir','_kohort_buda',
                 # v10.1 sembol kara listesi (yardimci + getter):
                 '_kara_liste_uygula','_majorleri_oncelikle_sec',
-                'coinalyze_sembolleri_getir'}  # v7.4-v10.1
+                'coinalyze_sembolleri_getir',
+                # v10.2 rejim olcumu (saf fonksiyon):
+                '_rejim_olc'}  # v7.4-v10.2
 
 # SABITLENMIS taban: v7.2 = e6ee0ac. ("HEAD" kullanmak, v7.3 commit'lendikten
 # sonra testi kendi-kendiyle kiyasa dusurup KORULUK etmez hale getirirdi —
@@ -1749,6 +1753,8 @@ _kod101 = compile(_ast.Module(body=[_ast.parse('if True:\n' + _m101.group(1)).bo
 class _Durum101:
     def __init__(self, kart):
         self.akibet_kart = kart
+        self.akibet_mfe = 0.0   # v10.2: akibet blogu artik MFE/MAE de gunceller
+        self.akibet_mae = 0.0
 
 def _kosum101(kart, fiyat, yaz_ok=True, oku_kart=None):
     d = _Durum101(kart)
@@ -1797,6 +1803,108 @@ _dF1, _yF1 = _kosum101({'yon': 'LONG', 'stop': 100.0, 'kisa_hedef': 110.0}, 99.0
                        yaz_ok=False)
 check("V101-10: yazim basarisiz -> bellek eski kalir (retry semantigi)",
       len(_yF1) == 1 and _dF1.akibet_kart.get('durum') is None)
+
+# =========================================================================
+# v10.2 — REJIM OLCUMU + SINYAL MFE/MAE (SALT KAYIT, kullanici 10 Agu onayi)
+# =========================================================================
+_rejim_olc = YENI['_rejim_olc']
+_RSQ = YENI['REJIM_SQUEEZE_ORAN']; _RRG = YENI['REJIM_RANGE_PCT']
+
+def _pencere(d_fiyat_pct, ll, sl, d_oi_pct, n=30, taban=60000.0):
+    """n dakikalik sentetik pencere: fiyat lineer d_fiyat_pct hareket eder,
+    likidasyon her dakikaya esit dagilir, OI lineer d_oi_pct hareket eder."""
+    oi0 = 12e9
+    return [(1000.0 + i,
+             taban * (1 + (d_fiyat_pct/100.0) * i/(n-1)),
+             ll/n, sl/n,
+             oi0 * (1 + (d_oi_pct/100.0) * i/(n-1)))
+            for i in range(n)]
+
+# A) yetersiz veri -> None
+check("V102-1: <10 ornek -> None (yetersiz veri)",
+      _rejim_olc(None) is None and _rejim_olc(_pencere(1,0,0,0,n=9)) is None
+      and _rejim_olc(_pencere(1,10,20,1,n=10)) is not None)
+
+# B) SQUEEZE_YUKARI: fiyat +%1, short_liq >> long_liq, OI DUSER
+_r2 = _rejim_olc(_pencere(1.2, ll=5, sl=60, d_oi_pct=-1.0))
+check("V102-2: fiyat+ short-ez OI-dus -> SQUEEZE_YUKARI",
+      _r2['etiket'] == 'SQUEEZE_YUKARI' and _r2['d_fiyat_pct'] > 0
+      and _r2['sl_ll_oran'] >= _RSQ and _r2['d_oi_pct'] < 0,
+      f"{_r2}")
+
+# C) SQUEEZE_YUKARI_HIBRIT: fiyat+, short-ez ama OI ARTAR (yeni long)
+_r3 = _rejim_olc(_pencere(1.2, ll=5, sl=60, d_oi_pct=+1.0))
+check("V102-3: fiyat+ short-ez OI-art -> SQUEEZE_YUKARI_HIBRIT",
+      _r3['etiket'] == 'SQUEEZE_YUKARI_HIBRIT' and _r3['d_oi_pct'] > 0)
+
+# D) TREND_YUKARI: fiyat+, likidasyon dengeli (squeeze yok), OI ARTAR
+_r4 = _rejim_olc(_pencere(1.2, ll=30, sl=30, d_oi_pct=+1.0))
+check("V102-4: fiyat+ dengeli-lik OI-art -> TREND_YUKARI",
+      _r4['etiket'] == 'TREND_YUKARI' and _r4['sl_ll_oran'] < _RSQ)
+
+# E) RANGE: |fiyat degisimi| < esik
+_r5 = _rejim_olc(_pencere(0.2, ll=20, sl=20, d_oi_pct=0.1))
+check("V102-5: |fiyat| < esik -> RANGE",
+      _r5['etiket'] == 'RANGE' and abs(_r5['d_fiyat_pct']) < _RRG)
+
+# F) SQUEEZE_ASAGI / DUSUS: fiyat-, long ezilir OI-dus
+_r6 = _rejim_olc(_pencere(-1.2, ll=60, sl=5, d_oi_pct=-1.0))
+_r6b = _rejim_olc(_pencere(-1.2, ll=20, sl=20, d_oi_pct=0.5))
+check("V102-6: fiyat- long-ez OI-dus -> SQUEEZE_ASAGI; dengeli -> DUSUS",
+      _r6['etiket'] == 'SQUEEZE_ASAGI' and _r6b['etiket'] == 'DUSUS')
+
+# G) sifir tuzagi: likidasyon 0 -> patlamaz, oran makul
+_r7 = _rejim_olc(_pencere(1.2, ll=0, sl=0, d_oi_pct=0.5))
+check("V102-7: sifir likidasyon -> crash yok, etiket uretir",
+      _r7 is not None and _r7['etiket'] in ('YUKSELIS','TREND_YUKARI'))
+
+# H) REJIM karar-disi kaniti: sinyal karti + kohort olayina 'rejim' eklendi,
+# skor/kademe/kapi kodunda _rejim OKUNMUYOR (yalniz yaziliyor)
+_src102 = open(os.path.join(REPO,'main.py')).read()
+_mrej = _re.search(r"# ---- v10\.2-REJIM BASLA.*?\n(.*?)# ---- v10\.2-REJIM BITIR",
+                   _src102, _re.S)
+check("V102-8: v10.2-REJIM marker blogu mevcut + rejim sinyal karti/kohortta",
+      _mrej is not None
+      and "'rejim': _rej_et" in _src102          # kohort + kart etiketi
+      and _src102.count("'rejim': _rej_et") == 2
+      and 'rejim_etiket' in _src102)             # arsiv UPDATE
+
+# _rejim yalniz YAZILIR: kademe/kapi/skor kosullarinda gecmez. Rejim etiketi
+# ('SQUEEZE'/'TREND'/'RANGE' string'leri) hicbir if kosulunda kullanilmamali.
+check("V102-9: rejim etiketi hicbir karar kosulunda okunmuyor (karar-disi)",
+      "_rejim['etiket'] ==" not in _src102
+      and "_rejim.get('etiket')" not in _src102
+      and "_rej_et ==" not in _src102
+      and "_rej_et in" not in _src102)
+
+# I) MFE/MAE marker-exec: kart acikken lehte/aleyhte azami R izlenir
+_mmfe = _re.search(r"# v10\.2-MFE: her tur.*?\n(.*?)_akibet = None", _src102, _re.S)
+check("V102-10: MFE/MAE guncelleme blogu mevcut",
+      _mmfe is not None and 'durum.akibet_mfe = max' in _src102
+      and 'durum.akibet_mae = min' in _src102
+      and "_yeni_kart['mfe_r']" in _src102)
+
+class _DurumMFE:
+    def __init__(self):
+        self.akibet_mfe = 0.0; self.akibet_mae = 0.0
+        self.akibet_kart = {'yon':'SHORT','giris':100.0,'stop':110.0,'kisa_hedef':80.0}
+
+def _mfe_kosu(fiyatlar, yon='SHORT', giris=100.0, stop=110.0):
+    d = _DurumMFE(); d.akibet_kart = {'yon':yon,'giris':giris,'stop':stop,'kisa_hedef':80.0 if yon=='SHORT' else 120.0}
+    risk = abs(stop-giris)
+    for f in fiyatlar:
+        lehte = ((giris-f) if yon=='SHORT' else (f-giris))/risk
+        d.akibet_mfe = max(d.akibet_mfe, lehte)
+        d.akibet_mae = min(d.akibet_mae, lehte)
+    return d
+# SHORT: fiyat 100->95 (lehte +0.5R) sonra 108 (aleyhte -0.8R)
+_dm = _mfe_kosu([100,95,98,108])
+check("V102-11: SHORT MFE=+0.5R (dip 95), MAE=-0.8R (tepe 108)",
+      abs(_dm.akibet_mfe - 0.5) < 1e-9 and abs(_dm.akibet_mae - (-0.8)) < 1e-9)
+# olu giris: fiyat hic lehte gitmeden stopa (MFE~0)
+_dm2 = _mfe_kosu([100.5,102,105,110])
+check("V102-12: olu giris (hic lehte gitmedi) -> MFE~0",
+      _dm2.akibet_mfe <= 0.0 + 1e-9 and _dm2.akibet_mae < 0)
 
 print()
 print("HEPSI GECTI" if not fails else f"BASARISIZ: {fails}")

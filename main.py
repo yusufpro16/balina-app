@@ -95,6 +95,13 @@ SYMBOL = "btcusdt"  # WebSocket stream'lerinde küçük harf kullanılır
 COINALYZE_API_KEY = os.environ.get("COINALYZE_API_KEY")
 COINALYZE_BASE = "https://api.coinalyze.net/v1"
 
+# --- v10.2 REJIM OLCUMU (SALT KAYIT — karar-disi; kullanici 10 Agu onayi) ---
+# Hipotez: sinyaller squeeze/yukari-baskili rejimde doguyor ve donus-SHORT'lari
+# sistemik erken. Rejim etiketi HICBIR karara girmez; 1 hafta veri sonra bakilacak.
+REJIM_PENCERE_DK = 60      # kayan pencere uzunlugu (dakika)
+REJIM_RANGE_PCT = 0.5      # |pencere fiyat degisimi| < bu -> RANGE (yatay)
+REJIM_SQUEEZE_ORAN = 2.0   # yon-normalize likidasyon orani >= bu -> squeeze baskisi
+
 # =========================================================================
 # PAYLAŞILAN CANLI DURUM (State)
 # =========================================================================
@@ -109,6 +116,17 @@ class CanliDurum:
         # yuklenmedi; {} = DB'de kart yok. Kart yalniz dogumda yazilip bir daha
         # guncellenmedigi icin stop/hedef temasi gorunmuyordu (5 Agu vakasi).
         self.akibet_kart = None
+
+        # v10.2-REJIM: son ~60 dk kayan pencere (ts, fiyat, long_liq, short_liq,
+        # oi). Rejim etiketi bundan hesaplanir; SALT OLCUM, karara girmez.
+        self.rejim_penceresi = deque(maxlen=REJIM_PENCERE_DK)
+
+        # v10.2-MFE: aktif sinyalin (akibet_kart) yasadigi lehte azami (MFE) ve
+        # aleyhte azami (MAE) hareket, R cinsinden. Yeni sinyalde sifirlanir;
+        # STOP/HEDEF aninda karta yazilir. "Olu giris (MFE~0) mi yoksa kar verip
+        # geri mi aldi (MFE yuksek)" ayrimi icin (Hastalik A/B). SALT OLCUM.
+        self.akibet_mfe = 0.0
+        self.akibet_mae = 0.0
 
         self.trade_gecmisi = deque()        # 15dk pencere (VADELİ tick-rule yedek)
         self.son_tick_fiyat = 0.0
@@ -893,6 +911,57 @@ def _majorleri_oncelikle_sec(semboller, maks=5):
         return MAJOR_BORSA_KODLARI.index(kod) if kod in MAJOR_BORSA_KODLARI else 999
     sirali = sorted(semboller, key=oncelik)
     return sirali[:maks]
+
+
+def _rejim_olc(pencere):
+    """v10.2 SALT OLCUM (karar-disi): kayan pencereden piyasa rejimi etiketi.
+    pencere: [(ts, fiyat, long_liq, short_liq, oi), ...] son ~REJIM_PENCERE_DK dk.
+
+    Kullanici 10 Agu hipotezi: sinyaller squeeze/yukari-baskili rejimde doguyor;
+    donus-SHORT'lari sistemik erken. Etiket KARARA GIRMEZ — yalniz kohort/arsive
+    yazilir, 1 hafta sonra "squeeze rejiminde SHORT'lar gercekten daha mi kotu"
+    sorusu birikmis veriyle cevaplanacak.
+
+    SQUEEZE ayrimi (offline rejim_olc.py ile ayni): fiyat YUKSELIRKEN short_liq >>
+    long_liq (zorla kapanan short) = squeeze basinci. OI DUSERSE klasik squeeze
+    (saf short kapanisi); OI ARTARSA hibrit (short ez + yeni long FOMO -> trend
+    gecisi). Doner: None (yetersiz veri) veya dict."""
+    if not pencere or len(pencere) < 10:
+        return None
+    fiyatlar = [p[1] for p in pencere if p[1]]
+    if len(fiyatlar) < 10:
+        return None
+    d_fiyat = (fiyatlar[-1] - fiyatlar[0]) / fiyatlar[0] * 100.0
+    farklar = [abs(fiyatlar[i] - fiyatlar[i - 1]) / fiyatlar[i - 1] * 100.0
+               for i in range(1, len(fiyatlar))]
+    vol = sum(farklar) / len(farklar) if farklar else 0.0
+    toplam_ll = sum((p[2] or 0) for p in pencere)
+    toplam_sl = sum((p[3] or 0) for p in pencere)
+    oiler = [p[4] for p in pencere if p[4]]
+    d_oi = (oiler[-1] - oiler[0]) / oiler[0] * 100.0 if len(oiler) > 1 else 0.0
+    # yon-normalize likidasyon baskisi (sifir korumali): yukselirken short
+    # ezilmesi squeeze; duserken long ezilmesi.
+    sl_ll = (toplam_sl / toplam_ll) if toplam_ll > 0 else (99.0 if toplam_sl > 0 else 1.0)
+    ll_sl = (toplam_ll / toplam_sl) if toplam_sl > 0 else (99.0 if toplam_ll > 0 else 1.0)
+    if abs(d_fiyat) < REJIM_RANGE_PCT:
+        etiket = 'RANGE'
+    elif d_fiyat > 0:
+        if sl_ll >= REJIM_SQUEEZE_ORAN and d_oi < 0:
+            etiket = 'SQUEEZE_YUKARI'          # klasik: short ez + OI dus
+        elif sl_ll >= REJIM_SQUEEZE_ORAN:
+            etiket = 'SQUEEZE_YUKARI_HIBRIT'   # short ez + yeni long (OI art)
+        elif d_oi > 0:
+            etiket = 'TREND_YUKARI'            # organik: OI artisiyla
+        else:
+            etiket = 'YUKSELIS'
+    else:
+        if ll_sl >= REJIM_SQUEEZE_ORAN and d_oi < 0:
+            etiket = 'SQUEEZE_ASAGI'
+        else:
+            etiket = 'DUSUS'
+    return {'etiket': etiket, 'd_fiyat_pct': round(d_fiyat, 3),
+            'sl_ll_oran': round(sl_ll, 2), 'd_oi_pct': round(d_oi, 3),
+            'vol_pct': round(vol, 4), 'ornek': len(pencere)}
 
 
 def _ayarlar_oku(anahtar):
@@ -5253,6 +5322,22 @@ def ozet_ve_analiz_dongusu():
                     skor_girdi['tasfiye_long_yogunluk'],
                     skor_girdi['tasfiye_short_yogunluk'], d_oi_k)
 
+                # ---- v10.2-REJIM BASLA (salt olcum — karar-disi, kullanici onayli) ----
+                # Kayan pencereyi guncelle + rejim etiketini hesapla. HICBIR karara
+                # girmez (skor/kademe/kapi DOKUNULMAZ); yalniz arsive ve sinyal aninda
+                # kohorta/karta yazilir. Swing motorundan ONCE hesaplanir ki sinyal
+                # kohortu ayni turda etiketi tasiyabilsin.
+                _rejim = None
+                try:
+                    if anlik_fiyat and anlik_fiyat > 0:
+                        durum.rejim_penceresi.append(
+                            (time.time(), float(anlik_fiyat), float(agg_liq_long or 0),
+                             float(agg_liq_short or 0), float(open_interest or 0)))
+                        _rejim = _rejim_olc(list(durum.rejim_penceresi))
+                except Exception as e:
+                    logging.warning(f"rejim olcum hatasi (akis devam eder): {e}")
+                # ---- v10.2-REJIM BITIR ----
+
                 # ========== v8.1 FAZ B: KADEMELI SWING MOTORU (scalp'tan AYRI) ==========
                 # Uc sensor (grab=supurme durumu, tasfiye, emici) + swing seviye haritasi
                 # -> kademeli karar. Skoru ETKILEMEZ; balina_ayarlar['swing_karar']'a
@@ -5478,6 +5563,9 @@ def ozet_ve_analiz_dongusu():
                                     _ham = dict(_secilen)
                                     _ham['hedef_stop'] = _hs2
                                     if _hs2 and _hs2['gecerli']:
+                                        # v10.2-REJIM: sinyal aninda rejim etiketi
+                                        # (SALT KAYIT — girisi/karari degistirmez)
+                                        _rej_et = _rejim['etiket'] if _rejim else None
                                         _yeni_olaylar.append({
                                             'zaman': _mum_kapanis_iso, 'yon': _iy,
                                             'giris': _giris,
@@ -5486,6 +5574,7 @@ def ozet_ve_analiz_dongusu():
                                             'stop': _hs2['stop'], 'rr_swing': _hs2['rr_swing'],
                                             'skor': _secilen['sweep_guc'],
                                             'seviye': _secilen['sweep_seviye'],
+                                            'rejim': _rej_et,
                                             'tetik': _tip, 'ham': _ham})
                                         _sinyal_karti = {
                                             'zaman': _mum_kapanis_iso, 'tip': _tip, 'yon': _iy,
@@ -5497,6 +5586,7 @@ def ozet_ve_analiz_dongusu():
                                             'rr_kisa': _hs2['rr_kisa'],
                                             'rr_swing': _hs2['rr_swing'],
                                             'guc': _secilen['sweep_guc'],
+                                            'rejim': _rej_et,
                                             'teyit': _secilen['teyit']}
                                         logging.info(
                                             f"GRAB SINYAL {_tip} {_iy} @ {_giris:,.1f} | "
@@ -5569,6 +5659,9 @@ def ozet_ve_analiz_dongusu():
                                 _ayarlar_yaz('grab_aktif_sinyal', _sinyal_karti)
                                 # v10.1-AKIBET: yeni kart dogdu — izleme bellegi tazelenir
                                 durum.akibet_kart = _sinyal_karti
+                                # v10.2-MFE: yeni sinyal -> MFE/MAE sifirlanir
+                                durum.akibet_mfe = 0.0
+                                durum.akibet_mae = 0.0
                     except Exception as e:
                         logging.warning(f"grab motoru hatasi (akis devam eder): {e}")
 
@@ -5589,6 +5682,15 @@ def ozet_ve_analiz_dongusu():
                             and _kart_a.get('durum') not in ('STOP', 'HEDEF')):
                         _stp_a = _kart_a.get('stop')
                         _hdf_a = _kart_a.get('kisa_hedef')
+                        # v10.2-MFE: her tur lehte/aleyhte azami hareket (R). risk =
+                        # |stop-giris|; SALT OLCUM, karari degistirmez.
+                        _gir_a = _kart_a.get('giris')
+                        if _gir_a and _stp_a and abs(_stp_a - _gir_a) > 0:
+                            _risk_a = abs(_stp_a - _gir_a)
+                            _lehte_a = ((_gir_a - anlik_fiyat) if _kart_a['yon'] == 'SHORT'
+                                        else (anlik_fiyat - _gir_a)) / _risk_a
+                            durum.akibet_mfe = max(durum.akibet_mfe, _lehte_a)
+                            durum.akibet_mae = min(durum.akibet_mae, _lehte_a)
                         _akibet = None
                         # stop kontrolu ONCE: ayni dakikada iki temas varsa kotumser
                         # varsayim (STOP) — olcum iyimserlik tasimasin
@@ -5607,15 +5709,35 @@ def ozet_ve_analiz_dongusu():
                             _yeni_kart['durum'] = _akibet
                             _yeni_kart['akibet_zamani'] = datetime.datetime.utcnow().isoformat()
                             _yeni_kart['akibet_fiyat'] = round(float(anlik_fiyat), 1)
+                            # v10.2-MFE: akibet aninda MFE/MAE'yi karta muhurle
+                            # (Hastalik A/B ayrimi: MFE~0 -> olu giris; yuksek -> kar
+                            # verip geri aldi). Ekstra yazim YOK — mevcut UPDATE'e biner.
+                            _yeni_kart['mfe_r'] = round(durum.akibet_mfe, 2)
+                            _yeni_kart['mae_r'] = round(durum.akibet_mae, 2)
                             # yazim dogrulanmadan bellek guncellenmez — gecici DB
                             # hatasi akibeti kaybettirmesin, sonraki dakika yeniden dener
                             if _ayarlar_yaz('grab_aktif_sinyal', _yeni_kart):
                                 durum.akibet_kart = _yeni_kart
                                 logging.info(f"SINYAL AKIBETI: {_yeni_kart['yon']} "
-                                             f"{_akibet} @ {anlik_fiyat:,.1f}")
+                                             f"{_akibet} @ {anlik_fiyat:,.1f} "
+                                             f"(MFE {durum.akibet_mfe:.2f}R MAE {durum.akibet_mae:.2f}R)")
                 except Exception as e:
                     logging.warning(f"sinyal akibet izleme hatasi (akis devam eder): {e}")
                 # ---- v10.1-AKIBET BITIR ----
+
+                # ---- v10.2-REJIM ARSIV (ayri best-effort UPDATE — v9.9 deseni:
+                # bilinmeyen kolon TUM update'i reddeder, o yuzden teshis UPDATE'ine
+                # EKLENMEZ; rejim kolonlari yoksa ana kayit yine yasar). SALT KAYIT. ----
+                if SWING_ARSIV_AKTIF and yeni_satir_id and _rejim:
+                    try:
+                        supabase.table("balina_avcisi_data").update({
+                            "rejim_etiket": _rejim['etiket'],
+                            "rejim_d_fiyat": _rejim['d_fiyat_pct'],
+                            "rejim_sl_ll": _rejim['sl_ll_oran'],
+                            "rejim_d_oi": _rejim['d_oi_pct'],
+                        }).eq("id", yeni_satir_id).execute()
+                    except Exception as e:
+                        logging.warning(f"rejim arsiv UPDATE hatasi (kolon yoksa normal): {e}")
 
                 # ---- v8.8-F: TESHIS KOLONLARI (dakikalik; ayri UPDATE — mevcut swing
                 # arsiv deseninin aynisi: kolon yoksa ana insert ASLA olmez). seviye_*
