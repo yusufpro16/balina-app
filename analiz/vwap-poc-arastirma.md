@@ -58,3 +58,31 @@ net gösterirken, motorun order-flow teyidi (OI artışı şartı) düşüşte s
 
 **Kod değişikliği YOK — saf offline araştırma.** OKX verisi + hesaplar
 `scratchpad/`'de; bulgular bu dosyada birikiyor.
+
+---
+
+## Tur 2 (13 Ağu akşam — motor billing-askıda, offline devam)
+
+**İlk sistematik test: ham VWAP kırılımı yön-tahmin edici mi?**
+OKX 5dk, son 5 gün (1500 bar, 8–13 Ağu). Her VWAP kesişiminde (aşağı=SHORT,
+yukarı=LONG) sonraki 1/2/4 saat lehte getiri:
+
+| Yön | Ufuk | n | İsabet | Maliyetli net |
+| --- | --- | --- | --- | --- |
+| SHORT | 60/120/240dk | ~53 | %37–49 | −0.02…−0.08% |
+| LONG | 60/120/240dk | ~52 | %50–61 | −0.12…−0.16% |
+
+**Sonuç: ham VWAP kırılımı TEK BAŞINA kârsız** (isabet ~%50, maliyet sonrası
+hepsi negatif). Sebep net: 5 günde 105 kırılım = VWAP çok sık kesiliyor
+(fiyat VWAP civarında salınırken her whipsaw bir "sinyal"). Gürültü.
+
+**Ders — kullanıcının setup'ı ham kırılım DEĞİL:** Onun 12 Ağu işlemi
+"VWAP üstünde bir süre kal (CPI whipsaw) → KESİN altına yerleş (16:20, bir daha
+üstüne çıkmadı) → POC de altında → olay-high stop" idi. Yani güç **seçicilikte**:
+whipsaw filtresi + POC çift-teyidi + kesin-yerleşme. Ham kesişim bunların hiçbirini
+taşımıyor.
+
+**Sonraki tur:** setup'ı seçici tanımla — (a) VWAP altında N bar KALMA (whipsaw
+ele), (b) POC de altında (çift teyit), (c) gün-içi ilk kesin kırılım — ve bu
+seçici versiyonu aynı 5 günde yeniden test et. Ham vs seçici farkı, setup'ın
+gerçek edge'ini gösterecek.
