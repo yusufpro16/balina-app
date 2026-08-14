@@ -86,3 +86,35 @@ taşımıyor.
 ele), (b) POC de altında (çift teyit), (c) gün-içi ilk kesin kırılım — ve bu
 seçici versiyonu aynı 5 günde yeniden test et. Ham vs seçici farkı, setup'ın
 gerçek edge'ini gösterecek.
+
+---
+
+## Tur 3 (14 Ağu — motor döndü, VWAP/POC devam)
+
+**Seçici setup testi: whipsaw filtresi + POC çift-teyidi ham kırılımı kârlıya çevirdi mi?**
+
+Tanım (kullanıcının 12 Ağu mantığı): VWAP kırılımı + sonraki **3 bar (15dk)
+VWAP'ın öbür tarafında KALMA** (whipsaw ele) + o an **POC'nin de öbür tarafında**
+(çift teyit); giriş=teyit barı kapanışı, stop=son 12 bar swing high/low + tampon,
+hedef=2R, dar-stop filtresi (min risk %0.15). Aynı 5 gün (OKX, 8–13 Ağu).
+
+| | n | Kazanan | STOP | net R | ort/setup |
+| --- | --- | --- | --- | --- | --- |
+| **Ham kırılım (Tur 2)** | 105 | ~%50 | — | kârsız (maliyetli negatif) | ~0 |
+| **Seçici (Tur 3)** | **27** | 11 | 16 | **+4.44R** | **+0.164R** |
+
+**Whipsaw filtresi çalıştı:** 105 ham kesişimden 27 seçici setup kaldı (gürültünün
+%74'ü elendi). Ve kalan setuplar **net pozitif** (+4.44R). Kullanıcının setup
+mantığı (seçicilik + POC teyidi) ham kırılımı kârlıya çeviriyor — **ilk somut
+kanıt** ki VWAP/POC'nin edge'i seçicilikte.
+
+**DÜRÜST UYARILAR (RR deneyi hakem dersleri):**
+- n=27, **tek hafta** (8–13 Ağu düşüş ağırlıklı — 20 SHORT/9 LONG). Sonuç
+  rejim-koşullu olabilir: düşüş haftasında SHORT'lar doğal kârlı.
+- **Maliyet dahil değil** (2R/−1R idealize dolum; gerçek stop kayması +
+  komisyon netR'yi düşürür).
+- İşaret, kanıt değil. 30+ gün + maliyet modeli + farklı rejim gerekli.
+
+**Sonraki tur:** (a) maliyet + gerçekçi stop dolumu ekle, (b) 30 güne genişlet
+(OKX sayfalama), (c) motorun DEVAM adaylarıyla çaprazla. 17 Ağu'da bu olgunlaşırsa
+"VWAP+POC teyit ölçümü" spec'i güçlü aday.
