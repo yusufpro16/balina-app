@@ -118,3 +118,24 @@ kanıt** ki VWAP/POC'nin edge'i seçicilikte.
 **Sonraki tur:** (a) maliyet + gerçekçi stop dolumu ekle, (b) 30 güne genişlet
 (OKX sayfalama), (c) motorun DEVAM adaylarıyla çaprazla. 17 Ağu'da bu olgunlaşırsa
 "VWAP+POC teyit ölçümü" spec'i güçlü aday.
+
+---
+
+## Tur 4 (15 Ağu — maliyet eklendi, KRİTİK sentez)
+
+Tur 3 seçici setup'a (+4.44R idealize) **gerçekçi maliyet** (%0.10 g-d) eklendi:
+
+| | idealize | maliyetli |
+| --- | --- | --- |
+| Seçici VWAP+POC (n=27) | +4.44R | **−3.86R** |
+
+Medyan stop %0.32 (dar) → maliyet 0.31R/setup, 27×0.31≈8.3R → pozitif kayboldu.
+**RR deneyiyle aynı duvar: stop-darlığı + maliyet öldürüyor.**
+
+**AMA kullanıcının +1.22R'si GENİŞ stop (CPI-high %0.67) kullandı → maliyet_R
+sadece ~0.15.** Yani setup'ın değeri VWAP/POC seçiciliği + GENİŞ/yapısal stop
+kombinasyonunda. Dar swing-stop maliyette batıyor, geniş olay-stop yenebilir.
+
+**Sonraki (Tur 5):** aynı seçici setup'ı GENİŞ stop (gün-high/low veya
+olay-yapısal) ile test et. Dar vs geniş stop farkı = setup'ın gerçek edge testi.
+Bu, 17 Ağu spec kararının merkez sorusu.
