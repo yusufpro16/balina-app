@@ -139,3 +139,47 @@ kombinasyonunda. Dar swing-stop maliyette batıyor, geniş olay-stop yenebilir.
 **Sonraki (Tur 5):** aynı seçici setup'ı GENİŞ stop (gün-high/low veya
 olay-yapısal) ile test et. Dar vs geniş stop farkı = setup'ın gerçek edge testi.
 Bu, 17 Ağu spec kararının merkez sorusu.
+
+---
+
+## Tur 5 (15 Ağu akşam — GENİŞ stop testi, MERKEZ SORU cevaplandı)
+
+Tur 4'ün merkez sorusu: aynı seçici VWAP+POC setup'ı, dar swing-stop yerine
+**geniş yapısal stop** (gün-içi high/low = kullanıcının olay-high mantığının
+sistematik karşılığı) ile maliyeti yenebilir mi? Aynı 5 gün (OKX, 8–13 Ağu),
+aynı seçici tanım, tek fark stop yeri; maliyet %0.10 g-d dahil.
+
+| Stop tipi | n | Kazanan | idealize | **maliyetli net** | medyan risk |
+| --- | --- | --- | --- | --- | --- |
+| **Dar** (swing 12 bar, Tur 3-4) | 27 | 11 | +4.44R | **−3.86R** | %0.32 |
+| **Geniş** (gün-içi high/low) | 29 | 14 | +10.39R | **+4.69R** | %0.63 |
+
+**MERKEZ SORU CEVABI: EVET.** Geniş yapısal stop, seçici VWAP+POC setup'ını
+**maliyet sonrası pozitif** yapıyor (+4.69R), dar stop ise maliyette batıyor
+(−3.86R). Fark tek değişkenden: stop genişliği medyan riski %0.32→%0.63'e
+çıkarıyor → işlem başına maliyet_R 0.31→~0.16'ya iniyor → aynı hareket daha az
+maliyet yiyor. Ayrıca geniş stop daha az erken-vuruş (kazanan 11→14) sağlıyor.
+
+**Üç ipin sentezi artık sayısal olarak kapandı:**
+1. Ham VWAP kırılımı kârsız (Tur 2) — gürültü.
+2. Seçicilik (whipsaw + POC teyidi) idealde kârlı ama DAR stop'ta maliyet öldürür
+   (Tur 3-4): +4.44R → −3.86R.
+3. **Seçicilik + GENİŞ yapısal stop maliyeti yener (Tur 5): +4.69R.**
+   Bu tam kullanıcının 12 Ağu +1.22R işleminin yapısı (VWAP/POC seçici giriş +
+   CPI-high geniş stop). Sistematik test, sezgisel işlemi doğruladı.
+
+**DÜRÜST UYARILAR (değişmedi, hatta önemi arttı):**
+- n=29, **tek hafta** (8–13 Ağu düşüş ağırlıklı). Geniş stop düşüş trendinde
+  SHORT'a doğal avantajlı — rejim-koşullu olabilir. Farklı rejimde (RANGE/yükseliş)
+  tekrar gerekli.
+- Geniş stop **mutlak R kaybını büyütür** (yanlışta −1R ama o −1R daha çok $).
+  Pozisyon boyutu sabit-risk ile ayarlanmalı; "geniş stop bedava" değil.
+- 5 gün + tek setup ailesi. 30 gün + maliyet duyarlılığı (%0.05–0.15) + motor
+  DEVAM adaylarıyla çapraz hâlâ gerekli.
+
+**Sonraki (Tur 6):** (a) 30 güne genişlet (OKX sayfalama) — tek-hafta rejim
+riskini kır; (b) maliyet duyarlılık taraması (%0.05/0.10/0.15) — hangi maliyette
+edge kayboluyor; (c) motorun DEVAM adaylarıyla çaprazla — "geniş-stop + VWAP/POC
+teyitli DEVAM" motorun 3/3 kapısına gerçek alternatif mi? 17 Ağu spec kararı için
+bu üç ayak tamamlanmalı. **Karar netleşiyor: eğer spec önerilecekse çekirdeği
+"seçici VWAP/POC giriş + geniş yapısal stop" olmalı, dar-stop değil.**
