@@ -183,3 +183,69 @@ edge kayboluyor; (c) motorun DEVAM adaylarıyla çaprazla — "geniş-stop + VWA
 teyitli DEVAM" motorun 3/3 kapısına gerçek alternatif mi? 17 Ağu spec kararı için
 bu üç ayak tamamlanmalı. **Karar netleşiyor: eğer spec önerilecekse çekirdeği
 "seçici VWAP/POC giriş + geniş yapısal stop" olmalı, dar-stop değil.**
+
+---
+
+## Tur 6 (16 Ağu — 30 GÜNE GENİŞLETİLDİ → Tur 5 sonucu ÇÜRÜDÜ (dürüst düzeltme))
+
+**Ana bulgu: Tur 5'in "geniş stop kazanıyor" (+4.69R) sonucu SAĞLAM DEĞİLDİ.**
+33 günlük veriye (OKX, 14 Tem–16 Ağu, 9.500 bar) genişletince, aynı seçici setup
+her stop tipinde ve her alt-pencerede **NEGATİF** çıktı.
+
+### 30 günlük sonuç (maliyet %0.10)
+| Stop | n | Kazanan | idealize | maliyetli | medyan risk |
+| --- | --- | --- | --- | --- | --- |
+| Dar | 138 | 50 | **−18.37R** | **−58.14R** | %0.41 |
+| Geniş | 169 | 72 | **−11.65R** | **−49.98R** | %0.60 |
+
+Maliyetsiz idealizede bile ikisi de negatif → setup, mekanize hâliyle out-of-sample
+yön tahmin etmiyor.
+
+### KRİTİK: Tur 5'in kendi penceresi bile üretilemedi
+Aynı yeni (dikkatli) pipeline'la 8–13 Ağu'yu (Tur 5 penceresi) tek başına çalıştırdım:
+| Alt-pencere | n | idealize | maliyetli |
+| --- | --- | --- | --- |
+| **8–13 Ağu (Tur 5'in penceresi)** | 33 | **−6.06R** | **−14.23R** |
+| 14 Tem–7 Ağu | 125 | −1.92R | −28.52R |
+| 14–16 Ağu | 11 | −3.66R | −7.23R |
+| Tüm 33 gün | 169 | −11.65R | −49.98R |
+
+Tur 5, **aynı pencerede +4.69R** demişti; yeni pipeline aynı pencerede **−14.23R**
+veriyor. Fark rejim değil, **uygulama kırılganlığı**: eski Tur 5 script'i (kayıp
+scratchpad'de) muhtemelen temiz 2R/−1R dolum + farklı ufuk/POC kovası kullandı;
+yeni pipeline gerçekçi (4s ufuk + çözülmeyende mark-to-market). İşareti uygulama
+detayına göre ters dönen bir setup = **edge değil.**
+
+### EN SAĞLAM KANIT: first-touch (sınırsız ufuk, maliyet YOK)
+Ufuk/MTM/maliyet seçimlerinden bağımsız tek net ölçüm — 2R hedef mi 1R stop mu
+önce vurulur (breakeven WR %33.3):
+| Stop | Kazanan | Kaybeden | **WR** | net(2R/−1R) | Karar |
+| --- | --- | --- | --- | --- | --- |
+| Dar | 38 | 96 | **%28.4** | −20R | EDGE YOK |
+| Geniş | 52 | 108 | **%32.5** | −4R | EDGE YOK (marjinal) |
+
+**İkisi de breakeven'in altında.** Geniş stop WR'yi %28.4→%32.5 çekiyor ama hâlâ
+%33.3'ün altında → geniş stop "daha az kötü" yapıyor, **edge yaratmıyor**. Herhangi
+bir maliyet eklenince ikisi de batıyor.
+
+### DÜRÜST SONUÇ — ölçüm sahte bir edge'i yakaladı
+1. Mekanik seçici VWAP/POC kırılım setup'ının **out-of-sample edge'i YOK**
+   (first-touch WR breakeven altı, her iki stop).
+2. Tur 5'in +4.69R'si **tek-hafta + uygulama kırılgan** artefaktıydı; düzeltildi.
+3. **Stop-genişliği edge kaldıracı DEĞİL** — sadece kaybı yumuşatıyor. "Geniş stop
+   çözer" hipotezi 30 günde çöktü.
+4. Kullanıcının 12 Ağu **+1.22R'si geçerli ama mekanize edilemez**: o işlem
+   bağlama dayanıyordu (CPI katalizörü + VWAP-reddi konvansiyonu + yüksek konviksiyon)
+   — benim mekanik proxy'im günde ~5 kez ateşliyor (33 günde 169), onun nadir
+   diskresyoner setup'ı değil. Mekanizasyon o bağlamı yakalayamıyor.
+5. Bu, **RR deneyinin dersinin 3. tekrarı**: umut veren tek-hafta backtest →
+   30 gün + first-touch + maliyette ölüyor. Meta-ders artık güçlü: **HİÇBİR setup'a
+   30g + first-touch + maliyet üçlüsü olmadan inanma.**
+
+### 17 Ağu spec kararı (Tur 6 sonrası — DÜZELTİLDİ)
+**Mekanik VWAP/POC giriş sinyali ÖNERME.** Edge yok. En fazla VWAP/POC, motorun
+mevcut DEVAM adaylarına **pasif bağlam etiketi** olabilir (VWAP'ın hangi tarafında
++ POC'ye mesafe), ve özellikle **haber-olay pencereleriyle** çaprazlanmalı (kullanıcının
+edge'i haber-katalizörlüydü). Standalone tetikleyici asla. Bu, ölçüm-önce disiplininin
+zaferi: 4 tur boyunca olgunlaşan "umut verici" bir yön, 5. turda geniş veriyle
+sahte çıktı — kod yazılmadan yakalandı.
