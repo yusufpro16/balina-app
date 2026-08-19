@@ -177,6 +177,15 @@ maliyet yiyor. Ayrıca geniş stop daha az erken-vuruş (kazanan 11→14) sağl�
 - 5 gün + tek setup ailesi. 30 gün + maliyet duyarlılığı (%0.05–0.15) + motor
   DEVAM adaylarıyla çapraz hâlâ gerekli.
 
+> **NOT (Tur 7, 19 Ağu):** Mekanik kol Tur 6'da kapandı. Tek geçerli bağlam
+> **haber-olayı** (kullanıcının 12 Ağu CPI SHORT'u). Bugün 19 Ağu FOMC (21:00 TR).
+> Bu akşam izlenecek seviyeler (OKX, sabah hesabı): **VWAP 64.396, rolling POC
+> 64.970, gün H64.713/L64.170.** Fiyat 64.186 = **VWAP ve POC'nin ALTINDA** (satıcı
+> bölgesi — kullanıcının setup yapısı). FOMC penceresinde (18:00 UTC): fiyat VWAP'ı
+> (64.396) reddederse SHORT-teyidi; üstüne çıkıp tutunursa LONG-kayması. Stop
+> referansı = FOMC-high (kullanıcı mantığı). Akşam nabzında CANLI gözlem — sinyal
+> değil, olay-bağlamı ölçümü.
+
 **Sonraki (Tur 6):** (a) 30 güne genişlet (OKX sayfalama) — tek-hafta rejim
 riskini kır; (b) maliyet duyarlılık taraması (%0.05/0.10/0.15) — hangi maliyette
 edge kayboluyor; (c) motorun DEVAM adaylarıyla çaprazla — "geniş-stop + VWAP/POC
